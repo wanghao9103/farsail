@@ -68,8 +68,18 @@ async fn main() -> anyhow::Result<()> {
             let username = env::var("FARSAIL_SMTP_USER")?;
             let password = env::var("FARSAIL_SMTP_PASSWORD")?;
             let from = env::var("FARSAIL_MAIL_FROM")?;
+            let tls = env::var("FARSAIL_SMTP_TLS").unwrap_or_else(|_| "implicit".into());
+            let builder = match tls.as_str() {
+                "implicit" => AsyncSmtpTransport::<Tokio1Executor>::relay(&host)?,
+                "starttls" => AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&host)?,
+                _ => anyhow::bail!("FARSAIL_SMTP_TLS must be implicit or starttls"),
+            };
+            let port: u16 = env::var("FARSAIL_SMTP_PORT")
+                .unwrap_or_else(|_| if tls == "starttls" { "587" } else { "465" }.into())
+                .parse()?;
             Mailer::Smtp(
-                AsyncSmtpTransport::<Tokio1Executor>::relay(&host)?
+                builder
+                    .port(port)
                     .credentials(Credentials::new(username, password))
                     .build(),
                 from,
@@ -78,8 +88,16 @@ async fn main() -> anyhow::Result<()> {
         _ => anyhow::bail!("invalid mail mode; memory requires FARSAIL_DEV_MEMORY_MAIL=1"),
     };
     let state = AppState::connect(&database_url, mailer).await?;
+    let internal = env::var("FARSAIL_RELAY_ACCESS_TOKEN")
+        .ok()
+        .map(|secret| farsail_coordinator::relay_access::router(state.pool.clone(), &secret))
+        .transpose()?;
+    let mut app = router(state);
+    if let Some(internal) = internal {
+        app = app.merge(internal);
+    }
     let listener = tokio::net::TcpListener::bind(bind).await?;
     tracing::info!(%bind,"coordinator listening");
-    axum::serve(listener, router(state)).await?;
+    axum::serve(listener, app).await?;
     Ok(())
 }

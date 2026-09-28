@@ -1,0 +1,14 @@
+enable_relay = true
+enable_metrics = false
+enable_quic_addr_discovery = false
+http_bind_addr = "127.0.0.1:8081"
+access.http.url = "http://127.0.0.1:8788/internal/relay-access"
+# Secret comes from IROH_RELAY_HTTP_BEARER_TOKEN, never from this file.
+[tls]
+https_bind_addr = "0.0.0.0:8444"
+cert_mode = "Manual"
+manual_cert_path = "/run/farsail/tls/fullchain.pem"
+manual_key_path = "/run/farsail/tls/privkey.pem"
+[limits.client.rx]
+bytes_per_second = 2000000
+max_burst_bytes = 4000000

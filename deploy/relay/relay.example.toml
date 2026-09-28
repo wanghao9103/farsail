@@ -1,10 +1,16 @@
-# iroh-relay 1.2.0. Replace PUBLIC_IP and certificate paths before deployment.
+# iroh-relay 1.2.0. Public URL and local listening IP are separate.
 enable_relay = true
 http_bind_addr = "127.0.0.1:8080"
 enable_quic_addr_discovery = false
+enable_metrics = false
+access.http.url = "http://127.0.0.1:8788/internal/relay-access"
+# Required private IROH_RELAY_HTTP_BEARER_TOKEN comes from environment.
 
 [tls]
-https_bind_addr = "PUBLIC_IP:443"
+https_bind_addr = "0.0.0.0:8443"
 cert_mode = "Manual"
 manual_cert_path = "/etc/farsail/relay-chain.pem"
 manual_key_path = "/etc/farsail/relay-key.pem"
+[limits.client.rx]
+bytes_per_second = 2000000
+max_burst_bytes = 4000000

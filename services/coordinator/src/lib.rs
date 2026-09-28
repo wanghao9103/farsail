@@ -2,6 +2,7 @@ mod account;
 mod admin;
 mod device;
 mod endpoint_address;
+pub mod relay_access;
 mod remote;
 
 use axum::{

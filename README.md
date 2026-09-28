@@ -28,6 +28,7 @@
 - [认证传输](docs/TRANSPORT.md)：iroh 握手、短租约、数据通道和路径状态。
 - [Windows 远控](docs/REMOTE.md)：DXGI/JPEG、viewer、输入权限与安全停止。
 - [自建 relay](deploy/relay/README.md)：HTTPS 证书与公网 IP 配置示例。
+- [公网 IP 部署包](docs/DEPLOYMENT.md)：六镜像离线制品、短期 IP 证书、回环 Mailpit 与备份/升级。
 - [实施与验收](docs/IMPLEMENTATION.md)：工作项进度及本地验证证据。
 
 图标由内置图像生成工具生成，目前推荐候选为 v2；相似性初筛不代表唯一性或完成商标查重。

@@ -1,0 +1,99 @@
+name: ${COMPOSE_PROJECT_NAME:-farsail-prod}
+x-runtime: &runtime
+  pull_policy: never
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options: {max-size: "10m", max-file: "3"}
+  security_opt: ["no-new-privileges:true"]
+services:
+  gateway:
+    <<: *runtime
+    image: ${NGINX_IMAGE:?initialize deployment first}
+    mem_limit: 96m
+    ports:
+      - "${PUBLIC_BIND:-0.0.0.0}:${HTTP_PORT:-80}:8080"
+      - "${PUBLIC_BIND:-0.0.0.0}:${API_PORT:-443}:8443"
+      - "${PUBLIC_BIND:-0.0.0.0}:${RELAY_PORT:-8443}:8444"
+      - "127.0.0.1:${MAILPIT_PORT:-8025}:8025"
+    volumes:
+      - ${STATE_DIR:?}/nginx:/etc/nginx/conf.d:ro
+      - ${STATE_DIR}/tls:/run/farsail/tls:ro
+      - ${STATE_DIR}/webroot:/var/www/acme:ro
+    networks: [backend, egress]
+  coordinator:
+    <<: *runtime
+    image: ${COORDINATOR_IMAGE:?load a fixed release first}
+    mem_limit: 384m
+    read_only: true
+    cap_drop: [ALL]
+    network_mode: service:gateway
+    env_file: ["${STATE_DIR}/coordinator.env"]
+    depends_on:
+      gateway: {condition: service_started}
+      db: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--max-time", "3", "http://127.0.0.1:8787/healthz"]
+      interval: 10s
+      timeout: 4s
+      retries: 12
+  relay:
+    <<: *runtime
+    image: ${RELAY_IMAGE:?load a fixed release first}
+    mem_limit: 256m
+    read_only: true
+    cap_drop: [ALL]
+    network_mode: service:gateway
+    env_file: ["${STATE_DIR}/relay.env"]
+    command: ["--config-path", "/etc/farsail/relay.toml"]
+    volumes:
+      - ./relay.toml:/etc/farsail/relay.toml:ro
+      - ${STATE_DIR}/tls:/run/farsail/tls:ro
+    depends_on:
+      coordinator: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--max-time", "3", "http://127.0.0.1:8081/generate_204"]
+      interval: 15s
+      timeout: 4s
+      retries: 6
+  db:
+    <<: *runtime
+    image: ${POSTGRES_IMAGE:?}
+    mem_limit: 256m
+    env_file: ["${STATE_DIR}/database.env"]
+    command: ["postgres", "-c", "shared_buffers=64MB", "-c", "max_connections=30"]
+    volumes: ["database:/var/lib/postgresql/data"]
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U farsail -d farsail"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+  mailpit:
+    <<: *runtime
+    image: ${MAILPIT_IMAGE:?}
+    profiles: [test-mail]
+    mem_limit: 128m
+    network_mode: service:gateway
+    environment:
+      MP_SMTP_BIND_ADDR: "127.0.0.1:1025"
+      MP_UI_BIND_ADDR: "0.0.0.0:8025"
+      MP_DATABASE: /data/mailpit.db
+      MP_MAX_MESSAGES: "100"
+    volumes: ["mailpit:/data"]
+    depends_on: [gateway]
+  certbot:
+    pull_policy: never
+    mem_limit: 192m
+    image: ${CERTBOT_IMAGE:?}
+    profiles: [tools]
+    volumes:
+      - ${STATE_DIR}/letsencrypt:/etc/letsencrypt
+      - ${STATE_DIR}/webroot:/var/www/acme
+    networks: [egress]
+volumes:
+  database:
+  mailpit:
+networks:
+  backend: {internal: true}
+  egress:

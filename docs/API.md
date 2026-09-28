@@ -93,3 +93,8 @@ An explicit local `cargo run -p farsail-coordinator -- bootstrap-admin <verified
 ## Configuration
 
 `FARSAIL_DATABASE_URL` is required. `FARSAIL_BIND` defaults to `127.0.0.1:8787` and rejects non-loopback addresses. `FARSAIL_MAIL_MODE=smtp-local` defaults to Mailpit on `127.0.0.1:1025` (set `FARSAIL_SMTP_PORT=51025` for local Compose); it refuses non-loopback SMTP hosts. `FARSAIL_MAIL_MODE=smtp-tls` requires `FARSAIL_SMTP_HOST`, `FARSAIL_SMTP_USER`, `FARSAIL_SMTP_PASSWORD`, `FARSAIL_MAIL_FROM`, and uses a TLS validating SMTP relay. `memory` requires explicit `FARSAIL_DEV_MEMORY_MAIL=1` and is for tests only. Audit events are metadata; a post-commit audit write error is logged but cannot turn a successful mutation into an ambiguous HTTP failure. Production deployment should provide durable audit monitoring, external per-IP rate limiting, backup and TLS proxy configuration before exposing the service.
+# 内部 relay 准入（WI-008A）
+
+`POST /internal/relay-access` 只在设置至少32字节 `FARSAIL_RELAY_ACCESS_TOKEN` 时挂载，必须使用匹配bearer和64位hex `X-Iroh-NodeId`。该公钥由iroh-relay连接握手证明；调用者仅应为可信本机relay，客户端不能自行调用代替设备证明。仅 `200 true` 表示注册设备仍bound/enabled、用户verified/enabled、绑定登录未撤销且refresh未过期。未知/禁用返回 `200 false`；缺/错bearer401、坏公钥400、数据库故障500/2秒超时。反向代理公网路径屏蔽整个 `/internal`。
+
+这是连接准入，不等同远控grant：已经连接的relay不会持续回查；应用授权、30秒租约与撤销规则不变。所有公网 `/v1/admin` 接口继续使用原有管理员鉴权，不因反代而开放匿名管理。

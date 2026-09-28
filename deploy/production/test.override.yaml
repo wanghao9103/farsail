@@ -1,0 +1,4 @@
+# Only used by the isolated local/CI test instance, never by production.
+services:
+  db:
+    ports: ["127.0.0.1:55433:5432"]

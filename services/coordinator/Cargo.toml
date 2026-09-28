@@ -29,5 +29,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 
 [dev-dependencies]
+iroh-relay = "=1.2.0"
+rustls-pki-types = "1"
 http-body-util = "0.1"
 tower = { version = "0.5", features = ["util"] }

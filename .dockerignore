@@ -1,0 +1,12 @@
+**
+!Cargo.toml
+!Cargo.lock
+!rust-toolchain.toml
+!crates/**
+!services/**
+!apps/desktop/src-tauri/**
+!deploy/production/**
+**/target
+**/.local
+**/*.pem
+**/*.key

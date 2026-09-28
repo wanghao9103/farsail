@@ -193,6 +193,77 @@ async fn postgres_identity_device_and_grant_lifecycle() {
     let (alice_device, alice_device_token) = bind(&app, &alice, &alice_key, "Alice", false).await;
     let (bob_device, bob_device_token) = bind(&app, &bob, &bob_key, "Bob", true).await;
 
+    // Internal admission is independent of application grants and fails closed.
+    let secret = "disposable-integration-relay-secret-32bytes";
+    let admission = farsail_coordinator::relay_access::router(pool.clone(), secret).unwrap();
+    async fn admit(app: &Router, secret: Option<&str>, key: &str) -> (StatusCode, Value) {
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/internal/relay-access")
+            .header("x-iroh-nodeid", key);
+        if let Some(secret) = secret {
+            request = request.header("authorization", format!("Bearer {secret}"));
+        }
+        let response = app
+            .clone()
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (status, serde_json::from_slice(&bytes).unwrap())
+    }
+    let public_key = hex::encode(alice_key.verifying_key().to_bytes());
+    assert_eq!(
+        admit(&admission, None, &public_key).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        admit(&admission, Some("wrong"), &public_key).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        admit(&admission, Some(secret), "invalid").await.0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        admit(&admission, Some(secret), &"00".repeat(32)).await,
+        (StatusCode::OK, json!(false))
+    );
+    assert_eq!(
+        admit(&admission, Some(secret), &public_key).await,
+        (StatusCode::OK, json!(true))
+    );
+    for (table, field, id, bad, good) in [
+        ("devices", "enabled", alice_device, "false", "true"),
+        ("devices", "bound", alice_device, "false", "true"),
+        ("users", "enabled", _alice_id, "false", "true"),
+        ("users", "verified", _alice_id, "false", "true"),
+    ] {
+        sqlx::query(&format!("UPDATE {table} SET {field}={bad} WHERE id=$1"))
+            .bind(id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            admit(&admission, Some(secret), &public_key).await.1,
+            json!(false)
+        );
+        sqlx::query(&format!("UPDATE {table} SET {field}={good} WHERE id=$1"))
+            .bind(id)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    sqlx::query("UPDATE auth_sessions SET revoked_at=now() WHERE id=(SELECT credential_session_id FROM devices WHERE id=$1)")
+        .bind(alice_device).execute(&pool).await.unwrap();
+    assert_eq!(
+        admit(&admission, Some(secret), &public_key).await.1,
+        json!(false)
+    );
+    sqlx::query("UPDATE auth_sessions SET revoked_at=NULL WHERE id=(SELECT credential_session_id FROM devices WHERE id=$1)")
+        .bind(alice_device).execute(&pool).await.unwrap();
+
     let (s, _) = call(
         &app,
         "GET",

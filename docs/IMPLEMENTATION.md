@@ -26,8 +26,8 @@
 | WI-001 | Rust workspace、PostgreSQL 账号/设备/授权服务、隔离本地运行与权限测试 | 完成：本地验收通过，代码已推送 |
 | WI-002 | Tauri 客户端登录、设备注册/列表、凭据安全存储、用户/管理员界面 | 完成：本地与 Windows CI 通过，代码已推送 |
 | WI-003 | iroh 端到端连接、应用授权、直连/中继配置与撤权 | 完成：本机专项验证和远端 CI 均通过 |
-| WI-004 | Windows 屏幕采集、用户确认、鼠标键盘输入与可用远控基线 | 本机验收通过，远端 CI 运行中 |
-| WI-008A | 公网 IP 部署包、预构建 Linux 制品与联调准备 | 提前执行：ready |
+| WI-004 | Windows 屏幕采集、用户确认、鼠标键盘输入与可用远控基线 | 本机及三条远端 CI 通过 |
+| WI-008A | 公网 IP 部署包、预构建 Linux 制品与联调准备 | 实现与部署验收进行中 |
 | WI-005 | 分块双向文件传输、无损压缩、校验/续传、授权与限速 | planned |
 | WI-006 | 实际硬编/解码、多屏与自适应速率、能力协商和 4:4:4 路径 | planned |
 | WI-007 | Android/iOS 手机控制与文件接口、可执行平台构建和验证 | planned |
@@ -183,6 +183,8 @@ Windows 原生层按显示器所属 DXGI 适配器采集，处理 DPI、负坐�
 ### 背景与顺序
 用户已准备 Ubuntu 24.04.2 x86_64 公网服务器，约 1.6 GiB 内存，无 Docker/Swap。总控正在指导用户安装 Docker。服务器地址和登录信息仅保存在当前会话/忽略的本地记录，公共仓库保持参数化。当前 Codex 无可接管 SSH、无密钥；不得声称已连接或远程部署。先完成能独立验收的 Linux 部署包，再由总控配合用户运行；后续 WI-005/006/007 继续，不因此标记全部产品完成。
 
+后续准备更新：用户已安装 Docker 29.8.1 / Compose 5.5.1，已克隆代码；阿里云服务器DockerHub出站拉取超时，交付改为包含全部六个运行镜像的离线归档。服务器具体产品类型和GitHub附件下载仍待确认。用户提供标称200Mbps，不作为实测吞吐。未接管SSH，不修改外部服务器。
+
 ### 基线与 Write Set
 代码基线 `a66e43f3b7a42f7c6ee1a565bc96c8bc66511770`（WI-004 本机验收通过，CI 由总控只读跟踪），本节计划提交后的 HEAD 为开工基线。
 允许修改 deploy/production/**、deploy/relay/**、Dockerfile 或 deploy 下专用 Dockerfile、.dockerignore、scripts/deploy/**、scripts/test-deploy.ps1、.github/workflows/deploy.yml、Cargo.toml/Cargo.lock 必要兼容、services/coordinator/**（仅内部 relay 准入/部署配置/SMTP 端口等必要修复，新迁移不改历史迁移）、crates/client/** 或 apps/desktop/**（仅真实公网地址/relay 配置阻断修复；先记录精确改动范围）、README.md、docs/DEPLOYMENT.md、docs/IMPLEMENTATION.md、docs/API.md、docs/verification/WI-008A.md。不实现文件引擎或硬件编解码，不修改已完成 WI-004 媒体业务。
@@ -191,7 +193,7 @@ Windows 原生层按显示器所属 DXGI 适配器采集，处理 DPI、负坐�
 - 可重复构建 Linux amd64 协调服务和固定 iroh-relay 1.2.0 的运行镜像/发布包；服务器只拉取预构建制品，不在 1.6 GiB 主机编译 Rust。提交锁文件构建，包含必要 CA 与迁移；通过 GitHub Actions 生成带提交标识和摘要的可下载制品或公开 GHCR 镜像，实际核对存在且匿名可用再写命令。不能发布未验证的 latest 冒充固定版本。
 - Linux Docker Compose 生产/联调配置，独立 farsail-prod 项目与 volumes。协调服务当前强制 loopback，须实际解决容器网络可达：可用 Linux host network 或共享 network namespace，不能示例绑定 0.0.0.0 而二进制启动即退出。PostgreSQL、SMTP 测试收件箱、内部管理/准入接口仅内网/回环；公网默认 API 443/TCP、relay 8443/TCP、ACME 80/TCP（可配置，检查既有端口）。
 - IP 证书正常 CA 验证，Certbot >=5.4 webroot+shortlived/IP 支持、HTTP-01 bootstrap、证书自动续期和服务 reload/restart hook、续期失败可见。既有模板 relay 与 API 都占443要拆开。云主机的公网IP可能是NAT映射、不属于网卡；公网URL用用户IP，监听地址用实际本地0.0.0.0/接口地址，不能把PUBLIC_IP直接绑定导致EADDRNOTAVAIL。若域名也可配置，但不能要求用户购买域名或关闭 TLS。未获得公网机器与交互账号授权信息时，只做本机测试 CA 演练，真实 CA 签发由用户运行明确命令。
-- Relay 不能默认给任意设备无限使用。优先复用 upstream AccessConfig::Http：POST 带 X-Iroh-Endpoint-Id，经 relay 已验证公钥，私有 bearer token 保护协调服务内部准入端点；仅当前有效注册/启用设备可接入，未知/禁用/缺token/服务异常拒绝。API反代阻止内部接口公开。核实二进制 schema、超时与限速，限制 client_rx；accept_conn_limit/burst 在 1.2.0 源码明确未实施，不能当有效保护。无需另写整个relay服务器。保持应用授权和30秒租约撤销，与relay准入分别验证。
+- Relay 不能默认给任意设备无限使用。优先复用 upstream AccessConfig::Http：POST 带 X-Iroh-NodeId，经 relay 已验证公钥，私有 bearer token 保护协调服务内部准入端点；仅当前有效注册/启用设备可接入，未知/禁用/缺token/服务异常拒绝。API反代阻止内部接口公开。核实二进制 schema、超时与限速，限制 client_rx；accept_conn_limit/burst 在 1.2.0 源码明确未实施，不能当有效保护。无需另写整个relay服务器。保持应用授权和30秒租约撤销，与relay准入分别验证。
 - 参数与秘密由服务器忽略文件/挂载提供，随机密码不打印、不进入 Git/镜像层/CI 输出；证书私钥留服务器。容器非 root 可用时采用，配置文件最小权限、持久化和备份/恢复、升级固定ref/回滚可操作。不得改全局Docker配置、清理其他容器或开放数据库公网端口。
 - 用户已明确首次采用仅回环 Mailpit 联调。账号验证邮件要有真实可行流程：支持 TLS SMTP 的完整配置；尚无 SMTP 时可提供明确标记的测试 profile 与仅回环 Mailpit，通过用户自己的 SSH 转发访问，不能公开收件箱或跳过邮箱验证。管理员仍通过现有显式 bootstrap 命令，不能首个注册自动提权。
 - 客户端设置示例准确区分 API URL 与 relay URL，并说明本机默认127.0.0.1绑定不能直接当跨网设置；实际选中 relay 路径才算中继测试通过。跨 NAT P2P 发现如尚未验证，明确缺口而不因服务器启动成功就声称穿透完成。
@@ -203,3 +205,11 @@ Windows 原生层按显示器所属 DXGI 适配器采集，处理 DPI、负坐�
 - 单独记录 Linux镜像、本地Compose、公开制品下载、生产SMTP、真实CA、公网/家中电脑分别验证到哪一层；不冒称远端部署。
 - backend适用 fmt/tests/clippy、部署脚本语法/Compose配置、GitHubCI/制品检查，必要的原有auth回归。停止本项测试进程/容器而保留需保留的卷；记录运行/缓存边界。
 - 更新权威记录、知识沉淀，提交推送后核对远端，通知总控接用户服务器步骤。用户补充SSH访问时由总控分配后续真实部署动作，本任务不自猜密码或修改用户服务器。
+
+### 当前实现记录
+
+开工核对HEAD `58db323bdc523132377903e83b853a08c6a981a5`、工作区干净。变更保持本项Write Set；经总控补充授权，在 `docs/verification/WI-004.md` 追加三条CI最终成功结果。部署代码为Bash，测试探针为Rust，没有自编Python/Qt。
+
+共享gateway网络命名空间保持协调服务loopback。内部relay准入独立路由、私有bearer、有效设备/账号/登录检查和2秒数据库期限；回环准入代理限制上游连接/读写期限。公网API屏蔽/internal，relay接收限速使用1.2.0实际有效字段。API443/relay8443，监听地址与公网URL分开。首次回环Mailpit仍做真实邮箱验证；显式bootstrap管理员。六镜像离线包使用固定tag+image ID验证，全部pull never；start一起重建共享namespace依赖。证书使用Certbot5.4.0短期IP/webroot、失败可见的systemd续期和Manual证书重载/relay重启。
+
+运行边界：仅farsail-deploy-test、回环58080/58443/58444/58026/55433，私有测试状态和镜像缓存留.local及Docker本项目卷；不改farsail-dev或其他容器。Docker构建、真实测试CA/SMTP/身份/relay及制品发布结果持续记录在 [WI-008A](verification/WI-008A.md)。

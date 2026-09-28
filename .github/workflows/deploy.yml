@@ -1,0 +1,65 @@
+name: deployment-pre-release
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: deployment-release
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust
+        run: rustup toolchain install 1.93.0 --profile minimal --component rustfmt --component clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: docker/setup-buildx-action@v3
+      - name: Build coordinator
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/production/Dockerfile
+          target: coordinator
+          platforms: linux/amd64
+          load: true
+          tags: farsail/coordinator:${{ github.sha }}
+          build-args: REVISION=${{ github.sha }}
+          cache-from: type=gha,scope=coordinator
+          cache-to: type=gha,mode=max,scope=coordinator
+      - name: Build pinned relay
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/production/Dockerfile
+          target: relay
+          platforms: linux/amd64
+          load: true
+          tags: farsail/relay:${{ github.sha }}
+          build-args: REVISION=${{ github.sha }}
+          cache-from: type=gha,scope=relay
+          cache-to: type=gha,mode=max,scope=relay
+      - name: Bundle all runtime images
+        run: |
+          bash scripts/deploy/bundle.sh "$GITHUB_SHA" .local/release
+          bash scripts/deploy/verify-archive.sh .local/release
+          # Remove only the six tags created by this job; unrelated images untouched.
+          jq -r '.images[].tag' .local/release/manifest.json | xargs docker image rm
+      - name: Import archive with fixed tags and verify image IDs
+        env:
+          FARSAIL_STATE_DIR: ${{ github.workspace }}/.local/deploy-smoke
+        run: |
+          bash scripts/deploy/farsail.sh init 127.0.0.1 ci@example.test test
+          bash scripts/deploy/farsail.sh load-release "$GITHUB_SHA" .local/release
+      - name: Actual Compose, HTTPS, Mailpit, identity and relay regression
+        run: |
+          cargo fmt --all -- --check
+          bash -n scripts/deploy/farsail.sh scripts/deploy/bundle.sh scripts/deploy/test.sh
+          bash scripts/deploy/test.sh
+      - name: Publish verified prerelease only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          printf '%s\n' 'WI-008A Linux amd64 integration deployment. Six runtime images; use SHA256SUMS and manifest.json. Public CA issuance, external deployment, cross-NAT and second-PC remote control remain unverified. JPEG baseline only; files/HEVC/mobile are not delivered.' > .local/release/notes.md
+          gh release create "deploy-$GITHUB_SHA" --target "$GITHUB_SHA" --prerelease --title "FarSail deployment preview $GITHUB_SHA" --notes-file .local/release/notes.md .local/release/manifest.json .local/release/SHA256SUMS .local/release/farsail-linux-amd64-images.tar.gz
