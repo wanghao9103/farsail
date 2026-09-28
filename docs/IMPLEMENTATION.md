@@ -24,7 +24,7 @@
 | Work Item | 可验收结果 | 状态 |
 | --- | --- | --- |
 | WI-001 | Rust workspace、PostgreSQL 账号/设备/授权服务、隔离本地运行与权限测试 | 完成：本地验收通过，代码已推送 |
-| WI-002 | Tauri 客户端登录、设备注册/列表、凭据安全存储、用户/管理员界面 | planned |
+| WI-002 | Tauri 客户端登录、设备注册/列表、凭据安全存储、用户/管理员界面 | ready |
 | WI-003 | iroh 端到端连接、应用授权、直连/中继配置与撤权 | planned |
 | WI-004 | Windows 屏幕采集、用户确认、鼠标键盘输入与可用远控基线 | planned |
 | WI-005 | 分块双向文件传输、无损压缩、校验/续传、授权与限速 | planned |
@@ -66,3 +66,36 @@
 Rust workspace、共享协议枚举、Axum 协调服务及 PostgreSQL 迁移已实现。账号支持邮箱验证、登录/恢复、Argon2id、访问/刷新轮换、登录会话撤销；设备支持 Ed25519 持有证明、唯一绑定、登录会话关联的专用凭据、完整分页列表、心跳代次与解绑；授权支持一次性邀请、目标设备批准/拒绝、30 秒 grant、续期和撤权；管理员支持用户/设备启停、注册策略和邮箱定向注册邀请、元数据审计。测试使用真实 PostgreSQL 隔离 schema，邮件使用内存 mailer 或本地 Mailpit。完整命令、结果、端口、运行状态和仍未验证项见 [WI-001 验证记录](verification/WI-001.md)，请求契约见 [API 文档](API.md)。
 
 WI-002 对接从 `/v1/me` 开始；账号访问 token 与设备 token 分开保存，设备密钥留在原生安全存储。`GET /v1/devices` 返回已绑定的同账号全部设备，包含离线与管理员禁用项。`GET /v1/remote/{id}` 只报告 pending/approved/denied/revoked/expired 状态，不传 grant token。目标端 `decide`/`renew` 才收到 grant token；其安全交付给发起端及 iroh 握手校验属于 WI-003。当前未验证公网、域名/TLS 代理、真实邮件、第二台 Windows、P2P/中继撤权或移动端。
+
+总控验收：实现及交接已经收口，远端 main 为 `9f222515c0482cf83e318c1788dcbf34f9d61be9`；本机真实数据库/HTTP 与 Linux CI 均通过，工作区干净，当前无本项运行服务。批准继续 WI-002。
+
+## WI-002：Tauri 客户端与账号设备界面
+
+### 基线与 Write Set
+
+代码基线 `9f222515c0482cf83e318c1788dcbf34f9d61be9`；本节计划单独提交后，以该计划提交作为开工 HEAD。
+
+允许修改：`apps/desktop/**`、`crates/client/**`、`packages/ui/**`、`package.json`、`package-lock.json`、`Cargo.toml`、`Cargo.lock`、`.gitignore`、`scripts/start-local.ps1`、`scripts/test-desktop.ps1`、`.github/workflows/client.yml`、`README.md`、`docs/IMPLEMENTATION.md`、`docs/CLIENT.md`、`docs/verification/WI-002.md`。如发现已有后端契约阻断实际接入，先记录所需 `services/coordinator/**` / `docs/API.md` 的精确修复范围，再修复并跑后端专项回归；禁止随意改写历史迁移。
+
+### 必须交付
+
+- 可在 Windows 编译运行的 Tauri 2 + TypeScript 客户端（优先 React/Vite），使用已选 FarSail v2 图标。界面包含登录/注册/邮箱验证/恢复、我的设备、连接请求与会话、账号安全、设置和管理员页面；管理员页面可先集成在同一客户端。
+- 所有业务页面调用真实协调 API。Rust 原生层负责 HTTP、登录/刷新串行化、设备签名和心跳；界面不能获得长期 token 或私钥，不使用 WebView localStorage 保存凭据。不构造假设备列表作为运行结果。
+- 服务地址可配置：本机开发可用显式 loopback HTTP，公网强制验证 HTTPS；无域名的 HTTPS 公网 IP 是合法配置。禁用验证证书的选项不可引入。
+- Windows 凭据采用系统安全存储或 DPAPI 保护；密钥、账号登录、设备凭据分开管理。退出/切账号清空 UI 状态并停止旧 heartbeat/poll，撤销登录后不能用旧设备凭据继续上线。后续移动端通过接口适配原生安全存储。
+- 登录后确认设备绑定，完整分页读取同账号设备（含离线/禁用），搜索和按能力筛选；支持改名/解绑、其他登录会话撤销。设备能力必须对应实际已实现功能；尚未接入采集/文件时，不把本机宣称为可工作的被控端。
+- 真实远控请求/临时邀请、目标设备的批准/拒绝、状态轮询与取消；本项明确只接通授权 UI，画面/输入与文件通道由后续项实现。grant token 留在 Rust 原生层，不通过页面或日志泄漏。
+- 管理员页面实际接入用户启停、设备撤销/恢复、注册策略/邀请、会话与审计。服务端授权仍为权威，前端角色判断只控制展示。
+- Rust 客户端逻辑放在可复用 crate；前端布局适配窄屏，为手机界面准备。不要在本项安装/运行 iOS 环境或并行启动新任务。
+
+### 验收与运行边界
+
+- 提交 npm/Cargo 锁文件；执行前端类型检查、生产构建、必要的行为测试，`cargo fmt --all -- --check`、客户端 crate 测试、Windows Tauri `cargo check/build` 和适用 Clippy。实际命令写入证据文档。
+- 通过隔离的 farsail-dev PostgreSQL/Mailpit 实测注册/验证/登录、原生客户端绑定/签名、列设备、刷新/撤销、管理员路径；不使用假 HTTP 响应代替该集成验证。
+- 浏览器或可用客户端测试真实界面布局、空状态/错误状态及交互；说明浏览器预览与 Tauri 原生能力验证的各自范围，不能把 preview 冒充原生端到端。
+- 测试进程与本地账号/凭据不得进入 Git；本项结束记录所有启动进程、端口和保留状态，清理自己创建且不再需要的服务。测试只能使用本项目隔离实例。
+- 完成后更新记录、独立提交并推送，核对 CI 与远端，再交给 WI-003；核心功能不以 TODO/stub 替代。
+
+### 记录
+
+等待开工。用户将稍后准备公网环境，目前没有域名；家里另有电脑可后续测试，当前没有远端访问或手机真机。
