@@ -23,7 +23,7 @@
 
 | Work Item | 可验收结果 | 状态 |
 | --- | --- | --- |
-| WI-001 | Rust workspace、PostgreSQL 账号/设备/授权服务、隔离本地运行与权限测试 | 本地验收通过，提交/推送收口中 |
+| WI-001 | Rust workspace、PostgreSQL 账号/设备/授权服务、隔离本地运行与权限测试 | 完成：本地验收通过，代码已推送 |
 | WI-002 | Tauri 客户端登录、设备注册/列表、凭据安全存储、用户/管理员界面 | planned |
 | WI-003 | iroh 端到端连接、应用授权、直连/中继配置与撤权 | planned |
 | WI-004 | Windows 屏幕采集、用户确认、鼠标键盘输入与可用远控基线 | planned |
@@ -38,7 +38,7 @@
 
 ### 基线与 Write Set
 
-开工核对 HEAD 为 `1a48cdbd268335a29406724cc54677d5aa00a9f4`，工作区干净。代码路径均在下述 Write Set 内；未修改设计草案或其他工作项。最终提交 SHA 见 `docs/verification/WI-001.md`。
+开工核对 HEAD 为 `1a48cdbd268335a29406724cc54677d5aa00a9f4`，工作区干净。代码路径均在下述 Write Set 内；未修改设计草案或其他工作项。实现提交 `0e6be111e03478053a9d10e252d46a9b392a4367` 已推送并由 `git ls-remote` 核对；详情见 `docs/verification/WI-001.md`。
 
 允许修改：`Cargo.toml`、`Cargo.lock`、`rust-toolchain.toml`、`crates/core/**`、`services/coordinator/**`、`deploy/local/**`、`scripts/test-coordinator.ps1`、`.github/workflows/backend.yml`、`.gitignore`、`README.md`、`docs/IMPLEMENTATION.md`、`docs/API.md`、`docs/verification/WI-001.md`。
 
