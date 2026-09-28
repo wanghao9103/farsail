@@ -38,7 +38,7 @@
 
 ### 基线与 Write Set
 
-开工核对 HEAD 为 `1a48cdbd268335a29406724cc54677d5aa00a9f4`，工作区干净。代码路径均在下述 Write Set 内；未修改设计草案或其他工作项。实现提交 `0e6be111e03478053a9d10e252d46a9b392a4367` 已推送并由 `git ls-remote` 核对；详情见 `docs/verification/WI-001.md`。
+开工核对 HEAD 为 `1a48cdbd268335a29406724cc54677d5aa00a9f4`，工作区干净。代码路径均在下述 Write Set 内；未修改设计草案或其他工作项。实现提交 `0e6be111e03478053a9d10e252d46a9b392a4367` 已推送并由 `git ls-remote` 核对；Linux GitHub Actions 后端工作流通过。详情见 `docs/verification/WI-001.md`。
 
 允许修改：`Cargo.toml`、`Cargo.lock`、`rust-toolchain.toml`、`crates/core/**`、`services/coordinator/**`、`deploy/local/**`、`scripts/test-coordinator.ps1`、`.github/workflows/backend.yml`、`.gitignore`、`README.md`、`docs/IMPLEMENTATION.md`、`docs/API.md`、`docs/verification/WI-001.md`。
 
