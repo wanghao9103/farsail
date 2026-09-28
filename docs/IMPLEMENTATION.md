@@ -8,9 +8,9 @@
 - 远端：`https://github.com/wanghao9103/farsail`，公开、MIT，主分支 `main`。
 - 按用户全局长任务规则，每个可独立验收结果使用一个同项目任务；共享工作区写入串行。总控在写任务进行中只做只读检查，任务结束后再更新下一工作项。
 - 每个任务开工前核对记录的基线 HEAD 和工作区。不得覆盖其他未提交改动；只在自己的 Write Set 中修改文件，必要扩展先记录原因和具体路径。
-- 本地运行状态进入忽略的 `.local/`；Rust 缓存 `target/`、Node 缓存 `node_modules/` 不提交。Docker 仅操作明确命名的 `farsail-dev` 项目和自身服务，端口只绑定本机回环；不得停止用户其他服务。
+- 本地运行状态进入忽略的 `.local/`；Rust 缓存 `target/`、Node 缓存 `node_modules/` 不提交。Docker 默认仅操作 `farsail-dev` 及工作项明确新增的隔离测试项目，本机端口只绑定回环；不得停止用户其他服务。WI-008A 另行定义 `farsail-deploy-test`，用户服务器运行参数化的 `farsail-prod`。
 - 每项交付包含实现、适当测试、准确文档和独立提交。推送前审查暂存范围、凭据与私人路径；使用现有 GitHub 登录及项目 noreply 身份。不得把测试账号、令牌、真实邮件、屏幕画面或运行数据库上传。
-- 真实邮件发送、公网服务器部署及用户其他设备尚未配置。代码和本机隔离环境可继续实现；远端、跨 NAT 与手机验证缺口须如实记录。
+- 公网 Ubuntu 24.04.2/amd64 已由用户准备，Docker 29.8.1 与 Compose 5.5.1 已安装；约 1.6 GiB 内存、35 GB 可用磁盘。首次采用仅回环测试收件箱。服务器尚未部署项目，当前由用户在外部终端执行命令，总控没有可接管 SSH 或密钥。公网、跨 NAT 与手机验证缺口须如实记录。
 
 ## 环境基线
 
@@ -27,6 +27,7 @@
 | WI-002 | Tauri 客户端登录、设备注册/列表、凭据安全存储、用户/管理员界面 | 完成：本地与 Windows CI 通过，代码已推送 |
 | WI-003 | iroh 端到端连接、应用授权、直连/中继配置与撤权 | 完成：本机专项验证和远端 CI 均通过 |
 | WI-004 | Windows 屏幕采集、用户确认、鼠标键盘输入与可用远控基线 | 本机验收通过，远端 CI 运行中 |
+| WI-008A | 公网 IP 部署包、预构建 Linux 制品与联调准备 | 提前执行：ready |
 | WI-005 | 分块双向文件传输、无损压缩、校验/续传、授权与限速 | planned |
 | WI-006 | 实际硬编/解码、多屏与自适应速率、能力协商和 4:4:4 路径 | planned |
 | WI-007 | Android/iOS 手机控制与文件接口、可执行平台构建和验证 | planned |
@@ -174,3 +175,31 @@ Windows 原生层按显示器所属 DXGI 适配器采集，处理 DPI、负坐�
 本机真实 PostgreSQL/HTTP/iroh 授权链路与 DXGI→JPEG→解码通过，受控测试窗口中的无害文字、组合键和点击通过，WebView2 二进制 IPC 与单实例烟测通过。H.264/H.265/4:4:4 待 WI-006；文件通道待 WI-005。公网部署目标刚由用户告知总控，本项未连接外部机器，后续需独立服务器联调及第二台 Windows/跨 NAT 验证。
 
 实现提交 `78541d08d885b6827c9ed8c22a1aa7787e1f365d` 已推送并经 `git ls-remote` 核对；三条 GitHub Actions 在交接时仍运行中，链接与最终本机端口/进程状态见 [WI-004 验证记录](verification/WI-004.md)。本机写集已收口且工作区干净，允许总控串行开始部署包/服务器联调，CI 完成状态继续只读核对。
+
+总控核对：最终提交 `a66e43f3b7a42f7c6ee1a565bc96c8bc66511770` 与远端 main 一致，工作区干净；WI-004 写任务已完成、无本机运行进程。用户要求开始公网部署，先串行执行 WI-008A，再返回 WI-005/006/007。CI 未完成不等于已通过，若失败由当前写任务在明确范围内修复，总控不并行改代码。
+
+## WI-008A：公网 IP 部署包与服务器联调准备（提前执行）
+
+### 背景与顺序
+用户已准备 Ubuntu 24.04.2 x86_64 公网服务器，约 1.6 GiB 内存，无 Docker/Swap。总控正在指导用户安装 Docker。服务器地址和登录信息仅保存在当前会话/忽略的本地记录，公共仓库保持参数化。当前 Codex 无可接管 SSH、无密钥；不得声称已连接或远程部署。先完成能独立验收的 Linux 部署包，再由总控配合用户运行；后续 WI-005/006/007 继续，不因此标记全部产品完成。
+
+### 基线与 Write Set
+代码基线 `a66e43f3b7a42f7c6ee1a565bc96c8bc66511770`（WI-004 本机验收通过，CI 由总控只读跟踪），本节计划提交后的 HEAD 为开工基线。
+允许修改 deploy/production/**、deploy/relay/**、Dockerfile 或 deploy 下专用 Dockerfile、.dockerignore、scripts/deploy/**、scripts/test-deploy.ps1、.github/workflows/deploy.yml、Cargo.toml/Cargo.lock 必要兼容、services/coordinator/**（仅内部 relay 准入/部署配置/SMTP 端口等必要修复，新迁移不改历史迁移）、crates/client/** 或 apps/desktop/**（仅真实公网地址/relay 配置阻断修复；先记录精确改动范围）、README.md、docs/DEPLOYMENT.md、docs/IMPLEMENTATION.md、docs/API.md、docs/verification/WI-008A.md。不实现文件引擎或硬件编解码，不修改已完成 WI-004 媒体业务。
+
+### 必须交付
+- 可重复构建 Linux amd64 协调服务和固定 iroh-relay 1.2.0 的运行镜像/发布包；服务器只拉取预构建制品，不在 1.6 GiB 主机编译 Rust。提交锁文件构建，包含必要 CA 与迁移；通过 GitHub Actions 生成带提交标识和摘要的可下载制品或公开 GHCR 镜像，实际核对存在且匿名可用再写命令。不能发布未验证的 latest 冒充固定版本。
+- Linux Docker Compose 生产/联调配置，独立 farsail-prod 项目与 volumes。协调服务当前强制 loopback，须实际解决容器网络可达：可用 Linux host network 或共享 network namespace，不能示例绑定 0.0.0.0 而二进制启动即退出。PostgreSQL、SMTP 测试收件箱、内部管理/准入接口仅内网/回环；公网默认 API 443/TCP、relay 8443/TCP、ACME 80/TCP（可配置，检查既有端口）。
+- IP 证书正常 CA 验证，Certbot >=5.4 webroot+shortlived/IP 支持、HTTP-01 bootstrap、证书自动续期和服务 reload/restart hook、续期失败可见。既有模板 relay 与 API 都占443要拆开。云主机的公网IP可能是NAT映射、不属于网卡；公网URL用用户IP，监听地址用实际本地0.0.0.0/接口地址，不能把PUBLIC_IP直接绑定导致EADDRNOTAVAIL。若域名也可配置，但不能要求用户购买域名或关闭 TLS。未获得公网机器与交互账号授权信息时，只做本机测试 CA 演练，真实 CA 签发由用户运行明确命令。
+- Relay 不能默认给任意设备无限使用。优先复用 upstream AccessConfig::Http：POST 带 X-Iroh-Endpoint-Id，经 relay 已验证公钥，私有 bearer token 保护协调服务内部准入端点；仅当前有效注册/启用设备可接入，未知/禁用/缺token/服务异常拒绝。API反代阻止内部接口公开。核实二进制 schema、超时与限速，限制 client_rx；accept_conn_limit/burst 在 1.2.0 源码明确未实施，不能当有效保护。无需另写整个relay服务器。保持应用授权和30秒租约撤销，与relay准入分别验证。
+- 参数与秘密由服务器忽略文件/挂载提供，随机密码不打印、不进入 Git/镜像层/CI 输出；证书私钥留服务器。容器非 root 可用时采用，配置文件最小权限、持久化和备份/恢复、升级固定ref/回滚可操作。不得改全局Docker配置、清理其他容器或开放数据库公网端口。
+- 用户已明确首次采用仅回环 Mailpit 联调。账号验证邮件要有真实可行流程：支持 TLS SMTP 的完整配置；尚无 SMTP 时可提供明确标记的测试 profile 与仅回环 Mailpit，通过用户自己的 SSH 转发访问，不能公开收件箱或跳过邮箱验证。管理员仍通过现有显式 bootstrap 命令，不能首个注册自动提权。
+- 客户端设置示例准确区分 API URL 与 relay URL，并说明本机默认127.0.0.1绑定不能直接当跨网设置；实际选中 relay 路径才算中继测试通过。跨 NAT P2P 发现如尚未验证，明确缺口而不因服务器启动成功就声称穿透完成。
+- 提供针对 Ubuntu24.04/root/amd64 的短步骤，每个复制块是单条可执行命令或已提交可审阅脚本，避免多行粘贴被用户终端拼接。阶段有检测和错误停点，公网不执行测试脚本的数据库清空/开发迁移重置。基础检查、安装依赖、clone固定提交、初始化配置、证书、启动、healthz、注册/管理员、日志、停止/升级可跟随。
+
+### 验收与运行边界
+- 在本地 Docker 实际构建并运行隔离部署，确认健康检查真实连库、数据持久化、内部端口仅回环/内网、配置和迁移存在、无凭据进入镜像/公开日志。使用独立项目 `farsail-deploy-test`，测试宿主发布端口限定回环（候选 HTTP 58080、API 58443、relay 58444、数据库 55433；实际使用前检查），不与 farsail-dev 或其他服务冲突；不能为了测试修改 Docker Desktop 全局 host-network 设置。
+- 用测试 CA 的正确验证完成 HTTPS API 与 relay 端点、已注册设备准入和未知身份拒绝；反代内部接口不可达、relay服务停机/证书配置错误有可理解失败。可用 openssl/curl 检查 SAN/IP 与链，不能使用 -k 作通过证据。
+- 单独记录 Linux镜像、本地Compose、公开制品下载、生产SMTP、真实CA、公网/家中电脑分别验证到哪一层；不冒称远端部署。
+- backend适用 fmt/tests/clippy、部署脚本语法/Compose配置、GitHubCI/制品检查，必要的原有auth回归。停止本项测试进程/容器而保留需保留的卷；记录运行/缓存边界。
+- 更新权威记录、知识沉淀，提交推送后核对远端，通知总控接用户服务器步骤。用户补充SSH访问时由总控分配后续真实部署动作，本任务不自猜密码或修改用户服务器。
