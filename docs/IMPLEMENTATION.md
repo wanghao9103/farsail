@@ -28,6 +28,7 @@
 | WI-003 | iroh 端到端连接、应用授权、直连/中继配置与撤权 | 完成：本机专项验证和远端 CI 均通过 |
 | WI-004 | Windows 屏幕采集、用户确认、鼠标键盘输入与可用远控基线 | 本机及三条远端 CI 通过 |
 | WI-008A | 公网 IP 部署包、预构建 Linux 制品与联调准备 | 完成：固定六镜像制品、匿名下载、跨Docker存储导入及两轮Linux CI通过 |
+| WI-008B | Windows x64 预览安装包、正式构建与公开制品验收 | 提前执行：ready |
 | WI-005 | 分块双向文件传输、无损压缩、校验/续传、授权与限速 | planned |
 | WI-006 | 实际硬编/解码、多屏与自适应速率、能力协商和 4:4:4 路径 | planned |
 | WI-007 | Android/iOS 手机控制与文件接口、可执行平台构建和验证 | planned |
@@ -217,3 +218,30 @@ Windows 原生层按显示器所属 DXGI 适配器采集，处理 DPI、负坐�
 运行镜像固定 `4252e9d901e3022175772f563be45df967c3e9cc`，[发布CI 36400484173](https://github.com/wanghao9103/farsail/actions/runs/36400484173) 成功；部署加载器固定 `51e131f0bf60a3a8fa15cddd869a8b97d3db79a0`，[兼容CI 36402545193](https://github.com/wanghao9103/farsail/actions/runs/36402545193) 成功。六镜像公开归档完整匿名下载、字节数/SHA256核验及Docker29跨store导入/实际TLS+relay启动均通过。前一实现9d910e6的后端/传输/Windows CI均成功。内部网络的宿主数据库测试问题仅在test.override修复，生产库保持私网。测试容器和端口已清理，卷/私有状态保留。用户服务器CA/部署/跨NAT交总控继续，不标记文件、HEVC或手机功能完成；制品链接、摘要、命令与边界见WI-008A验证记录。
 
 跨存储结论：classic与containerd的inspect .Id语义不同，51e131f改为核对跨存储稳定的image config SHA（包含rootfs diffIDs），并精确白名单4252的manifest/归档SHA，允许已初始化用户复用旧包而不重置秘密或重下近300MB。必须使用51e131f加载器，不能直接使用4252内原加载脚本。已初始化用户等旧load退出后fetch→checkout51e131f→load-release4252，跳过init；之后才由总控带用户申请真实证书/启动。
+
+总控验收：最终提交 `8b46e19d8f70bda8f1511d95963466724cd08b91` 与远端main一致、工作区干净。payload CI 36400484173与loader CI 36402545193均已独立核对success；完整匿名附件及Docker29严格导入/实际启动由WI-008A留有证据。该写任务已结束。用户已在服务器初始化并通过preflight，正在按修复加载器步骤继续；真实CA/公网服务尚未声称完成。串行开始WI-008B，为第二台Windows提供可运行安装包。
+
+## WI-008B：Windows 预览安装包
+
+### 基线与 Write Set
+代码基线 `8b46e19d8f70bda8f1511d95963466724cd08b91`；本节计划提交后的 HEAD 为开工基线。WI-008A 写任务已结束、工作区干净、测试服务已停止。总控继续指导用户在独立公网服务器执行已验证部署命令，本项不访问或修改服务器。
+允许修改：`apps/desktop/**`（仅正式构建、安装、首次运行等必要修复/配置，不扩展业务功能）、`scripts/package-windows.ps1`、`scripts/test-windows-package.ps1`、`.github/workflows/windows-release.yml`、现有client工作流必要兼容、`package.json`、`package-lock.json`、`Cargo.toml`、`Cargo.lock`、`.gitignore`、`README.md`、`docs/IMPLEMENTATION.md`、`docs/CLIENT.md`、`docs/WINDOWS_INSTALL.md`、`docs/verification/WI-008B.md`。若原生crate存在阻断release构建/启动的实际问题，先记录精确路径和修复，再回归，禁止无关重构。不改WI-008A已交付部署脚本、运行包、用户配置或服务器。
+
+### 必须交付
+- 基于当前 Rust/Tauri/React Windows 客户端生成真正可安装的 x64 NSIS 预览包；提供可复现打包脚本与固定提交的 GitHub Actions。沿用 FarSail v2 图标、现有应用标识和当前账号/设备/远控基线。用户无需安装Rust/Node来运行。
+- 正式前端嵌入release，不依赖Vite本机端口；正确处理WebView2依赖并准确说明联网/安装要求。仅使用Tauri官方机制与已核实依赖，不用Python/Qt。不要为了打包更换整个工具链或改用户全局开发配置。
+- debug IPC探针与测试环境快捷入口不得进入生产行为；私钥、长期token、设备token和grant仍只留Rust/DPAPI。首次启动不自动注册、共享、注入输入或开启无人值守；升级/卸载操作不静默清空已有用户凭据。
+- 安装行为尽量按当前用户，避免默认要求系统服务/开机后台共享。不要求用户购买签名证书；若没有现成签名，明确包未签名，不能伪称可信发布者或关闭系统防护。测试安装/卸载优先在一次性Windows CI中进行；本机只在明确隔离目录/无真实凭据条件下验证本项目进程，禁止覆盖已有安装或清理用户配置。
+- 产物包含安装包、源码提交/版本元数据与SHA256，发布到已授权公开仓库的明确预发布。最终应实际匿名下载公开安装包并比对摘要；不可仅凭cargo build成功或Actions绿色声称安装包可用。必要时保留便携包，但不为凑品类增加未验证格式。
+- 给出第二台Windows的短步骤：下载/校验/安装、配置自己的HTTPS API和relay地址、测试收件箱验证、登录绑定、目标端开启共享/批准、查看校验码与实际relay路径、结束共享。文档参数化，不硬编码用户公网IP、邮箱或凭据。
+- 明确这是当前JPEG低帧率查看/控制预览，文件/HEVC/手机后续实现；不把此项标成整个产品完成。公网用户实例的实际CA与双机验收由总控接续，不冒称完成。
+
+### 验收与运行边界
+- 锁文件安装依赖、前端typecheck/build、Rust release/NSIS打包，必要的格式/Clippy与相关回归。优先验证真实风险，不重复全后端测试掩盖安装未测。
+- 核对安装包内二进制、图标、资源与版本；在一次性Windows环境验证安装/启动/卸载和真实WebView初始页/原生命令基本可用。生产启动证据与先前debug IPC证据区分，无法验证的层级须清楚说明，不加入不安全的生产测试后门。
+- 如做原生输入，仍仅自建受控窗口并先核对前台；本项通常无需再重复已通过采集/输入测试。不保存或上传真实桌面像素、用户凭据或私人路径。
+- 运行/缓存只用本项目 `target/`、`node_modules/`、忽略的 `.local/windows-package/` 及Tauri必要缓存；不停止其他应用，不修改全局代理/证书/防火墙。清理自启进程并记录遗留状态。
+- 提交推送、核对精确远端、CI、匿名公开文件和实际摘要，更新交接与可复用知识后结束本项。后续返回WI-005文件、WI-006编解码/自适应/多屏、WI-007手机。
+
+### 回查结论
+本项窄查Tauri凭据/WebView边界与独立公开制品验收笔记：适用的是原生凭据隔离、debug/正式构建区分、原生IPC与网页预览分层，以及完整匿名制品核验；旧笔记中“远控尚未实现”的状态已被WI-004更新，不再适用。官方构建入口与WebView2选项以当前Tauri文档和锁定版本核对：https://v2.tauri.app/distribute/windows-installer/ 。
