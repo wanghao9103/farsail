@@ -29,7 +29,7 @@
 | WI-004 | Windows 屏幕采集、用户确认、鼠标键盘输入与可用远控基线 | 本机及三条远端 CI 通过 |
 | WI-008A | 公网 IP 部署包、预构建 Linux 制品与联调准备 | 完成：固定六镜像制品、匿名下载、跨Docker存储导入及两轮Linux CI通过 |
 | WI-008B | Windows x64 预览安装包、正式构建与公开制品验收 | 完成：NSIS、原生安装生命周期、CI与完整匿名下载均通过 |
-| WI-005 | 分块双向文件传输、无损压缩、校验/续传、授权与限速 | planned |
+| WI-005 | 分块双向文件传输、无损压缩、校验/续传、授权与限速 | ready |
 | WI-006 | 实际硬编/解码、多屏与自适应速率、能力协商和 4:4:4 路径 | planned |
 | WI-007 | Android/iOS 手机控制与文件接口、可执行平台构建和验证 | planned |
 | WI-008 | 全链路回归、部署/打包、公开仓库与真实环境验证 | planned |
@@ -252,3 +252,32 @@ Windows 原生层按显示器所属 DXGI 适配器采集，处理 DPI、负坐�
 正式源码/发布tag固定 `6d79ef8e4c8336cee45840b5c9cd812fe08910dd`，预发布 `windows-preview-0.1.0-6d79ef8`。安装包7720107字节，SHA256 `361e15a22db30be3c3009cad2da813caf81e9fe9e01b054ce6bfca848ce5c01e`。完整 [Windows安装CI 36405852502](https://github.com/wanghao9103/farsail/actions/runs/36405852502) 成功，真实WebView设置保存/重启、三次原生启动、同版重装和卸载保留数据、debug探针缺席均通过；客户端8项/桌面1项单元测试与Clippy通过。原生代码的既有Windows client CI 36404665949也成功。首轮因Tauri临时bundle type补丁造成严格EXE摘要断言失败，改用锁定CLI官方 `--no-binary-patching`（当前无updater）后保持断言并通过。四个公开附件均完整匿名下载，逐个与该CI产物比对摘要和字节数一致。
 
 固定链接、元数据、详细证据/边界见 [WI-008B](verification/WI-008B.md)，第二台Windows步骤见 [WINDOWS_INSTALL](WINDOWS_INSTALL.md)。未签名；未模拟无WebView2系统、未验跨版本数据迁移或用户公网双机。没有本机安装/真实配置变更、没有自启进程或测试端口残留；只保留指定构建/下载缓存，Docker服务和卷未改。总控接续真实CA/公网双机验收，开发顺序返回WI-005/006/007。
+
+总控验收：最终提交 `246a83dba70129d3d5dc5dfd73ff6c6fc02cecf5` 与远端main一致、工作区干净。安装CI已独立核对success，公开安装包及安装生命周期证据完整；WI-008B已结束。用户已获得固定安装包链接，公网服务器仍在等待镜像导入反馈，未把证书/服务启动视作已完成。继续本地WI-005，同时由总控接续用户服务器步骤。
+
+## WI-005：双向文件传输与选择性无损压缩
+
+### 基线与 Write Set
+代码基线 `246a83dba70129d3d5dc5dfd73ff6c6fc02cecf5`，WI-008B 写任务已结束、工作区干净；本节计划提交后的 HEAD 为开工基线。总控独立指导用户服务器部署，本项不登录或改变用户服务器。
+允许修改 crates/file-transfer/**、crates/core/**、crates/media/**（仅共享预算接口，不实现新编码器）、crates/transport/**、crates/client/**、apps/desktop/**、packages/ui/**、Cargo.toml、Cargo.lock、package.json、package-lock.json、scripts/test-files.ps1、.github/workflows/files.yml 及现有 CI 必要兼容、README.md、docs/IMPLEMENTATION.md、docs/FILES.md、docs/CLIENT.md、docs/TRANSPORT.md、docs/verification/WI-005.md。仅当真实文件能力/审计对接需要时修改 services/coordinator/** 与 docs/API.md，新迁移而不改历史迁移。不得写 WI-006 编码器或手机平台实现。
+
+### 必须交付
+- 使用 Rust/Tauri；自编脚本仅PowerShell/Bash/Rust，不用Python/Qt。原生可复用文件引擎和真实 Tauri 文件面板：从设备卡片独立发起，亦可从远控页建立独立 Files 授权会话；上传/下载多个任务，进度、实际速率、暂停/续传、取消、失败重试。同账号也须目标明确确认。
+- 会话路由须按授权类型分发：RemoteRuntime 不应将 Files 会话当作屏幕会话启动或关闭；文件引擎与画面引擎拥有各自会话接收器，避免争抢同一 receive。
+- Files 不能推导屏幕或控制权限，view/control 不允许读写文件。被控方本地选定范围和读/写权限，默认无共享。远端只接触不透明资源 ID 与允许的相对名称，不能指定任意本地绝对路径。can_files 仅在原生支持且本地启用后声明。共享开关与文件开关独立，并复用 WI-004 的操作代次/取消约束；迟到启用响应不能在停止/退出后恢复能力，关闭屏幕不应暗中撤销仍被明确允许的独立文件会话。
+- 使用被授权的目录/文件句柄实施范围；避免 canonicalize+starts_with 后重新按路径打开的替换竞态。cap-std 或 Windows handle-relative 等实现须核实 reparse/junction、父目录替换、硬链接/现有文件覆盖和 ADS 等边界。接收使用新建临时文件，无静默覆盖，无自动打开/执行。
+- 有界分块协议、序号、版本、传输 ID、偏移、原始/编码长度、none/zstd 协商与每块/最终 SHA-256；流式读写，无全文件内存加载。文件元数据、块顺序和提交确认有界且可靠；实际通过现有认证 iroh 通道，不以本地复制伪装传输。
+- 选择性 Zstd 无损压缩在加密前、接收解密后执行，压缩无收益直通；已压缩内容默认跳过，可压缩文本实测。每块独立，无跨消息字典；限制原始长度、压缩窗口、累计磁盘/内存和并发任务。受限工作线程执行压缩/哈希/文件 I/O，不能阻塞 Tokio 输入或 UI。
+- 暂停/断线保存已验证进度，重新授权后才允许续传；进度绑定账号/双方设备/资源/源内容版本。用稳定源快照或合适持有句柄防止不同版本拼接，恢复须核实已存块与源一致。最终 hash 验证、同卷无覆盖提交和对端 commit ack 后才标记完成；磁盘满/损坏/取消不留下伪成品。恢复状态不含长期令牌。
+- 文件限速可配置，输入/心跳和交互画面优先。多任务/文件与媒体受共享总预算约束，降低后台流量，不能只靠不同 QUIC streams 宣称优先级。慢消费者始终有界，撤权/退出/结束全部及时停止读写，不复活旧排队任务。
+- 保持已发布账号/设备/查看控制路径及已存凭据兼容；新的能力更新不得重置另一种共享开关。对旧部署包不支持的新API给出明确升级提示，不伪造can_files。旧Windows预览包/服务器镜像仍是各自固定版本，不改写既有发布附件；源码功能与已发布版本需区分。
+- 保存到 Windows 用户明确选取位置；为移动文档提供器设计句柄接口，但本项不声称移动端已完成。审计仅必要元数据，不记录正文、敏感完整路径或访问凭据。
+
+### 验收与运行边界
+- 独立 Files 会话和远控中独立 Files 授权，实际两端 iroh 上传/下载、多文件、空文件、中文名、大于内存窗口的文件；本地直连及强制 TLS relay 至少一条文件内容往返。
+- 真实服务/客户端授权负向：未授权/只读/只写/过期/撤销/换账号拒绝；范围逃逸、重解析点/目录替换、同名无覆盖、错误 offset/size/hash/codec/window、压缩炸弹/截断和取消/空间不足/commit ack 丢失对应状态。
+- 断线重新确认后续传、源变化拒绝拼接，停流和过期任务不能续写。限速文件+媒体同时传输测量输入延迟/队列边界，记录实测数字与条件，不承诺固定压缩比。
+- 合成或项目公开资产作为文件内容，不读传任意私人文件；测试目录与任务存储忽略。仍只用 farsail-dev 本机数据库/邮件及本地 TLS relay，无公网部署。
+- fmt/tests/clippy、前端 typecheck/build、Windows Tauri 构建及相关既有回归/CI；记录自启进程/端口并收尾。更新文档、知识沉淀、提交推送核对远端后交接。
+### 回查与依赖线索
+已回查本项目短租约传输和媒体取消边界笔记：每次业务操作需重查租约/代次，等待队列有界，退出先停本地IO，身份切换不能接受迟到结果；把该机制扩展到文件操作仍须专项验证。cap-std 4.0.3 Dir/from_std_file 文档要求Windows句柄无FILE_SHARE_DELETE以避竞态；需实际核对所选API的链接和无覆盖提交语义。Zstd Decompressor提供输出容量/参数限制，应同时限制原始长度和压缩窗口。参考 https://docs.rs/cap-std/4.0.3/cap_std/fs/struct.Dir.html 、https://docs.rs/zstd/latest/zstd/bulk/struct.Decompressor.html 。库版本与Windows行为以当前构建/测试为准，不能只靠API名称推定安全。
