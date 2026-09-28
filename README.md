@@ -25,6 +25,7 @@
 - [图标说明](assets/branding/README.md)：候选资源、生成提示词及视觉相似性初筛记录。
 - [协调服务 API](docs/API.md)：已实现的账号、设备、邀请、授权状态机和管理员接口。
 - [Windows 客户端](docs/CLIENT.md)：运行方式、凭据边界与已实现界面。
+- [Windows 预览安装](docs/WINDOWS_INSTALL.md)：无需开发环境的x64安装、校验、WebView2与双机联调。
 - [认证传输](docs/TRANSPORT.md)：iroh 握手、短租约、数据通道和路径状态。
 - [Windows 远控](docs/REMOTE.md)：DXGI/JPEG、viewer、输入权限与安全停止。
 - [自建 relay](deploy/relay/README.md)：HTTPS 证书与公网 IP 配置示例。

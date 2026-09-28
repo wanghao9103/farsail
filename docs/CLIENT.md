@@ -2,6 +2,8 @@
 
 Windows 客户端位于 `apps/desktop`，React/Vite 页面调用 Tauri 2 命令，账号、设备和授权 HTTP 请求由 `crates/client` 发出。服务协议见 [API.md](API.md)，传输见 [TRANSPORT.md](TRANSPORT.md)，画面与输入细节见 [REMOTE.md](REMOTE.md)。Windows 远程查看与鼠标键盘基线已接入；文件内容仍属 WI-005。
 
+无需开发环境的 Windows x64 预览安装、WebView2、未签名说明及第二台电脑联调步骤见 [WINDOWS_INSTALL.md](WINDOWS_INSTALL.md)；固定下载与实际验证结果见 [WI-008B](verification/WI-008B.md)。
+
 ## 本地运行
 
 需要 Windows、Rust 1.93、Node/npm 和 Docker。服务端示例只绑定回环，测试邮件只进入本地 Mailpit。

@@ -22,6 +22,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: windows-preview
+          cache-on-failure: true
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -36,6 +37,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo clippy --locked -p farsail-desktop --all-targets -- -D warnings
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: windows-preview-${{ github.sha }}
           path: .local/windows-package/artifacts/*

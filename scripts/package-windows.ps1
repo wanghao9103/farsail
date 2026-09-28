@@ -17,7 +17,8 @@ New-Item -ItemType Directory -Force $output | Out-Null
 Run { npm.cmd ci }
 Run { npm.cmd run typecheck }
 Run { cargo fmt --all -- --check }
-Run { npm.cmd run --workspace @farsail/desktop tauri build -- --bundles nsis -- --locked }
+# No updater plugin is used. Keep the installed binary byte-identical to the verified EXE.
+Run { npm.cmd run --workspace @farsail/desktop tauri build -- --bundles nsis --no-binary-patching -- --locked }
 $config = Get-Content apps/desktop/src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
 $name = "FarSail_$($config.version)_x64-setup.exe"
 $installer = Join-Path $PWD "target/release/bundle/nsis/$name"
