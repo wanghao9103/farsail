@@ -24,7 +24,7 @@
 | Work Item | 可验收结果 | 状态 |
 | --- | --- | --- |
 | WI-001 | Rust workspace、PostgreSQL 账号/设备/授权服务、隔离本地运行与权限测试 | 完成：本地验收通过，代码已推送 |
-| WI-002 | Tauri 客户端登录、设备注册/列表、凭据安全存储、用户/管理员界面 | ready |
+| WI-002 | Tauri 客户端登录、设备注册/列表、凭据安全存储、用户/管理员界面 | 完成：本地验收通过，待提交与 CI 核对 |
 | WI-003 | iroh 端到端连接、应用授权、直连/中继配置与撤权 | planned |
 | WI-004 | Windows 屏幕采集、用户确认、鼠标键盘输入与可用远控基线 | planned |
 | WI-005 | 分块双向文件传输、无损压缩、校验/续传、授权与限速 | planned |
@@ -98,4 +98,6 @@ WI-002 对接从 `/v1/me` 开始；账号访问 token 与设备 token 分开保�
 
 ### 记录
 
-等待开工。用户将稍后准备公网环境，目前没有域名；家里另有电脑可后续测试，当前没有远端访问或手机真机。
+Windows Tauri 2 + React/Vite 客户端、可复用 Rust 原生客户端 crate、DPAPI 用户作用域凭据、Ed25519 设备身份、登录/刷新/心跳、完整设备列举和筛选、授权申请/批准/拒绝/撤销、账号安全与管理员页面已实现。浏览器仅作响应式布局验证；真实 Windows WebView2 的 `state` 和登录命令已通过 IPC 烟测。客户端在隔离 PostgreSQL 上经真实 HTTP 完成注册、验证、绑定、授权、管理员与退出链路。实现细节、命令与风险见 [WI-002 验证记录](verification/WI-002.md) 和 [客户端文档](CLIENT.md)。
+
+WI-003 的输入：原生层提供 `NativeClient::take_grant_for_transport` 和 `renew_grant_for_transport`，只有目标设备批准端取得 grant。下一项须加入认证信令将其安全交给发起端，并用两端公钥、nonce、session ID、权限及期限绑定 iroh 握手、租约续期与断线撤权。`GET /v1/remote/{id}` 仍只返回状态，不能用它领取 grant。当前没有公网服务器、有效 HTTPS IP 证书、第二台 Windows、P2P/中继或移动真机验证；客户端保持 `can_host=false` 和 `can_files=false`，不可把授权 UI 解释为实际远控。

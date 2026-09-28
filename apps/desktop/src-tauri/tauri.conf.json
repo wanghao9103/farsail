@@ -1,0 +1,9 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "FarSail",
+  "version": "0.1.0",
+  "identifier": "app.farsail.desktop",
+  "build": { "beforeDevCommand": "npm run dev -w @farsail/desktop", "devUrl": "http://127.0.0.1:1420", "beforeBuildCommand": "npm run build -w @farsail/desktop", "frontendDist": "../dist" },
+  "app": { "windows": [{ "title": "FarSail 遥舟", "width": 1120, "height": 760, "minWidth": 360, "minHeight": 580, "backgroundColor": "#f5f8f8" }], "security": { "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost; style-src 'self' 'unsafe-inline'; script-src 'self'", "devCsp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost ws://127.0.0.1:1420; img-src 'self' asset: http://asset.localhost; style-src 'self' 'unsafe-inline'; script-src 'self'" } },
+  "bundle": { "active": true, "targets": ["nsis"], "icon": ["icons/icon.png", "icons/icon.ico"] }
+}

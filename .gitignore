@@ -22,6 +22,7 @@ build/
 .vite/
 .cache/
 coverage/
+apps/desktop/src-tauri/gen/schemas/
 
 # Runtime data and temporary files
 logs/

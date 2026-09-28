@@ -4,9 +4,9 @@
 
 # FarSail · 遥舟
 
-正在开发中的开源远程桌面与文件传输工具。账号、设备与授权协调服务使用 Rust；客户端计划使用 Tauri。
+正在开发中的开源远程桌面与文件传输工具。账号、设备与授权协调服务使用 Rust；Windows 客户端使用 Tauri 2、React 和 Rust 原生客户端库。
 
-**当前状态：WI-001 协调服务已实现并可在本机运行。** 尚无可运行的远程控制客户端、传输链路或安装包。画面、输入、文件传输、跨网络与手机功能仍是待实现目标。
+**当前状态：WI-001 协调服务与 WI-002 Windows 账号/设备/授权客户端已实现并可在本机运行。** 客户端当前不能传输远程画面、输入或文件；跨网络链路、手机端与正式安装包仍是待实现目标。
 
 ## 计划能力
 
@@ -24,6 +24,7 @@
 - [编码全景调研](CODEC_SURVEY.md)：视频/图像格式和选型依据。
 - [图标说明](assets/branding/README.md)：候选资源、生成提示词及视觉相似性初筛记录。
 - [协调服务 API](docs/API.md)：已实现的账号、设备、邀请、授权状态机和管理员接口。
+- [Windows 客户端](docs/CLIENT.md)：运行方式、凭据边界与已实现界面。
 - [实施与验收](docs/IMPLEMENTATION.md)：工作项进度及本地验证证据。
 
 图标由内置图像生成工具生成，目前推荐候选为 v2；相似性初筛不代表唯一性或完成商标查重。
@@ -41,7 +42,17 @@ $env:FARSAIL_SMTP_PORT = '51025'
 cargo run -p farsail-coordinator
 ```
 
-服务只监听 `127.0.0.1:8787`，Mailpit UI 为 `http://127.0.0.1:58025`。`GET http://127.0.0.1:8787/healthz` 可检查 PostgreSQL。`./scripts/test-coordinator.ps1 -Stop` 仅停止此项目容器；保留本地数据卷。生产实例需要 TLS 反向代理、有效证书、TLS SMTP、备份和限流，不能通过关闭证书校验接入。功能完成状态以实际实现和 [WI-001 验证记录](docs/verification/WI-001.md) 为准。
+服务只监听 `127.0.0.1:8787`，Mailpit UI 为 `http://127.0.0.1:58025`。`GET http://127.0.0.1:8787/healthz` 可检查 PostgreSQL。`./scripts/test-coordinator.ps1 -Stop` 仅停止此项目容器；保留本地数据卷。生产实例需要 TLS 反向代理、有效证书、TLS SMTP、备份和限流，不能通过关闭证书校验接入。功能完成状态以 [WI-001](docs/verification/WI-001.md) 和 [WI-002](docs/verification/WI-002.md) 验证记录为准。
+
+Windows 客户端本地运行（另开终端分别执行）：
+
+```powershell
+./scripts/start-local.ps1
+npm ci
+npm run tauri -w @farsail/desktop -- dev
+```
+
+`./scripts/test-desktop.ps1` 可跑前端、真实 PostgreSQL 客户端集成测试和 Tauri 检查。当前授权请求只改变协调服务状态，不会启动屏幕共享或文件传输。
 
 ## License
 

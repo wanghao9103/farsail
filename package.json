@@ -1,0 +1,10 @@
+{
+  "name": "farsail",
+  "private": true,
+  "workspaces": ["apps/desktop", "packages/ui"],
+  "scripts": {
+    "typecheck": "npm run typecheck -w @farsail/desktop",
+    "build": "npm run build -w @farsail/desktop",
+    "dev": "npm run dev -w @farsail/desktop"
+  }
+}

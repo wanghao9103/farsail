@@ -1,0 +1,26 @@
+name: Windows client
+on:
+  push:
+    paths: ['apps/desktop/**', 'crates/client/**', 'packages/ui/**', 'package*.json', 'Cargo.*', '.github/workflows/client.yml']
+  pull_request:
+    paths: ['apps/desktop/**', 'crates/client/**', 'packages/ui/**', 'package*.json', 'Cargo.*', '.github/workflows/client.yml']
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.93.0
+          components: rustfmt, clippy
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+      - run: cargo fmt --all -- --check
+      - run: cargo test -p farsail-client
+      - run: cargo clippy -p farsail-client -p farsail-desktop --all-targets -- -D warnings
+      - run: cargo build -p farsail-desktop
