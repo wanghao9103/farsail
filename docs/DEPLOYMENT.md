@@ -29,7 +29,13 @@ cd /home/data/farsail
 从验证记录取得完整固定提交，不能使用latest：
 
 ```sh
-RELEASE_SHA='<验证记录中的完整40位提交>'
+DEPLOY_SHA='51e131f0bf60a3a8fa15cddd869a8b97d3db79a0'
+```
+
+运行镜像使用已验证的原4252归档，加载器为仅修复跨Docker存储校验的新提交，两者明确分开：
+
+```sh
+RELEASE_SHA='4252e9d901e3022175772f563be45df967c3e9cc'
 ```
 
 ```sh
@@ -37,7 +43,7 @@ git fetch origin
 ```
 
 ```sh
-git checkout --detach "$RELEASE_SHA"
+git checkout --detach "$DEPLOY_SHA"
 ```
 
 ```sh
@@ -45,6 +51,8 @@ bash scripts/deploy/farsail.sh init '<公网IPv4>' '<ACME联系邮箱>'
 ```
 
 随机数据库密码和准入bearer写入忽略的 `.local/production`，不打印、不覆盖已有状态。根目录700，env文件600；挂载私钥640/group10001供非root relay读取。API和relay运行用户10001。首次Mailpit测试模式仍需正常验证邮箱。不要公开此目录、Docker inspect完整环境或数据库备份。
+
+已在4252版本完成init的用户必须跳过init，保留整个state。等旧load进程退出后再fetch/checkout上述加载器，重新load-release同一4252即可复用完整缓存文件；旧ID检查失败不会提交新的运行配置。新加载器只对该已审计的manifest/归档SHA组合允许跨源码ref兼容，不是忽略版本或内容检查。
 
 ```sh
 bash scripts/deploy/farsail.sh preflight
@@ -54,7 +62,7 @@ bash scripts/deploy/farsail.sh preflight
 
 ## 六镜像离线包
 
-阿里云按实际产品选择ECS安全组或轻量应用服务器防火墙。初始化在创建state前检查依赖；若磁盘/权限错误中断，保留并重命名尚未投入使用的半初始化目录后重试，不覆盖已投用的秘密。Linux变更操作共用state旁的operation.lock，避免续期、导入与升级并发。load-release要求当前代码HEAD与制品revision一致。
+阿里云按实际产品选择ECS安全组或轻量应用服务器防火墙。初始化在创建state前检查依赖；若磁盘/权限错误中断，保留并重命名尚未投入使用的半初始化目录后重试，不覆盖已投用的秘密。Linux变更操作共用state旁的operation.lock，避免续期、导入与升级并发。除上述4252精确兼容例外外，load-release要求当前代码HEAD与制品revision一致。
 
 固定发布页包含 `farsail-linux-amd64-images.tar.gz`、`manifest.json`、`SHA256SUMS`。脚本核验附件SHA256、revision、六个image ID和linux/amd64，再更新Compose。依赖源按registry digest锁定；归档使用完整image-ID派生tag，避免save/load不保留RepoDigest。所有服务pull_policy=never，启动显式--pull never。
 

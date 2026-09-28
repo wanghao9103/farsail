@@ -27,7 +27,7 @@
 | WI-002 | Tauri 客户端登录、设备注册/列表、凭据安全存储、用户/管理员界面 | 完成：本地与 Windows CI 通过，代码已推送 |
 | WI-003 | iroh 端到端连接、应用授权、直连/中继配置与撤权 | 完成：本机专项验证和远端 CI 均通过 |
 | WI-004 | Windows 屏幕采集、用户确认、鼠标键盘输入与可用远控基线 | 本机及三条远端 CI 通过 |
-| WI-008A | 公网 IP 部署包、预构建 Linux 制品与联调准备 | 本机/Linux CI通过；修正跨Docker存储导入校验后重新发布中 |
+| WI-008A | 公网 IP 部署包、预构建 Linux 制品与联调准备 | 完成：固定六镜像制品、匿名下载、跨Docker存储导入及两轮Linux CI通过 |
 | WI-005 | 分块双向文件传输、无损压缩、校验/续传、授权与限速 | planned |
 | WI-006 | 实际硬编/解码、多屏与自适应速率、能力协商和 4:4:4 路径 | planned |
 | WI-007 | Android/iOS 手机控制与文件接口、可执行平台构建和验证 | planned |
@@ -214,6 +214,6 @@ Windows 原生层按显示器所属 DXGI 适配器采集，处理 DPI、负坐�
 
 运行边界：仅farsail-deploy-test、回环58080/58443/58444/58026/55433，私有测试状态和镜像缓存留.local及Docker本项目卷；不改farsail-dev或其他容器。Docker构建、真实测试CA/SMTP/身份/relay及制品发布结果持续记录在 [WI-008A](verification/WI-008A.md)。
 
-最终部署代码 `4252e9d901e3022175772f563be45df967c3e9cc`；[发布CI 36400484173](https://github.com/wanghao9103/farsail/actions/runs/36400484173) 成功，六镜像完整预发布已发布，三个公开附件完整匿名下载、字节数/SHA256核验通过。前一实现提交9d910e6的后端/传输/Windows CI均成功。初版部署CI发现internal网络阻止宿主测试数据库发布，只在test.override修复网络，生产数据库保持私网。测试容器和端口已清理，卷/私有状态保留。用户服务器CA/部署/跨NAT仍交总控继续，不因此把公网远控、文件、HEVC或手机功能标成已验收。制品链接、摘要、命令与边界见WI-008A验证记录。
+运行镜像固定 `4252e9d901e3022175772f563be45df967c3e9cc`，[发布CI 36400484173](https://github.com/wanghao9103/farsail/actions/runs/36400484173) 成功；部署加载器固定 `51e131f0bf60a3a8fa15cddd869a8b97d3db79a0`，[兼容CI 36402545193](https://github.com/wanghao9103/farsail/actions/runs/36402545193) 成功。六镜像公开归档完整匿名下载、字节数/SHA256核验及Docker29跨store导入/实际TLS+relay启动均通过。前一实现9d910e6的后端/传输/Windows CI均成功。内部网络的宿主数据库测试问题仅在test.override修复，生产库保持私网。测试容器和端口已清理，卷/私有状态保留。用户服务器CA/部署/跨NAT交总控继续，不标记文件、HEVC或手机功能完成；制品链接、摘要、命令与边界见WI-008A验证记录。
 
-跨存储复验追加：4252e9d公开归档SHA正确，但classic与containerd的docker inspect .Id语义不同；旧加载脚本在Docker29的containerd存储上误拒绝。因此该预发布已标记Superseded，不作为最终部署版本。正在改为跨存储稳定的image config SHA（包含rootfs diffIDs）并重新发布；不得省略此核验或将当前旧附件直接交用户启动。
+跨存储结论：classic与containerd的inspect .Id语义不同，51e131f改为核对跨存储稳定的image config SHA（包含rootfs diffIDs），并精确白名单4252的manifest/归档SHA，允许已初始化用户复用旧包而不重置秘密或重下近300MB。必须使用51e131f加载器，不能直接使用4252内原加载脚本。已初始化用户等旧load退出后fetch→checkout51e131f→load-release4252，跳过init；之后才由总控带用户申请真实证书/启动。
