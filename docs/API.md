@@ -1,6 +1,6 @@
 # FarSail coordinator API v1
 
-WI-001 implements JSON over HTTP. The local server binds `127.0.0.1:8787`; remote deployments must put a TLS validating reverse proxy in front of the loopback listener. Clients must use a configurable HTTPS base URL and verify the server certificate. This API does not carry screen, input or file bytes.
+The coordinator implements JSON over HTTP. The local server binds `127.0.0.1:8787`; remote deployments must put a TLS validating reverse proxy in front of the loopback listener. Clients must use a configurable HTTPS base URL and verify the server certificate. This API does not carry screen, input or file bytes.
 
 All identifiers are UUID strings. Auth tokens and invitation codes are opaque 256-bit random values, returned once and stored as SHA-256 digests. Set `Authorization: Bearer <access_token>` for user endpoints. Set `Authorization: Bearer <device_token>` for device-only endpoints. A remote request uses user Bearer plus `X-Farsail-Device-Token: <source_device_token>`. A grant inspection uses grant Bearer plus a participating device token in that header. Never put credentials in a URL, log or WebView localStorage.
 
@@ -56,7 +56,20 @@ Permissions are `view`, `control`, `files` and are distinct. An invitation is va
 | `GET /v1/remote/{id}` | pending/approved/denied/revoked/expired metadata; no grant token | requester/target owner user or participating device |
 | `GET /v1/remote/sessions` | latest 100 own or owned-target requests; no grant tokens | user |
 
-The 30-second grant is bound in PostgreSQL to the session ID, requester account login, both device identities, exact permission, random nonce and expiry. Inspection and renewal recheck account status, device state, presence lease, invitation revocation and login revocation. An expired grant cannot be renewed; start a new request and obtain fresh target approval. WI-003 must add signaling to deliver the grant token returned **only to the target device** by `decide`/`renew` to the source over an authenticated channel, then bind the iroh handshake to these fields and revoke on transport disconnect. `GET /v1/remote/{id}` is a status poll, not a credential exchange. WI-001 does not enforce screen/input/file operations because those transport handlers do not exist yet.
+The 30-second grant is bound in PostgreSQL to the session ID, requester account login, both device identities, exact permission, random nonce and expiry. Inspection and renewal recheck account status, device state, presence lease, invitation revocation and login revocation. An expired grant cannot be renewed; start a new request and obtain fresh target approval. The target delivers its grant only inside a device-authenticated iroh connection; `GET /v1/remote/{id}` remains a status poll. Frame permissions are enforced in the native transport; screen/input/file handlers are still pending.
+
+## WI-003 address signaling and transport validation
+
+These routes require the device Bearer credential and `X-Farsail-Generation: <current heartbeat generation>`. A stale process cannot publish or discover. An address contains an iroh `EndpointAddr` serialized as JSON, with the endpoint ID equal to the registered Ed25519 public key. At most 16 IP/relay addresses and 2048 serialized bytes are accepted. Custom transports are not accepted. Relay URLs require HTTPS without URL credentials, query or fragment, and must appear in the coordinator's `FARSAIL_RELAY_URLS` comma separated allowlist. The allowlist is empty by default.
+
+| Method and path | Body / result | Credential |
+| --- | --- | --- |
+| `POST /v1/devices/endpoint-address` | `{generation,endpoint_addr}`; upserts only the current generation and never lets a delayed older generation overwrite a newer one | device + generation |
+| `GET /v1/remote/{id}/peer-address` | `{endpoint_addr,generation,expires_in}` for the other device in a live approved session | participating device + generation |
+| `GET /v1/remote/{id}/transport-grant` | same claims as grant inspection plus server-measured `expires_in`; binds to current device generation | grant Bearer + participating device header + generation |
+| `POST /v1/remote/{id}/transport-renew` | rotates the target's live grant token, returned only to the target | target device + generation |
+
+`peer-address` rechecks participating devices, logins, online leases, invitation and approval. It is scoped to the current session. Grant inspection's `expires_in` is measured against the coordinator clock; native transport subtracts elapsed local HTTP time and uses `Instant` for its cutoff. The older `/grant` and `/renew` routes remain for the WI-001 authorization contract, while transport uses generation-bound variants. See [TRANSPORT.md](TRANSPORT.md) for the authenticated exchange, frame limits, renewal and path reporting.
 
 ## Admin
 

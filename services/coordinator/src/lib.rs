@@ -1,6 +1,7 @@
 mod account;
 mod admin;
 mod device;
+mod endpoint_address;
 mod remote;
 
 use axum::{
@@ -117,6 +118,7 @@ impl Mailer {
 pub struct AppState {
     pub pool: PgPool,
     pub mailer: Mailer,
+    pub allowed_relays: Arc<Vec<iroh::RelayUrl>>,
 }
 
 impl AppState {
@@ -129,7 +131,23 @@ impl AppState {
             .run(&pool)
             .await
             .map_err(|e| Error::Internal(e.into()))?;
-        Ok(Self { pool, mailer })
+        let mut allowed_relays = Vec::new();
+        if let Ok(value) = std::env::var("FARSAIL_RELAY_URLS") {
+            for raw in value.split(',').filter(|s| !s.is_empty()) {
+                let url: iroh::RelayUrl = raw
+                    .parse()
+                    .map_err(|_| Error::Invalid("invalid relay URL"))?;
+                if !endpoint_address::valid_relay(&url) {
+                    return Err(Error::Invalid("invalid relay URL"));
+                }
+                allowed_relays.push(url);
+            }
+        }
+        Ok(Self {
+            pool,
+            mailer,
+            allowed_relays: Arc::new(allowed_relays),
+        })
     }
 }
 
@@ -164,6 +182,10 @@ pub fn router(state: AppState) -> Router {
                 .delete(device::unbind),
         )
         .route("/v1/devices/heartbeat", post(device::heartbeat))
+        .route(
+            "/v1/devices/endpoint-address",
+            post(endpoint_address::publish),
+        )
         .route("/v1/invitations", post(remote::invite))
         .route(
             "/v1/invitations/{id}/revoke",
@@ -175,8 +197,17 @@ pub fn router(state: AppState) -> Router {
         .route("/v1/remote/{id}", get(remote::status))
         .route("/v1/remote/{id}/decide", post(remote::decide))
         .route("/v1/remote/{id}/renew", post(remote::renew))
+        .route(
+            "/v1/remote/{id}/transport-renew",
+            post(remote::transport_renew),
+        )
         .route("/v1/remote/{id}/revoke", post(remote::revoke))
         .route("/v1/remote/{id}/grant", get(remote::inspect_grant))
+        .route(
+            "/v1/remote/{id}/transport-grant",
+            get(remote::inspect_transport_grant),
+        )
+        .route("/v1/remote/{id}/peer-address", get(endpoint_address::peer))
         .route("/v1/admin/users", get(admin::users))
         .route(
             "/v1/admin/users/{id}/enabled",

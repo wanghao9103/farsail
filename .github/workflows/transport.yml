@@ -1,0 +1,31 @@
+name: transport
+on:
+  push:
+    paths: ['Cargo.*', 'rust-toolchain.toml', 'crates/**', 'services/coordinator/**', 'deploy/relay/**', '.github/workflows/transport.yml']
+  pull_request:
+    paths: ['Cargo.*', 'rust-toolchain.toml', 'crates/**', 'services/coordinator/**', 'deploy/relay/**', '.github/workflows/transport.yml']
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: farsail
+          POSTGRES_PASSWORD: disposable_ci_password
+          POSTGRES_DB: farsail_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U farsail -d farsail_test"
+          --health-interval 2s --health-timeout 2s --health-retries 30
+    env:
+      FARSAIL_TEST_DATABASE_URL: postgres://farsail:disposable_ci_password@127.0.0.1:5432/farsail_test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust
+        run: rustup toolchain install 1.93.0 --profile minimal --component rustfmt --component clippy
+      - run: cargo fmt --all -- --check
+      - run: cargo test -p farsail-transport
+      - run: cargo test -p farsail-client
+      - run: cargo clippy -p farsail-transport -p farsail-client --all-targets -- -D warnings

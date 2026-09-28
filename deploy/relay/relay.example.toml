@@ -1,0 +1,10 @@
+# iroh-relay 1.2.0. Replace PUBLIC_IP and certificate paths before deployment.
+enable_relay = true
+http_bind_addr = "127.0.0.1:8080"
+enable_quic_addr_discovery = false
+
+[tls]
+https_bind_addr = "PUBLIC_IP:443"
+cert_mode = "Manual"
+manual_cert_path = "/etc/farsail/relay-chain.pem"
+manual_key_path = "/etc/farsail/relay-key.pem"

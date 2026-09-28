@@ -1,4 +1,6 @@
 use farsail_client::{NativeClient, WindowsStore};
+use farsail_core::RemotePermission;
+use farsail_transport::Config as TransportConfig;
 use std::sync::Arc;
 use tauri::Manager;
 #[cfg(debug_assertions)]
@@ -22,6 +24,77 @@ async fn call(
     args: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     client.call(&op, args).await.map_err(|e| e.to_string())
+}
+#[tauri::command]
+async fn transport_start(
+    client: tauri::State<'_, Arc<NativeClient>>,
+    relay_url: Option<String>,
+    force_relay: bool,
+    bind_addr: String,
+) -> Result<serde_json::Value, String> {
+    let relay = relay_url
+        .filter(|s| !s.is_empty())
+        .map(|s| {
+            if !s.starts_with("https://") {
+                return Err("relay URL must use verified HTTPS".to_owned());
+            }
+            s.parse::<iroh::RelayUrl>()
+                .map_err(|_| "invalid relay URL".to_owned())
+        })
+        .transpose()?;
+    let bind = bind_addr
+        .parse()
+        .map_err(|_| "invalid UDP bind address".to_owned())?;
+    client
+        .call("heartbeat", serde_json::Value::Null)
+        .await
+        .map_err(|e| e.to_string())?;
+    client
+        .start_transport(TransportConfig {
+            bind,
+            relay,
+            force_relay,
+            relay_ca_der: vec![],
+        })
+        .await
+        .map_err(|e| e.to_string())
+}
+#[tauri::command]
+async fn transport_connect(
+    client: tauri::State<'_, Arc<NativeClient>>,
+    id: String,
+    permission: String,
+) -> Result<serde_json::Value, String> {
+    let permission = match permission.as_str() {
+        "view" => RemotePermission::View,
+        "control" => RemotePermission::Control,
+        "files" => RemotePermission::Files,
+        _ => return Err("invalid permission".into()),
+    };
+    client
+        .connect_transport(&id, permission)
+        .await
+        .map_err(|e| e.to_string())
+}
+#[tauri::command]
+async fn transport_status(
+    client: tauri::State<'_, Arc<NativeClient>>,
+    id: String,
+) -> Result<serde_json::Value, String> {
+    client
+        .transport_status(&id)
+        .await
+        .map_err(|e| e.to_string())
+}
+#[tauri::command]
+async fn transport_close(
+    client: tauri::State<'_, Arc<NativeClient>>,
+    id: String,
+) -> Result<(), String> {
+    client
+        .close_transport_session(&id)
+        .await
+        .map_err(|e| e.to_string())
 }
 #[cfg(debug_assertions)]
 #[tauri::command]
@@ -62,10 +135,11 @@ pub fn run() {
                 let mut interval = tokio::time::interval(std::time::Duration::from_secs(25));
                 loop {
                     interval.tick().await;
-                    if heartbeat.public_state().await["signedIn"] == true
-                        && heartbeat.public_state().await["deviceId"].is_string()
-                    {
-                        let _ = heartbeat.call("heartbeat", serde_json::Value::Null).await;
+                    let state = heartbeat.public_state().await;
+                    if state["signedIn"] == true
+                        && state["deviceId"].is_string()
+                        && heartbeat.call("heartbeat", serde_json::Value::Null).await.is_ok() {
+                        let _ = heartbeat.refresh_transport_address().await;
                     }
                 }
             });
@@ -77,10 +151,22 @@ pub fn run() {
         state,
         set_server,
         call,
+        transport_start,
+        transport_connect,
+        transport_status,
+        transport_close,
         ipc_smoke_report
     ]);
     #[cfg(not(debug_assertions))]
-    let builder = builder.invoke_handler(tauri::generate_handler![state, set_server, call]);
+    let builder = builder.invoke_handler(tauri::generate_handler![
+        state,
+        set_server,
+        call,
+        transport_start,
+        transport_connect,
+        transport_status,
+        transport_close
+    ]);
     builder
         .run(tauri::generate_context!())
         .expect("FarSail failed to start");

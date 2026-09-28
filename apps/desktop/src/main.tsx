@@ -32,6 +32,10 @@ function App() {
   const [requests, setRequests] = useState<Remote[]>([]);
   const [pending, setPending] = useState<Pending[]>([]);
   const [server, setServer] = useState("http://127.0.0.1:8787");
+  const [relayUrl, setRelayUrl] = useState("");
+  const [bindAddr, setBindAddr] = useState("0.0.0.0:0");
+  const [forceRelay, setForceRelay] = useState(false);
+  const [transportReady, setTransportReady] = useState(false);
   const [authMode, setAuthMode] = useState<
     "login" | "register" | "verify" | "resend" | "recover" | "reset"
   >("login");
@@ -50,6 +54,7 @@ function App() {
     setPublicState(p);
     setServer(p.server);
     if (!p.signedIn) {
+      setTransportReady(false);
       setMe(null);
       setDevices([]);
       setRequests([]);
@@ -258,13 +263,27 @@ function App() {
             <div className="card">
               <h2>本机能力</h2>
               <p className="muted">
-                当前版本完成账号、设备身份和授权流程。本机尚不能提供远程画面、鼠标键盘控制或文件传输，因此注册设备时不声明被控和文件能力。
+                已接入认证加密传输；本机仍未实现远程画面、鼠标键盘控制或文件内容处理，因此注册设备时不声明被控和文件能力。
               </p>
               <div className="tag-row">
                 <span className="tag ready">账号与设备</span>
                 <span className="tag">画面与输入 · 后续实现</span>
                 <span className="tag">文件传输 · 后续实现</span>
               </div>
+            </div>
+            <div className="card">
+              <h2>安全传输</h2>
+              <p className="muted">可使用本地直连或证书有效的自建 HTTPS 中继。启动后地址仅向获批会话的设备公开。</p>
+              <form className="form" onSubmit={(e) => { e.preventDefault(); void act(async () => {
+                await invoke("transport_start", { relayUrl: relayUrl || null, forceRelay, bindAddr });
+                setTransportReady(true);
+              }, "安全传输已启动", false); }}>
+                <label>UDP 绑定地址<input aria-label="UDP 绑定地址" value={bindAddr} onChange={(e) => setBindAddr(e.target.value)} /></label>
+                <label>自建中继 HTTPS 地址<input aria-label="中继地址" placeholder="https://relay.example.com/" value={relayUrl} onChange={(e) => setRelayUrl(e.target.value)} /></label>
+                <label><input type="checkbox" checked={forceRelay} onChange={(e) => setForceRelay(e.target.checked)} /> 强制中继（禁用 IP 直连）</label>
+                <button className="primary" disabled={busy || !publicState.deviceId}>启动传输</button>
+              </form>
+              <p className="hint">{transportReady ? "传输端点已启动；会话路径与 RTT 在连接请求页显示。" : "先绑定本机，再启动传输。"}</p>
             </div>
           </section>
         ) : tab === "overview" ? (
@@ -294,6 +313,7 @@ function App() {
             state={publicState}
             busy={busy}
             act={act}
+            transportReady={transportReady}
           />
         ) : tab === "security" ? (
           <Security me={me!} busy={busy} act={act} signOut={signOut} />
@@ -749,6 +769,7 @@ function Requests({
   state,
   busy,
   act,
+  transportReady,
 }: {
   devices: Device[];
   requests: Remote[];
@@ -756,7 +777,21 @@ function Requests({
   state: PublicState;
   busy: boolean;
   act: Action;
+  transportReady: boolean;
 }) {
+  const [paths, setPaths] = useState<Record<string, { state: string; rtt_ms: number | null }>>({});
+  useEffect(() => {
+    if (!transportReady || !native) return;
+    const poll = () => {
+      for (const r of requests.filter((x) => x.state === "approved")) {
+        void invoke<{ state: string; rtt_ms: number | null }>("transport_status", { id: r.id })
+          .then((v) => setPaths((old) => ({ ...old, [r.id]: v }))).catch(() => {});
+      }
+    };
+    poll();
+    const timer = window.setInterval(poll, 5000);
+    return () => window.clearInterval(timer);
+  }, [requests, transportReady]);
   const [target, setTarget] = useState(""),
     [inviteTarget, setInviteTarget] = useState(""),
     [permission, setPermission] = useState<"view" | "control" | "files">(
@@ -775,7 +810,7 @@ function Requests({
   return (
     <div className="stack">
       <div className="notice-strip">
-        此页处理真实的协调服务授权状态。画面、输入和文件传输尚未接通；批准不会开始共享。
+        授权后可建立认证加密通道。画面、输入和文件内容处理仍未实现；批准不会开始共享。
       </div>
       <div className="two-col">
         <div className="card">
@@ -964,7 +999,7 @@ function Requests({
                     )
                       void act(
                         () => api("decide", { id: p.id, approve: true }),
-                        "已批准授权；传输通道尚未实现",
+                        "已批准授权；认证传输可连接，画面与文件尚未启用",
                       );
                   }}
                 >
@@ -991,7 +1026,20 @@ function Requests({
                   {short(r.source_device_id)} → {short(r.target_device_id)} ·{" "}
                   {short(r.id)}
                 </small>
+                {r.state === "approved" && <small>链路：{paths[r.id]?.state ?? "未连接"}{paths[r.id]?.rtt_ms != null ? ` · RTT ${paths[r.id].rtt_ms} ms` : ""}</small>}
               </div>
+              <div className="row-actions">
+              {r.state === "approved" && r.source_device_id === state.deviceId && (
+                <button className="secondary" disabled={busy || !transportReady} onClick={() => void act(
+                  () => invoke("transport_connect", { id: r.id, permission: r.permission }),
+                  "认证通道已连接；媒体与文件处理尚未启用",
+                )}>连接</button>
+              )}
+              {r.state === "approved" && paths[r.id]?.state !== "closed" && paths[r.id]?.state != null && (
+                <button className="secondary" disabled={busy} onClick={() => void act(
+                  () => invoke("transport_close", { id: r.id }), "本机会话已关闭", false,
+                )}>断开本机</button>
+              )}
               {["pending", "approved"].includes(r.state) && (
                 <button
                   className="danger-text"
@@ -1006,6 +1054,7 @@ function Requests({
                   取消 / 撤销
                 </button>
               )}
+              </div>
             </div>
           ))
         ) : (

@@ -25,7 +25,7 @@
 | --- | --- | --- |
 | WI-001 | Rust workspace、PostgreSQL 账号/设备/授权服务、隔离本地运行与权限测试 | 完成：本地验收通过，代码已推送 |
 | WI-002 | Tauri 客户端登录、设备注册/列表、凭据安全存储、用户/管理员界面 | 完成：本地与 Windows CI 通过，代码已推送 |
-| WI-003 | iroh 端到端连接、应用授权、直连/中继配置与撤权 | ready |
+| WI-003 | iroh 端到端连接、应用授权、直连/中继配置与撤权 | 本机实现与专项验证完成；远端 CI 待核对 |
 | WI-004 | Windows 屏幕采集、用户确认、鼠标键盘输入与可用远控基线 | planned |
 | WI-005 | 分块双向文件传输、无损压缩、校验/续传、授权与限速 | planned |
 | WI-006 | 实际硬编/解码、多屏与自适应速率、能力协商和 4:4:4 路径 | planned |
@@ -108,7 +108,7 @@ WI-003 的输入：原生层提供 `NativeClient::take_grant_for_transport` 和 
 
 ### 基线与 Write Set
 
-代码基线 `a1c9cf68a23724612243fb267c24d2c43e40fa2c`；本节计划提交后的 HEAD 为开工基线。
+开工 HEAD `e0c610678cddc2d3371b0246a52969f19d290d32`，工作区干净；本地 `main` 比远端领先一条已授权的 WI-003 计划提交。所有代码改动均在本节 Write Set 内。
 
 允许修改：`crates/transport/**`、`crates/core/**`、`crates/client/**`、`services/coordinator/**`（只添加新迁移，不改已提交的历史迁移）、`apps/desktop/src-tauri/**`、`apps/desktop/src/**`、`packages/ui/**`、`Cargo.toml`、`Cargo.lock`、`deploy/relay/**`、`scripts/test-transport.ps1`、`.github/workflows/transport.yml`、现有后端/客户端 CI 的必要兼容或缓存配置、`README.md`、`docs/IMPLEMENTATION.md`、`docs/API.md`、`docs/CLIENT.md`、`docs/TRANSPORT.md`、`docs/verification/WI-003.md`。
 
@@ -134,6 +134,6 @@ WI-003 的输入：原生层提供 `NativeClient::take_grant_for_transport` 和 
 
 ### 记录
 
-等待开工。库能力信息已从 crates.io 核实：iroh / iroh-relay 1.2.0 的最低 Rust 为 1.91。用户尚未提供公网部署目标或第二台设备接入信息。
+实现 `crates/transport` 设备密钥复用的 iroh 1.2 加密 QUIC、分类型有界数据帧、真实 selected path/RTT 和本地单调短租约。协调服务添加独立新迁移，设备地址按注册公钥、在线代次登记，批准会话的参与设备才能查询；relay URL 受 HTTPS/凭据格式及服务端名单限制。目标只经认证连接交付 grant，两端核对会话、公钥、nonce、精确权限和服务端有效 TTL，续期与撤权关闭已有通道；断开的旧批准不能在端点重启后复用。Tauri 页面可启动/连接/查看路径，但 `can_host=false`、`can_files=false`，媒体处理和文件内容仍未实现。详细接口、运行方式与验证证据见 [认证传输](TRANSPORT.md)、[API](API.md)、[客户端](CLIENT.md) 和 [WI-003 验证记录](verification/WI-003.md)。
 
-本项实现提交 `e507412869845f6c2f9677eccafe0af8993ea3f6` 已推送；实现推送后用 `git ls-remote` 核对过远端 `main` 的同一 SHA。[Windows 客户端 CI](https://github.com/wanghao9103/farsail/actions/runs/36380905041) 与 [后端 CI](https://github.com/wanghao9103/farsail/actions/runs/36380905022) 均通过。验收后 Tauri、Vite、协调服务与项目专属容器已停止；`.local/dev.env` 和专属 Docker 卷保留。进入 WI-003 前以最新远端 `main` 为基线核对工作区，继续共享工作区串行写入。
+本机两端直连、强制本地 TLS relay、真实 PostgreSQL/HTTP 授权集成与既有开发数据库原地迁移已通过。用户尚未提供公网服务器和第二台设备；公网 IP 证书、跨 NAT 与移动端均未验证。提交、CI、进程清理和远端 SHA 见验证记录最终补记。WI-004 可直接使用原生 `Session::send/receive` 的 `Media`/`Control` 通道，在实际采集与输入确认实现后再启用主机能力。

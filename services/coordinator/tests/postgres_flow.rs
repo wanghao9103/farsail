@@ -49,6 +49,36 @@ async fn post(
 ) -> (StatusCode, Value) {
     call(app, "POST", path, body, user, device).await
 }
+async fn transport_call(
+    app: &Router,
+    method: &str,
+    path: &str,
+    body: Value,
+    bearer: &str,
+    device: Option<&str>,
+    generation: i64,
+) -> (StatusCode, Value) {
+    let mut builder = Request::builder()
+        .method(method)
+        .uri(path)
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {bearer}"))
+        .header("x-farsail-generation", generation.to_string());
+    if let Some(t) = device {
+        builder = builder.header("x-farsail-device-token", t);
+    }
+    let response = app
+        .clone()
+        .oneshot(builder.body(Body::from(body.to_string())).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    )
+}
 async fn register(app: &Router, mailer: &Mailer, email: &str) -> (Uuid, String) {
     let (s, v) = post(
         app,
@@ -144,6 +174,7 @@ async fn postgres_identity_device_and_grant_lifecycle() {
     let app = router(AppState {
         pool: pool.clone(),
         mailer: mailer.clone(),
+        allowed_relays: std::sync::Arc::new(vec![]),
     });
 
     let (_alice_id, alice) = register(&app, &mailer, "alice@example.test").await;
@@ -208,7 +239,7 @@ async fn postgres_identity_device_and_grant_lifecycle() {
     )
     .await;
     assert_eq!(s, StatusCode::CONFLICT);
-    online(&app, &bob_device_token).await;
+    let bob_generation = online(&app, &bob_device_token).await;
 
     // Two valid challenges for one key race through the PostgreSQL unique constraint.
     let racing = signing_key();
@@ -391,6 +422,110 @@ async fn postgres_identity_device_and_grant_lifecycle() {
     .await;
     assert_eq!(s, StatusCode::OK, "{g}");
     assert_eq!(g["permission"], "view");
+    let alice_addr =
+        iroh::EndpointAddr::new(iroh::SecretKey::from_bytes(&alice_key.to_bytes()).public())
+            .with_ip_addr("127.0.0.1:43001".parse().unwrap());
+    let bob_addr =
+        iroh::EndpointAddr::new(iroh::SecretKey::from_bytes(&bob_key.to_bytes()).public())
+            .with_ip_addr("127.0.0.1:43002".parse().unwrap());
+    let (s, _) = transport_call(
+        &app,
+        "POST",
+        "/v1/devices/endpoint-address",
+        json!({"generation":first,"endpoint_addr":alice_addr}),
+        &alice_device_token,
+        None,
+        first,
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT); // Stale process cannot publish.
+    for (token, generation, addr) in [
+        (&alice_device_token, second, &alice_addr),
+        (&bob_device_token, bob_generation, &bob_addr),
+    ] {
+        let (s, v) = transport_call(
+            &app,
+            "POST",
+            "/v1/devices/endpoint-address",
+            json!({"generation":generation,"endpoint_addr":addr}),
+            token,
+            None,
+            generation,
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+    }
+    // A delayed old publication must not overwrite a newer generation at conflict update.
+    let stale = sqlx::query("INSERT INTO device_endpoint_addresses(device_id,generation,endpoint_addr) VALUES($1,$2,$3) ON CONFLICT(device_id) DO UPDATE SET generation=EXCLUDED.generation,endpoint_addr=EXCLUDED.endpoint_addr WHERE device_endpoint_addresses.generation<=EXCLUDED.generation")
+        .bind(alice_device).bind(first).bind(serde_json::to_string(&alice_addr).unwrap()).execute(&pool).await.unwrap();
+    assert_eq!(stale.rows_affected(), 0);
+    let (stored_generation,): (i64,) =
+        sqlx::query_as("SELECT generation FROM device_endpoint_addresses WHERE device_id=$1")
+            .bind(alice_device)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(stored_generation, second);
+    let (s, v) = transport_call(
+        &app,
+        "GET",
+        &format!("/v1/remote/{remote_id}/peer-address"),
+        Value::Null,
+        &alice_device_token,
+        None,
+        second,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["endpoint_addr"], serde_json::to_value(&bob_addr).unwrap());
+    let (s, _) = transport_call(
+        &app,
+        "GET",
+        &format!("/v1/remote/{remote_id}/peer-address"),
+        Value::Null,
+        &alice_device_token,
+        None,
+        first,
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let (s, g) = transport_call(
+        &app,
+        "GET",
+        &format!("/v1/remote/{remote_id}/transport-grant"),
+        Value::Null,
+        grant_token,
+        Some(&alice_device_token),
+        second,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{g}");
+    assert!(g["expires_in"].as_i64().unwrap() > 0);
+    let (s, _) = transport_call(
+        &app,
+        "GET",
+        &format!("/v1/remote/{remote_id}/transport-grant"),
+        Value::Null,
+        grant_token,
+        Some(&alice_device_token),
+        first,
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let malicious =
+        iroh::EndpointAddr::new(iroh::SecretKey::from_bytes(&bob_key.to_bytes()).public())
+            .with_relay_url("https://user:secret@evil.example/?token=x".parse().unwrap());
+    let (s, _) = transport_call(
+        &app,
+        "POST",
+        "/v1/devices/endpoint-address",
+        json!({"generation":bob_generation,"endpoint_addr":malicious}),
+        &bob_device_token,
+        None,
+        bob_generation,
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
     let (s, _) = call(
         &app,
         "GET",

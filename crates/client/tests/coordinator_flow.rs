@@ -1,5 +1,9 @@
-use farsail_client::{NativeClient, WindowsStore};
+#[cfg(windows)]
+use farsail_client::WindowsStore;
+use farsail_client::{NativeClient, SecureStore};
 use farsail_coordinator::{AppState, Mailer, router};
+use farsail_core::RemotePermission;
+use farsail_transport::{Channel, Config as TransportConfig, Frame};
 use serde_json::{Value, json};
 use sqlx::{PgPool, postgres::PgPoolOptions};
 use std::{path::PathBuf, sync::Arc};
@@ -24,10 +28,37 @@ async fn account(client: &NativeClient, mail: &Mailer, email: &str) -> Value {
         .unwrap()
 }
 fn client(dir: PathBuf, base: &str) -> NativeClient {
-    let client = NativeClient::new(Arc::new(WindowsStore::new(dir).unwrap())).unwrap();
+    #[cfg(windows)]
+    let store: Arc<dyn SecureStore> = Arc::new(WindowsStore::new(dir).unwrap());
+    #[cfg(not(windows))]
+    let store: Arc<dyn SecureStore> = Arc::new(TestStore(dir));
+    let client = NativeClient::new(store).unwrap();
     // Set server through a runtime call below; this helper is synchronous to keep setup small.
     assert!(!base.is_empty());
     client
+}
+#[cfg(not(windows))]
+struct TestStore(PathBuf);
+#[cfg(not(windows))]
+impl SecureStore for TestStore {
+    fn read(&self, key: &str) -> farsail_client::Result<Option<Vec<u8>>> {
+        match std::fs::read(self.0.join(key)) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(farsail_client::Error::Store(e.to_string())),
+        }
+    }
+    fn write(&self, key: &str, value: &[u8]) -> farsail_client::Result<()> {
+        std::fs::write(self.0.join(key), value)
+            .map_err(|e| farsail_client::Error::Store(e.to_string()))
+    }
+    fn delete(&self, key: &str) -> farsail_client::Result<()> {
+        match std::fs::remove_file(self.0.join(key)) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(farsail_client::Error::Store(e.to_string())),
+        }
+    }
 }
 #[tokio::test]
 async fn native_client_against_real_coordinator() {
@@ -68,15 +99,16 @@ async fn native_client_against_real_coordinator() {
     let app = router(AppState {
         pool: pool.clone(),
         mailer: mail.clone(),
+        allowed_relays: std::sync::Arc::new(vec![]),
     });
     let server = tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
     let a_dir = tempfile::tempdir().unwrap();
     let b_dir = tempfile::tempdir().unwrap();
-    let a = client(a_dir.path().to_path_buf(), &base);
+    let a = Arc::new(client(a_dir.path().to_path_buf(), &base));
     a.set_server(&base).await.unwrap();
-    let b = client(b_dir.path().to_path_buf(), &base);
+    let b = Arc::new(client(b_dir.path().to_path_buf(), &base));
     b.set_server(&base).await.unwrap();
     let me_a = account(&a, &mail, "native-a@example.test").await;
     let me_b = account(&b, &mail, "native-b@example.test").await;
@@ -106,13 +138,14 @@ async fn native_client_against_real_coordinator() {
     a.call("heartbeat", Value::Null).await.unwrap();
     b.call("heartbeat", Value::Null).await.unwrap();
     drop(a);
-    let a = client(a_dir.path().to_path_buf(), &base);
+    let a = Arc::new(client(a_dir.path().to_path_buf(), &base));
     assert_eq!(
         a.call("resume", Value::Null).await.unwrap()["id"],
         me_a["id"]
     );
     assert_eq!(a.public_state().await["deviceId"], dev_a);
     a.call("heartbeat", Value::Null).await.unwrap();
+    a.start_transport(TransportConfig::default()).await.unwrap();
     let own = a.call("devices", Value::Null).await.unwrap();
     assert_eq!(own.as_array().unwrap().len(), 1);
     assert_eq!(own[0]["can_host"], false);
@@ -148,11 +181,98 @@ async fn native_client_against_real_coordinator() {
         .unwrap();
     assert_eq!(decision["approved"], true);
     assert!(decision.get("grant_token").is_none());
+    // Starting for the first time must preserve an unused fresh approval.
+    b.start_transport(TransportConfig::default()).await.unwrap();
     assert_eq!(
         a.call("remote_status", json!({"id":id})).await.unwrap()["state"],
         "approved"
     );
-    a.call("revoke_remote", json!({"id":id})).await.unwrap();
+    let path = a
+        .connect_transport(id, RemotePermission::View)
+        .await
+        .unwrap();
+    assert_eq!(path["state"], "direct");
+    let source = a.transport_session(id).await.unwrap().unwrap();
+    let mut target = None;
+    for _ in 0..50 {
+        target = b.transport_session(id).await.unwrap();
+        if target.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let target = target.expect("target accepted authenticated iroh connection");
+    source
+        .send(Frame {
+            channel: Channel::Media,
+            bytes: b"real HTTP and QUIC".to_vec(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(target.receive().await.unwrap().bytes, b"real HTTP and QUIC");
+    target
+        .send(Frame {
+            channel: Channel::Media,
+            bytes: b"ack".to_vec(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(source.receive().await.unwrap().bytes, b"ack");
+    assert!(
+        source
+            .send(Frame {
+                channel: Channel::Control,
+                bytes: vec![1]
+            })
+            .await
+            .is_err()
+    );
+    b.stop_transport().await;
+    assert!(!target.is_open().await);
+    b.start_transport(TransportConfig::default()).await.unwrap();
+    assert!(
+        a.connect_transport(id, RemotePermission::View)
+            .await
+            .is_err(),
+        "old approval cannot reconnect after endpoint restart"
+    );
+    let invite2 = b
+        .call(
+            "invite",
+            json!({"target_device_id":dev_b,"permission":"view"}),
+        )
+        .await
+        .unwrap();
+    let request2 = a.call("request",json!({"source_device_id":dev_a,"target_device_id":dev_b,"permission":"view","invitation_code":invite2["code"]})).await.unwrap();
+    let id2 = request2["id"].as_str().unwrap();
+    b.call("decide", json!({"id":id2,"approve":true}))
+        .await
+        .unwrap();
+    a.connect_transport(id2, RemotePermission::View)
+        .await
+        .unwrap();
+    let source2 = a.transport_session(id2).await.unwrap().unwrap();
+    let mut target2 = None;
+    for _ in 0..50 {
+        target2 = b.transport_session(id2).await.unwrap();
+        if target2.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let target2 = target2.expect("fresh approval accepted");
+    source2
+        .send(Frame {
+            channel: Channel::Media,
+            bytes: b"fresh approval".to_vec(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(target2.receive().await.unwrap().bytes, b"fresh approval");
+    a.call("revoke_remote", json!({"id":id2})).await.unwrap();
+    assert!(!source2.is_open().await);
+    tokio::time::sleep(std::time::Duration::from_secs(6)).await;
+    assert!(!target2.is_open().await);
     assert_eq!(
         a.call("remote_status", json!({"id":id})).await.unwrap()["state"],
         "revoked"

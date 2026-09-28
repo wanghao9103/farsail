@@ -1,9 +1,9 @@
 name: Windows client
 on:
   push:
-    paths: ['apps/desktop/**', 'crates/client/**', 'packages/ui/**', 'package*.json', 'Cargo.*', '.github/workflows/client.yml']
+    paths: ['apps/desktop/**', 'crates/client/**', 'crates/transport/**', 'packages/ui/**', 'package*.json', 'Cargo.*', '.github/workflows/client.yml']
   pull_request:
-    paths: ['apps/desktop/**', 'crates/client/**', 'packages/ui/**', 'package*.json', 'Cargo.*', '.github/workflows/client.yml']
+    paths: ['apps/desktop/**', 'crates/client/**', 'crates/transport/**', 'packages/ui/**', 'package*.json', 'Cargo.*', '.github/workflows/client.yml']
 jobs:
   build:
     runs-on: windows-latest

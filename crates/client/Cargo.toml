@@ -7,6 +7,9 @@ rust-version.workspace = true
 
 [dependencies]
 ed25519-dalek = { version = "2.2", features = ["rand_core"] }
+farsail-transport = { path = "../transport" }
+farsail-core = { path = "../core" }
+iroh = "=1.2.0"
 hex = "0.4"
 rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

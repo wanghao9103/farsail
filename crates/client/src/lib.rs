@@ -1,5 +1,8 @@
 //! FarSail native account and device client. Credentials never cross the UI bridge.
 use ed25519_dalek::{Signer, SigningKey};
+use farsail_core::RemotePermission;
+use farsail_transport::{Authority, Claims, Config as TransportConfig, Session, Transport};
+use iroh::EndpointAddr;
 use rand::rngs::OsRng;
 use reqwest::{Client as Http, Method};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -8,10 +11,13 @@ use sha2::{Digest, Sha256};
 use std::{
     fs,
     path::PathBuf,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, watch};
 use url::Url;
 
 #[derive(Debug, thiserror::Error)]
@@ -226,6 +232,11 @@ pub struct NativeClient {
     http: Http,
     store: Arc<dyn SecureStore>,
     state: Mutex<State>,
+    transport: Mutex<Option<Transport>>,
+    transport_sessions: Mutex<std::collections::HashMap<String, Session>>,
+    transport_epoch: Mutex<u64>,
+    signing_out: AtomicBool,
+    cancel_tx: watch::Sender<u64>,
 }
 
 impl NativeClient {
@@ -237,6 +248,7 @@ impl NativeClient {
         let base = validate_base(&base)?;
         let login = read_json::<Login>(&*store, "login")?;
         let device = read_json::<DeviceCredential>(&*store, "device-token")?;
+        let (cancel_tx, _) = watch::channel(0u64);
         Ok(Self {
             http: Http::builder()
                 .timeout(Duration::from_secs(15))
@@ -252,6 +264,11 @@ impl NativeClient {
                 generation: None,
                 grant: Default::default(),
             }),
+            transport: Mutex::new(None),
+            transport_sessions: Mutex::new(Default::default()),
+            transport_epoch: Mutex::new(0),
+            signing_out: AtomicBool::new(false),
+            cancel_tx,
         })
     }
     pub async fn public_state(&self) -> Value {
@@ -277,6 +294,10 @@ impl NativeClient {
         bearer: Option<&str>,
         device_header: Option<&str>,
     ) -> Result<Value> {
+        if self.signing_out.load(Ordering::SeqCst) {
+            return Err(Error::Invalid("request cancelled by sign-out".into()));
+        }
+        let mut cancel = self.cancel_tx.subscribe();
         let mut r = self.http.request(method, format!("{}{}", s.base, path));
         if let Some(x) = bearer {
             r = r.bearer_auth(x);
@@ -287,7 +308,10 @@ impl NativeClient {
         if let Some(x) = body {
             r = r.json(&x);
         }
-        let mut response = r.send().await?;
+        let mut response = tokio::select! {
+            result = r.send() => result?,
+            _ = cancel.changed() => return Err(Error::Invalid("request cancelled by sign-out".into())),
+        };
         let status = response.status();
         const MAX_RESPONSE: usize = 1024 * 1024;
         if response
@@ -297,7 +321,14 @@ impl NativeClient {
             return Err(Error::Invalid("server response too large".into()));
         }
         let mut bytes = Vec::new();
-        while let Some(chunk) = response.chunk().await? {
+        loop {
+            let next = tokio::select! {
+                result = response.chunk() => result?,
+                _ = cancel.changed() => return Err(Error::Invalid("request cancelled by sign-out".into())),
+            };
+            let Some(chunk) = next else {
+                break;
+            };
             if bytes.len() + chunk.len() > MAX_RESPONSE {
                 return Err(Error::Invalid("server response too large".into()));
             }
@@ -350,6 +381,12 @@ impl NativeClient {
         }
     }
     fn clear_auth(&self, s: &mut State) -> Result<()> {
+        if let Ok(mut sessions) = self.transport_sessions.try_lock() {
+            for session in sessions.values() {
+                session.close();
+            }
+            sessions.clear();
+        }
         s.login = None;
         s.owner = None;
         s.device = None;
@@ -423,6 +460,41 @@ impl NativeClient {
     pub async fn call(&self, op: &str, args: Value) -> Result<Value> {
         if op == "devices" {
             return self.list_devices().await;
+        }
+        if op == "logout" {
+            self.signing_out.store(true, Ordering::SeqCst);
+            self.cancel_tx.send_modify(|v| *v = v.wrapping_add(1));
+            self.stop_transport().await;
+            let mut s = self.state.lock().await;
+            let base = s.base.clone();
+            let access = s.login.as_ref().map(|x| x.access_token.clone());
+            let local = self.clear_auth(&mut s);
+            drop(s);
+            self.signing_out.store(false, Ordering::SeqCst);
+            local?;
+            let access = access.ok_or(Error::SignedOut)?;
+            let remote = tokio::time::timeout(
+                Duration::from_secs(2),
+                self.http
+                    .post(format!("{base}/v1/auth/logout"))
+                    .bearer_auth(access)
+                    .send(),
+            )
+            .await;
+            return match remote {
+                Ok(Ok(r)) if r.status().is_success() => Ok(Value::Null),
+                _ => Err(Error::Invalid(
+                    "local sign-out complete; server revocation unconfirmed".into(),
+                )),
+            };
+        }
+        if matches!(op, "login" | "bind" | "unbind_device" | "password") {
+            self.stop_transport().await;
+        }
+        if op == "revoke_remote"
+            && let Some(id) = args.get("id").and_then(Value::as_str)
+        {
+            let _ = self.close_transport_session(id).await;
         }
         let mut s = self.state.lock().await;
         let string = |key: &str| -> Result<String> {
@@ -516,17 +588,6 @@ impl NativeClient {
                     self.store.delete("device-token")?;
                 }
                 Ok(me)
-            }
-            "logout" => {
-                let result = self
-                    .user(&mut s, Method::POST, "/v1/auth/logout", None, false)
-                    .await;
-                self.clear_auth(&mut s)?;
-                result.map_err(|e| {
-                    Error::Invalid(format!(
-                        "local sign-out complete; server revocation unconfirmed: {e}"
-                    ))
-                })
             }
             "password" => {
                 let v = self
@@ -841,31 +902,383 @@ impl NativeClient {
         }
         Ok(Value::Array(all))
     }
-    /// Consumed by the future authenticated transport; never registered as a Tauri command.
-    pub async fn take_grant_for_transport(&self, remote_id: &str) -> Result<Option<String>> {
-        let id = uuid(remote_id)?;
-        Ok(self.state.lock().await.grant.remove(&id))
+}
+impl NativeClient {
+    async fn transport_request(
+        &self,
+        method: Method,
+        path: &str,
+        grant: Option<&str>,
+        body: Option<Value>,
+    ) -> Result<Value> {
+        let (base, device_token, generation) = {
+            let s = self.state.lock().await;
+            let d = s.device.as_ref().ok_or(Error::Unbound)?;
+            (
+                s.base.clone(),
+                d.device_token.clone(),
+                s.generation
+                    .ok_or_else(|| Error::Invalid("heartbeat required".into()))?,
+            )
+        };
+        let mut request = self
+            .http
+            .request(method, format!("{base}{path}"))
+            .bearer_auth(grant.unwrap_or(&device_token))
+            .header("X-Farsail-Generation", generation.to_string());
+        if grant.is_some() {
+            request = request.header("X-Farsail-Device-Token", &device_token);
+        }
+        if let Some(body) = body {
+            request = request.json(&body);
+        }
+        let start = Instant::now();
+        let mut response = request.send().await?;
+        let status = response.status();
+        let mut bytes = Vec::new();
+        const MAX: usize = 4096;
+        if response.content_length().is_some_and(|n| n > MAX as u64) {
+            return Err(Error::Invalid("transport response too large".into()));
+        }
+        while let Some(chunk) = response.chunk().await? {
+            if bytes.len() + chunk.len() > MAX {
+                return Err(Error::Invalid("transport response too large".into()));
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        if !status.is_success() {
+            return Err(Error::Http(
+                status.as_u16(),
+                status.canonical_reason().unwrap_or("request failed").into(),
+            ));
+        }
+        let mut value: Value = if bytes.is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_slice(&bytes)
+                .map_err(|_| Error::Invalid("invalid transport response".into()))?
+        };
+        // The coordinator supplies remaining TTL. Account for all local HTTP time,
+        // including body receipt, before any transport lease uses that number.
+        if let Some(ttl) = value.get_mut("expires_in")
+            && let Some(n) = ttl.as_i64()
+        {
+            *ttl = json!(n.saturating_sub(start.elapsed().as_secs() as i64 + 1));
+        }
+        Ok(value)
     }
-    /// Target-side lease renewal for the future transport signaling path.
-    pub async fn renew_grant_for_transport(&self, remote_id: &str) -> Result<String> {
-        let id = uuid(remote_id)?;
-        let mut s = self.state.lock().await;
-        let v = self
-            .device(
-                &mut s,
+
+    pub async fn start_transport(self: &Arc<Self>, config: TransportConfig) -> Result<Value> {
+        let (name, generation) = {
+            let s = self.state.lock().await;
+            let d = s.device.as_ref().ok_or(Error::Unbound)?;
+            let generation = s
+                .generation
+                .ok_or_else(|| Error::Invalid("heartbeat required".into()))?;
+            (
+                format!(
+                    "identity-{}-{}",
+                    hex::encode(Sha256::digest(s.base.as_bytes())),
+                    d.owner_id
+                ),
+                generation,
+            )
+        };
+        let secret: [u8; 32] = self
+            .store
+            .read(&name)?
+            .ok_or_else(|| Error::Store("device identity missing".into()))?
+            .try_into()
+            .map_err(|_| Error::Store("invalid device identity".into()))?;
+        let epoch = self.stop_transport().await;
+        let relay = config.relay.is_some();
+        let transport = Transport::bind(secret, config)
+            .await
+            .map_err(|e| Error::Invalid(e.to_string()))?;
+        if relay {
+            tokio::time::timeout(Duration::from_secs(10), transport.wait_online())
+                .await
+                .map_err(|_| Error::Invalid("relay did not become reachable".into()))?;
+        }
+        let addr = transport.addr();
+        self.transport_request(
+            Method::POST,
+            "/v1/devices/endpoint-address",
+            None,
+            Some(json!({"generation":generation,"endpoint_addr":addr})),
+        )
+        .await?;
+        let active = {
+            let current = self.transport_epoch.lock().await;
+            if *current != epoch || self.signing_out.load(Ordering::SeqCst) {
+                false
+            } else {
+                *self.transport.lock().await = Some(transport.clone());
+                true
+            }
+        };
+        if !active {
+            transport.close().await;
+            return Err(Error::Invalid("transport start cancelled".into()));
+        }
+        let endpoint_id = transport.id().to_string();
+        let owner = self.clone();
+        tokio::spawn(async move {
+            let permits = Arc::new(tokio::sync::Semaphore::new(8));
+            loop {
+                let Ok(permit) = permits.clone().acquire_owned().await else {
+                    break;
+                };
+                match transport.next_incoming().await {
+                    Ok(incoming) => {
+                        let owner = owner.clone();
+                        let transport = transport.clone();
+                        tokio::spawn(async move {
+                            let _permit = permit;
+                            if let Ok(session) =
+                                transport.accept_incoming(incoming, owner.clone()).await
+                            {
+                                owner.register_transport_session(epoch, session).await;
+                            }
+                        });
+                    }
+                    Err(farsail_transport::Error::Closed) => break,
+                    Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
+                }
+            }
+        });
+        Ok(json!({"state":"connecting","endpoint_id":endpoint_id}))
+    }
+
+    pub async fn refresh_transport_address(&self) -> Result<()> {
+        let transport = self.transport.lock().await.clone();
+        if let Some(transport) = transport {
+            let generation = self.state.lock().await.generation.ok_or(Error::Unbound)?;
+            self.transport_request(
                 Method::POST,
-                &format!("/v1/remote/{id}/renew"),
+                "/v1/devices/endpoint-address",
+                None,
+                Some(json!({"generation":generation,"endpoint_addr":transport.addr()})),
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
+    pub async fn connect_transport(
+        self: &Arc<Self>,
+        id: &str,
+        permission: RemotePermission,
+    ) -> Result<Value> {
+        let id = uuid(id)?;
+        let epoch = *self.transport_epoch.lock().await;
+        let peer = self
+            .transport_request(
+                Method::GET,
+                &format!("/v1/remote/{id}/peer-address"),
+                None,
                 None,
             )
             .await?;
+        let addr: EndpointAddr = serde_json::from_value(peer["endpoint_addr"].clone())
+            .map_err(|_| Error::Invalid("invalid peer address".into()))?;
+        let transport = self
+            .transport
+            .lock()
+            .await
+            .clone()
+            .ok_or_else(|| Error::Invalid("start transport first".into()))?;
+        let session = transport
+            .connect(addr, &id, permission, self.clone())
+            .await
+            .map_err(|e| Error::Invalid(e.to_string()))?;
+        let (path, rtt) = session.path();
+        if !self.register_transport_session(epoch, session).await {
+            return Err(Error::Invalid(
+                "transport connection cancelled or limit reached".into(),
+            ));
+        }
+        Ok(json!({"id":id,"state":path,"rtt_ms":rtt}))
+    }
+
+    pub async fn transport_status(&self, id: &str) -> Result<Value> {
+        let id = uuid(id)?;
+        let session = self.transport_sessions.lock().await.get(&id).cloned();
+        if let Some(s) = session.as_ref()
+            && s.is_open().await
+        {
+            let (path, rtt) = s.path();
+            return Ok(json!({"id":id,"state":path,"rtt_ms":rtt,"permission":s.permission()}));
+        }
+        let mut sessions = self.transport_sessions.lock().await;
+        if let Some(old) = session
+            && sessions
+                .get(&id)
+                .is_some_and(|s| s.stable_id() == old.stable_id())
+        {
+            sessions.remove(&id);
+            drop(sessions);
+            self.invalidate_transport_grant(&id).await;
+            return Ok(json!({"id":id,"state":"closed","rtt_ms":null}));
+        }
+        Ok(json!({"id":id,"state":"closed","rtt_ms":null}))
+    }
+    pub async fn transport_session(&self, id: &str) -> Result<Option<Session>> {
+        Ok(self
+            .transport_sessions
+            .lock()
+            .await
+            .get(&uuid(id)?)
+            .cloned())
+    }
+    pub async fn close_transport_session(&self, id: &str) -> Result<()> {
+        let id = uuid(id)?;
+        if let Some(s) = self.transport_sessions.lock().await.remove(&id) {
+            s.close();
+            self.invalidate_transport_grant(&id).await;
+        }
+        Ok(())
+    }
+    async fn register_transport_session(self: &Arc<Self>, epoch: u64, session: Session) -> bool {
+        let current = self.transport_epoch.lock().await;
+        if *current != epoch || self.signing_out.load(Ordering::SeqCst) {
+            let id = session.id().to_owned();
+            session.close();
+            drop(current);
+            self.invalidate_transport_grant(&id).await;
+            return false;
+        }
+        let mut sessions = self.transport_sessions.lock().await;
+        // Expired entries are removed on close by the task below; cap live sessions.
+        if sessions.len() >= 16 || sessions.contains_key(session.id()) {
+            let id = session.id().to_owned();
+            session.close();
+            drop(sessions);
+            drop(current);
+            self.invalidate_transport_grant(&id).await;
+            return false;
+        }
+        let id = session.id().to_owned();
+        let connection_id = session.stable_id();
+        sessions.insert(id.clone(), session.clone());
+        drop(sessions);
+        drop(current);
+        let owner = self.clone();
+        tokio::spawn(async move {
+            session.wait_closed().await;
+            let mut sessions = owner.transport_sessions.lock().await;
+            if sessions
+                .get(&id)
+                .is_some_and(|s| s.stable_id() == connection_id)
+            {
+                sessions.remove(&id);
+                drop(sessions);
+                owner.invalidate_transport_grant(&id).await;
+            }
+        });
+        true
+    }
+    pub async fn stop_transport(&self) -> u64 {
+        let mut epoch = self.transport_epoch.lock().await;
+        *epoch = epoch.wrapping_add(1);
+        let next = *epoch;
+        let sessions = std::mem::take(&mut *self.transport_sessions.lock().await);
+        let transport = self.transport.lock().await.take();
+        drop(epoch);
+        let mut established = Vec::new();
+        for (id, session) in sessions {
+            session.close();
+            established.push(id);
+        }
+        for id in established {
+            self.invalidate_transport_grant(&id).await;
+        }
+        if let Some(transport) = transport {
+            tokio::spawn(async move {
+                transport.close().await;
+            });
+        }
+        next
+    }
+    async fn invalidate_transport_grant(&self, id: &str) {
+        let (base, credential) = {
+            let mut state = self.state.lock().await;
+            let target = state.grant.remove(id).is_some();
+            let bearer = if target {
+                state.device.as_ref().map(|d| d.device_token.clone())
+            } else {
+                state.login.as_ref().map(|l| l.access_token.clone())
+            };
+            (state.base.clone(), bearer)
+        };
+        if let Some(credential) = credential {
+            let http = self.http.clone();
+            let path = format!("{base}/v1/remote/{id}/revoke");
+            tokio::spawn(async move {
+                let _ = tokio::time::timeout(
+                    Duration::from_secs(2),
+                    http.post(path).bearer_auth(credential).send(),
+                )
+                .await;
+            });
+        }
+    }
+}
+
+impl Authority for NativeClient {
+    async fn abandon(&self, id: &str) {
+        self.invalidate_transport_grant(id).await;
+    }
+    async fn inspect(&self, id: &str, token: &str) -> farsail_transport::Result<Claims> {
+        let checked_at = Instant::now();
+        let v = self
+            .transport_request(
+                Method::GET,
+                &format!("/v1/remote/{id}/transport-grant"),
+                Some(token),
+                None,
+            )
+            .await
+            .map_err(|_| farsail_transport::Error::Denied)?;
+        let mut claims: Claims =
+            serde_json::from_value(v).map_err(|_| farsail_transport::Error::Denied)?;
+        claims.checked_at = checked_at;
+        Ok(claims)
+    }
+    async fn issue(&self, id: &str, renew: bool) -> farsail_transport::Result<String> {
+        if !renew {
+            if let Some(token) = self.state.lock().await.grant.get(id).cloned() {
+                return Ok(token);
+            }
+            return Err(farsail_transport::Error::Denied);
+        }
+        let epoch = *self.transport_epoch.lock().await;
+        let v = self
+            .transport_request(
+                Method::POST,
+                &format!("/v1/remote/{id}/transport-renew"),
+                None,
+                None,
+            )
+            .await
+            .map_err(|_| farsail_transport::Error::Denied)?;
         let token = v["grant_token"]
             .as_str()
-            .ok_or_else(|| Error::Invalid("missing grant credential".into()))?
+            .ok_or(farsail_transport::Error::Denied)?
             .to_owned();
-        s.grant.insert(id, token.clone());
+        let current = self.transport_epoch.lock().await;
+        if *current != epoch {
+            return Err(farsail_transport::Error::Closed);
+        }
+        let mut state = self.state.lock().await;
+        if !state.grant.contains_key(id) {
+            return Err(farsail_transport::Error::Closed);
+        }
+        state.grant.insert(id.to_owned(), token.clone());
         Ok(token)
     }
 }
+
 async fn page_user(
     client: &NativeClient,
     s: &mut State,
@@ -893,6 +1306,21 @@ fn read_json<T: DeserializeOwned>(store: &dyn SecureStore, key: &str) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[derive(Default)]
+    struct MemoryStore(std::sync::Mutex<std::collections::HashMap<String, Vec<u8>>>);
+    impl SecureStore for MemoryStore {
+        fn read(&self, key: &str) -> Result<Option<Vec<u8>>> {
+            Ok(self.0.lock().unwrap().get(key).cloned())
+        }
+        fn write(&self, key: &str, value: &[u8]) -> Result<()> {
+            self.0.lock().unwrap().insert(key.into(), value.to_vec());
+            Ok(())
+        }
+        fn delete(&self, key: &str) -> Result<()> {
+            self.0.lock().unwrap().remove(key);
+            Ok(())
+        }
+    }
     #[test]
     fn server_policy() {
         assert!(validate_base("http://127.0.0.1:8787").is_ok());
@@ -901,6 +1329,149 @@ mod tests {
         assert!(validate_base("http://203.0.113.10").is_err());
         assert!(validate_base("https://user:pass@example.com").is_err());
         assert!(validate_base("https://example.com/path").is_err());
+    }
+    #[tokio::test]
+    async fn delayed_transport_start_cannot_survive_stop() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let (seen_tx, seen_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut conn, _) = listener.accept().await.unwrap();
+            let mut bytes = [0u8; 4096];
+            let _ = conn.read(&mut bytes).await.unwrap();
+            seen_tx.send(()).unwrap();
+            release_rx.await.unwrap();
+            conn.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                .await
+                .unwrap();
+        });
+        let store = Arc::new(MemoryStore::default());
+        let client = Arc::new(NativeClient::new(store.clone()).unwrap());
+        client.set_server(&base).await.unwrap();
+        let key = SigningKey::generate(&mut OsRng);
+        let name = format!(
+            "identity-{}-owner",
+            hex::encode(Sha256::digest(base.as_bytes()))
+        );
+        store.write(&name, &key.to_bytes()).unwrap();
+        {
+            let mut s = client.state.lock().await;
+            s.device = Some(DeviceCredential {
+                id: "device".into(),
+                device_token: "device-token".into(),
+                owner_id: "owner".into(),
+                session_id: "login".into(),
+            });
+            s.generation = Some(1);
+        }
+        let task = tokio::spawn({
+            let client = client.clone();
+            async move { client.start_transport(TransportConfig::default()).await }
+        });
+        seen_rx.await.unwrap();
+        client.stop_transport().await;
+        release_tx.send(()).unwrap();
+        assert!(task.await.unwrap().is_err());
+        assert!(client.transport.lock().await.is_none());
+        server.await.unwrap();
+    }
+    struct TestAuthority {
+        source: iroh::EndpointId,
+        target: iroh::EndpointId,
+    }
+    impl Authority for TestAuthority {
+        async fn inspect(&self, id: &str, token: &str) -> farsail_transport::Result<Claims> {
+            if token != "grant" {
+                return Err(farsail_transport::Error::Denied);
+            }
+            Ok(Claims {
+                session_id: id.into(),
+                permission: RemotePermission::View,
+                source_public_key: hex::encode(self.source.as_bytes()),
+                target_public_key: hex::encode(self.target.as_bytes()),
+                nonce: "ab".repeat(32),
+                expires_in: 30,
+                checked_at: Instant::now(),
+            })
+        }
+        async fn issue(&self, _: &str, _: bool) -> farsail_transport::Result<String> {
+            Ok("grant".into())
+        }
+    }
+    #[tokio::test]
+    async fn completed_dial_from_old_lifecycle_is_rejected() {
+        let source = Transport::bind([11; 32], TransportConfig::default())
+            .await
+            .unwrap();
+        let target = Transport::bind([12; 32], TransportConfig::default())
+            .await
+            .unwrap();
+        let auth = Arc::new(TestAuthority {
+            source: source.id(),
+            target: target.id(),
+        });
+        let host = tokio::spawn({
+            let target = target.clone();
+            let auth = auth.clone();
+            async move { target.accept(auth).await.unwrap() }
+        });
+        let session = source
+            .connect(target.addr(), "old-session", RemotePermission::View, auth)
+            .await
+            .unwrap();
+        let peer = host.await.unwrap();
+        let owner = Arc::new(NativeClient::new(Arc::new(MemoryStore::default())).unwrap());
+        let old = *owner.transport_epoch.lock().await;
+        owner.stop_transport().await;
+        assert!(!owner.register_transport_session(old, session.clone()).await);
+        assert!(!session.is_open().await);
+        peer.close();
+        source.close().await;
+        target.close().await;
+    }
+    #[tokio::test]
+    async fn slow_http_does_not_hold_local_sign_out() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let (seen_tx, seen_rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut slow, _) = listener.accept().await.unwrap();
+            let mut bytes = [0u8; 1024];
+            let _ = slow.read(&mut bytes).await.unwrap();
+            seen_tx.send(()).unwrap();
+            let (mut logout, _) = listener.accept().await.unwrap();
+            let _ = logout.read(&mut bytes).await.unwrap();
+            logout
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                .await
+                .unwrap();
+        });
+        let client = Arc::new(NativeClient::new(Arc::new(MemoryStore::default())).unwrap());
+        client.set_server(&base).await.unwrap();
+        {
+            let mut s = client.state.lock().await;
+            s.login = Some(Login {
+                access_token: "test".into(),
+                refresh_token: "refresh".into(),
+                session_id: "login".into(),
+                access_expires_in: 900,
+            });
+            s.expiry = Instant::now() + Duration::from_secs(900);
+        }
+        let pending = tokio::spawn({
+            let client = client.clone();
+            async move { client.call("me", Value::Null).await }
+        });
+        seen_rx.await.unwrap();
+        let result =
+            tokio::time::timeout(Duration::from_secs(3), client.call("logout", Value::Null)).await;
+        assert!(result.unwrap().is_ok());
+        assert!(!client.public_state().await["signedIn"].as_bool().unwrap());
+        assert!(pending.await.unwrap().is_err());
+        server.await.unwrap();
     }
     #[cfg(windows)]
     #[test]
@@ -926,6 +1497,7 @@ mod tests {
         assert!(store.read("login").unwrap().is_none());
     }
     #[tokio::test]
+    #[cfg(windows)]
     async fn redirect_is_not_followed() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let destination = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -964,6 +1536,7 @@ mod tests {
         );
     }
     #[tokio::test]
+    #[cfg(windows)]
     async fn offline_logout_clears_local_auth_and_reports_uncertainty() {
         let dir = tempfile::tempdir().unwrap();
         let store = Arc::new(WindowsStore::new(dir.path().to_path_buf()).unwrap());

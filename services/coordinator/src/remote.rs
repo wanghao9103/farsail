@@ -25,6 +25,7 @@ type GrantInspectRow = (
     Vec<u8>,
     Vec<u8>,
     chrono::DateTime<chrono::Utc>,
+    i64,
 );
 
 #[derive(Deserialize)]
@@ -295,11 +296,12 @@ async fn grant(
     id: Uuid,
     target: Uuid,
     require_active: bool,
+    generation: Option<i64>,
 ) -> Result<GrantOutput> {
     let mut tx = state.pool.begin().await?;
     let row:Option<GrantRow> = sqlx::query_as(
-        "SELECT r.permission,s.public_key,t.public_key,r.nonce FROM remote_sessions r JOIN devices s ON s.id=r.source_device_id JOIN devices t ON t.id=r.target_device_id JOIN auth_sessions a ON a.id=r.auth_session_id JOIN auth_sessions sa ON sa.id=s.credential_session_id JOIN auth_sessions ta ON ta.id=t.credential_session_id JOIN users u ON u.id=r.requester_id JOIN users tu ON tu.id=t.owner_id WHERE r.id=$1 AND r.target_device_id=$2 AND r.state='approved' AND (NOT $3 OR r.grant_until>now()) AND s.enabled AND t.enabled AND u.enabled AND tu.enabled AND a.revoked_at IS NULL AND a.refresh_expires_at>now() AND sa.revoked_at IS NULL AND sa.refresh_expires_at>now() AND ta.revoked_at IS NULL AND ta.refresh_expires_at>now() AND s.lease_until>now() AND t.lease_until>now() AND (r.invitation_id IS NULL OR EXISTS(SELECT 1 FROM invitations i WHERE i.id=r.invitation_id AND i.revoked_at IS NULL)) FOR UPDATE OF r")
-        .bind(id).bind(target).bind(require_active).fetch_optional(&mut *tx).await?;
+        "SELECT r.permission,s.public_key,t.public_key,r.nonce FROM remote_sessions r JOIN devices s ON s.id=r.source_device_id JOIN devices t ON t.id=r.target_device_id JOIN auth_sessions a ON a.id=r.auth_session_id JOIN auth_sessions sa ON sa.id=s.credential_session_id JOIN auth_sessions ta ON ta.id=t.credential_session_id JOIN users u ON u.id=r.requester_id JOIN users tu ON tu.id=t.owner_id WHERE r.id=$1 AND r.target_device_id=$2 AND r.state='approved' AND (NOT $3 OR r.grant_until>now()) AND ($4::bigint IS NULL OR t.generation=$4) AND s.enabled AND t.enabled AND u.enabled AND tu.enabled AND a.revoked_at IS NULL AND a.refresh_expires_at>now() AND sa.revoked_at IS NULL AND sa.refresh_expires_at>now() AND ta.revoked_at IS NULL AND ta.refresh_expires_at>now() AND s.lease_until>now() AND t.lease_until>now() AND (r.invitation_id IS NULL OR EXISTS(SELECT 1 FROM invitations i WHERE i.id=r.invitation_id AND i.revoked_at IS NULL)) FOR UPDATE OF r,t")
+        .bind(id).bind(target).bind(require_active).bind(generation).fetch_optional(&mut *tx).await?;
     let (permission, source_key, target_key, nonce) = row.ok_or(Error::Forbidden)?;
     let grant_token = token();
     sqlx::query("UPDATE remote_sessions SET grant_hash=$2,grant_until=now()+($3 * interval '1 second'),updated_at=now() WHERE id=$1")
@@ -331,7 +333,7 @@ pub async fn decide(
     };
     audit(&state.pool, None, "decide_remote", Some(id), new_state).await?;
     if input.approve {
-        match grant(&state, id, target, false).await {
+        match grant(&state, id, target, false, None).await {
             Ok(g) => Ok(Json(Some(g))),
             Err(e) => {
                 sqlx::query("UPDATE remote_sessions SET state='revoked',grant_until=NULL WHERE id=$1 AND state='approved'")
@@ -349,7 +351,18 @@ pub async fn renew(
     Path(id): Path<Uuid>,
 ) -> Result<Json<GrantOutput>> {
     let (target, _) = device_principal(&state, &headers).await?;
-    Ok(Json(grant(&state, id, target, true).await?))
+    Ok(Json(grant(&state, id, target, true, None).await?))
+}
+pub async fn transport_renew(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<GrantOutput>> {
+    let generation = transport_generation(&headers)?;
+    let (target, _) = device_principal(&state, &headers).await?;
+    Ok(Json(
+        grant(&state, id, target, true, Some(generation)).await?,
+    ))
 }
 pub async fn revoke(
     State(state): State<AppState>,
@@ -392,18 +405,44 @@ pub struct GrantView {
     pub target_public_key: String,
     pub nonce: String,
     pub expires_at: String,
+    pub expires_in: i64,
+}
+pub(crate) fn transport_generation(headers: &HeaderMap) -> Result<i64> {
+    headers
+        .get("x-farsail-generation")
+        .and_then(|h| h.to_str().ok())
+        .and_then(|s| s.parse::<i64>().ok())
+        .filter(|n| *n > 0)
+        .ok_or(Error::Unauthorized)
+}
+pub async fn inspect_transport_grant(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+) -> Result<Json<GrantView>> {
+    let generation = transport_generation(&headers)?;
+    inspect_grant_inner(&state, &headers, id, Some(generation)).await
 }
 pub async fn inspect_grant(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(id): Path<Uuid>,
 ) -> Result<Json<GrantView>> {
-    let grant_token = bearer(&headers)?;
-    let proof = device_header(&headers)?;
+    inspect_grant_inner(&state, &headers, id, None).await
+}
+async fn inspect_grant_inner(
+    state: &AppState,
+    headers: &HeaderMap,
+    id: Uuid,
+    generation: Option<i64>,
+) -> Result<Json<GrantView>> {
+    let grant_token = bearer(headers)?;
+    let proof = device_header(headers)?;
     let row:Option<GrantInspectRow> = sqlx::query_as(
-        "SELECT r.permission,s.public_key,t.public_key,r.nonce,r.grant_until FROM remote_sessions r JOIN devices s ON s.id=r.source_device_id JOIN devices t ON t.id=r.target_device_id JOIN auth_sessions a ON a.id=r.auth_session_id JOIN auth_sessions sa ON sa.id=s.credential_session_id JOIN auth_sessions ta ON ta.id=t.credential_session_id JOIN users u ON u.id=r.requester_id JOIN users tu ON tu.id=t.owner_id WHERE r.id=$1 AND r.grant_hash=$2 AND r.state='approved' AND r.grant_until>now() AND s.enabled AND t.enabled AND u.enabled AND tu.enabled AND a.revoked_at IS NULL AND a.refresh_expires_at>now() AND sa.revoked_at IS NULL AND sa.refresh_expires_at>now() AND ta.revoked_at IS NULL AND ta.refresh_expires_at>now() AND s.lease_until>now() AND t.lease_until>now() AND (s.credential_hash=$3 OR t.credential_hash=$3) AND (r.invitation_id IS NULL OR EXISTS(SELECT 1 FROM invitations i WHERE i.id=r.invitation_id AND i.revoked_at IS NULL))")
-        .bind(id).bind(hash(grant_token)).bind(hash(&proof)).fetch_optional(&state.pool).await?;
-    let (permission, source, target, nonce, expires_at) = row.ok_or(Error::Forbidden)?;
+        "SELECT r.permission,s.public_key,t.public_key,r.nonce,r.grant_until,GREATEST(0,EXTRACT(EPOCH FROM (r.grant_until-now()))::bigint) FROM remote_sessions r JOIN devices s ON s.id=r.source_device_id JOIN devices t ON t.id=r.target_device_id JOIN auth_sessions a ON a.id=r.auth_session_id JOIN auth_sessions sa ON sa.id=s.credential_session_id JOIN auth_sessions ta ON ta.id=t.credential_session_id JOIN users u ON u.id=r.requester_id JOIN users tu ON tu.id=t.owner_id WHERE r.id=$1 AND r.grant_hash=$2 AND r.state='approved' AND r.grant_until>now() AND s.enabled AND t.enabled AND u.enabled AND tu.enabled AND a.revoked_at IS NULL AND a.refresh_expires_at>now() AND sa.revoked_at IS NULL AND sa.refresh_expires_at>now() AND ta.revoked_at IS NULL AND ta.refresh_expires_at>now() AND s.lease_until>now() AND t.lease_until>now() AND (s.credential_hash=$3 OR t.credential_hash=$3) AND ($4::bigint IS NULL OR (s.credential_hash=$3 AND s.generation=$4) OR (t.credential_hash=$3 AND t.generation=$4)) AND (r.invitation_id IS NULL OR EXISTS(SELECT 1 FROM invitations i WHERE i.id=r.invitation_id AND i.revoked_at IS NULL))")
+        .bind(id).bind(hash(grant_token)).bind(hash(&proof)).bind(generation).fetch_optional(&state.pool).await?;
+    let (permission, source, target, nonce, expires_at, expires_in) =
+        row.ok_or(Error::Forbidden)?;
     Ok(Json(GrantView {
         session_id: id,
         permission,
@@ -411,5 +450,6 @@ pub async fn inspect_grant(
         target_public_key: hex::encode(target),
         nonce: hex::encode(nonce),
         expires_at: expires_at.to_rfc3339(),
+        expires_in,
     }))
 }

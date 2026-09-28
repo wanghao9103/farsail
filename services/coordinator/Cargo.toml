@@ -7,6 +7,7 @@ rust-version.workspace = true
 
 [dependencies]
 farsail-core = { path = "../../crates/core" }
+iroh = "=1.2.0"
 argon2 = "0.5"
 anyhow = "1"
 axum = { version = "0.8", features = ["macros"] }
