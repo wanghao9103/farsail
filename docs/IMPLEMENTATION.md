@@ -23,7 +23,7 @@
 
 | Work Item | 可验收结果 | 状态 |
 | --- | --- | --- |
-| WI-001 | Rust workspace、PostgreSQL 账号/设备/授权服务、隔离本地运行与权限测试 | ready |
+| WI-001 | Rust workspace、PostgreSQL 账号/设备/授权服务、隔离本地运行与权限测试 | 本地验收通过，提交/推送收口中 |
 | WI-002 | Tauri 客户端登录、设备注册/列表、凭据安全存储、用户/管理员界面 | planned |
 | WI-003 | iroh 端到端连接、应用授权、直连/中继配置与撤权 | planned |
 | WI-004 | Windows 屏幕采集、用户确认、鼠标键盘输入与可用远控基线 | planned |
@@ -38,7 +38,7 @@
 
 ### 基线与 Write Set
 
-代码基线为初始提交；工作启动提交将额外包含本实施文档。开工时在本节记录实际 HEAD。
+开工核对 HEAD 为 `1a48cdbd268335a29406724cc54677d5aa00a9f4`，工作区干净。代码路径均在下述 Write Set 内；未修改设计草案或其他工作项。最终提交 SHA 见 `docs/verification/WI-001.md`。
 
 允许修改：`Cargo.toml`、`Cargo.lock`、`rust-toolchain.toml`、`crates/core/**`、`services/coordinator/**`、`deploy/local/**`、`scripts/test-coordinator.ps1`、`.github/workflows/backend.yml`、`.gitignore`、`README.md`、`docs/IMPLEMENTATION.md`、`docs/API.md`、`docs/verification/WI-001.md`。
 
@@ -63,4 +63,6 @@
 
 ### 记录
 
-尚未开始代码实现。
+Rust workspace、共享协议枚举、Axum 协调服务及 PostgreSQL 迁移已实现。账号支持邮箱验证、登录/恢复、Argon2id、访问/刷新轮换、登录会话撤销；设备支持 Ed25519 持有证明、唯一绑定、登录会话关联的专用凭据、完整分页列表、心跳代次与解绑；授权支持一次性邀请、目标设备批准/拒绝、30 秒 grant、续期和撤权；管理员支持用户/设备启停、注册策略和邮箱定向注册邀请、元数据审计。测试使用真实 PostgreSQL 隔离 schema，邮件使用内存 mailer 或本地 Mailpit。完整命令、结果、端口、运行状态和仍未验证项见 [WI-001 验证记录](verification/WI-001.md)，请求契约见 [API 文档](API.md)。
+
+WI-002 对接从 `/v1/me` 开始；账号访问 token 与设备 token 分开保存，设备密钥留在原生安全存储。`GET /v1/devices` 返回已绑定的同账号全部设备，包含离线与管理员禁用项。`GET /v1/remote/{id}` 只报告 pending/approved/denied/revoked/expired 状态，不传 grant token。目标端 `decide`/`renew` 才收到 grant token；其安全交付给发起端及 iroh 握手校验属于 WI-003。当前未验证公网、域名/TLS 代理、真实邮件、第二台 Windows、P2P/中继撤权或移动端。

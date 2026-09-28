@@ -1,0 +1,8 @@
+[workspace]
+members = ["crates/core", "services/coordinator"]
+resolver = "2"
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+rust-version = "1.93"

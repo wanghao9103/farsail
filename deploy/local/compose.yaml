@@ -1,0 +1,24 @@
+name: farsail-dev
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: farsail
+      POSTGRES_PASSWORD: ${FARSAIL_DB_PASSWORD:?set in ignored .local/dev.env}
+      POSTGRES_DB: farsail
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - farsail_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U farsail -d farsail"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+  mailpit:
+    image: axllent/mailpit:v1.27.10
+    ports:
+      - "127.0.0.1:51025:1025"
+      - "127.0.0.1:58025:8025"
+volumes:
+  farsail_pg:
