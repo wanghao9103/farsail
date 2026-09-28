@@ -25,7 +25,7 @@
 | --- | --- | --- |
 | WI-001 | Rust workspace、PostgreSQL 账号/设备/授权服务、隔离本地运行与权限测试 | 完成：本地验收通过，代码已推送 |
 | WI-002 | Tauri 客户端登录、设备注册/列表、凭据安全存储、用户/管理员界面 | 完成：本地与 Windows CI 通过，代码已推送 |
-| WI-003 | iroh 端到端连接、应用授权、直连/中继配置与撤权 | 本机实现与专项验证完成；远端 CI 待核对 |
+| WI-003 | iroh 端到端连接、应用授权、直连/中继配置与撤权 | 完成：本机专项验证和远端 CI 均通过 |
 | WI-004 | Windows 屏幕采集、用户确认、鼠标键盘输入与可用远控基线 | planned |
 | WI-005 | 分块双向文件传输、无损压缩、校验/续传、授权与限速 | planned |
 | WI-006 | 实际硬编/解码、多屏与自适应速率、能力协商和 4:4:4 路径 | planned |
@@ -136,4 +136,4 @@ WI-003 的输入：原生层提供 `NativeClient::take_grant_for_transport` 和 
 
 实现 `crates/transport` 设备密钥复用的 iroh 1.2 加密 QUIC、分类型有界数据帧、真实 selected path/RTT 和本地单调短租约。协调服务添加独立新迁移，设备地址按注册公钥、在线代次登记，批准会话的参与设备才能查询；relay URL 受 HTTPS/凭据格式及服务端名单限制。目标只经认证连接交付 grant，两端核对会话、公钥、nonce、精确权限和服务端有效 TTL，续期与撤权关闭已有通道；断开的旧批准不能在端点重启后复用。Tauri 页面可启动/连接/查看路径，但 `can_host=false`、`can_files=false`，媒体处理和文件内容仍未实现。详细接口、运行方式与验证证据见 [认证传输](TRANSPORT.md)、[API](API.md)、[客户端](CLIENT.md) 和 [WI-003 验证记录](verification/WI-003.md)。
 
-本机两端直连、强制本地 TLS relay、真实 PostgreSQL/HTTP 授权集成与既有开发数据库原地迁移已通过。用户尚未提供公网服务器和第二台设备；公网 IP 证书、跨 NAT 与移动端均未验证。提交、CI、进程清理和远端 SHA 见验证记录最终补记。WI-004 可直接使用原生 `Session::send/receive` 的 `Media`/`Control` 通道，在实际采集与输入确认实现后再启用主机能力。
+本机两端直连、强制本地 TLS relay、真实 PostgreSQL/HTTP 授权集成与既有开发数据库原地迁移已通过。实现提交 `e9e119a17e485da97d288913b63e5ff809cc45d9` 已推送；后端、传输和 Windows 客户端 CI 均成功。用户尚未提供公网服务器和第二台设备；公网 IP 证书、跨 NAT 与移动端均未验证。进程清理、命令和运行链接见验证记录。WI-004 可直接使用原生 `Session::send/receive` 的 `Media`/`Control` 通道，在实际采集与输入确认实现后再启用主机能力。
