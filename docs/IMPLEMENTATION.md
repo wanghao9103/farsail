@@ -25,7 +25,7 @@
 | --- | --- | --- |
 | WI-001 | Rust workspace、PostgreSQL 账号/设备/授权服务、隔离本地运行与权限测试 | 完成：本地验收通过，代码已推送 |
 | WI-002 | Tauri 客户端登录、设备注册/列表、凭据安全存储、用户/管理员界面 | 完成：本地与 Windows CI 通过，代码已推送 |
-| WI-003 | iroh 端到端连接、应用授权、直连/中继配置与撤权 | planned |
+| WI-003 | iroh 端到端连接、应用授权、直连/中继配置与撤权 | ready |
 | WI-004 | Windows 屏幕采集、用户确认、鼠标键盘输入与可用远控基线 | planned |
 | WI-005 | 分块双向文件传输、无损压缩、校验/续传、授权与限速 | planned |
 | WI-006 | 实际硬编/解码、多屏与自适应速率、能力协商和 4:4:4 路径 | planned |
@@ -101,5 +101,39 @@ WI-002 对接从 `/v1/me` 开始；账号访问 token 与设备 token 分开保�
 Windows Tauri 2 + React/Vite 客户端、可复用 Rust 原生客户端 crate、DPAPI 用户作用域凭据、Ed25519 设备身份、登录/刷新/心跳、完整设备列举和筛选、授权申请/批准/拒绝/撤销、账号安全与管理员页面已实现。浏览器仅作响应式布局验证；真实 Windows WebView2 的 `state` 和登录命令已通过 IPC 烟测。客户端在隔离 PostgreSQL 上经真实 HTTP 完成注册、验证、绑定、授权、管理员与退出链路。实现细节、命令与风险见 [WI-002 验证记录](verification/WI-002.md) 和 [客户端文档](CLIENT.md)。
 
 WI-003 的输入：原生层提供 `NativeClient::take_grant_for_transport` 和 `renew_grant_for_transport`，只有目标设备批准端取得 grant。下一项须加入认证信令将其安全交给发起端，并用两端公钥、nonce、session ID、权限及期限绑定 iroh 握手、租约续期与断线撤权。`GET /v1/remote/{id}` 仍只返回状态，不能用它领取 grant。当前没有公网服务器、有效 HTTPS IP 证书、第二台 Windows、P2P/中继或移动真机验证；客户端保持 `can_host=false` 和 `can_files=false`，不可把授权 UI 解释为实际远控。
+
+总控验收：WI-002 实现 `e507412`、交接提交 `a1c9cf68a23724612243fb267c24d2c43e40fa2c` 已推送。真实 PostgreSQL/HTTP、Windows DPAPI、WebView2 登录 IPC、本机编译和 Windows/Linux CI 均通过；开发进程停止，工作区干净。批准继续 WI-003。
+
+## WI-003：认证的加密传输与中继
+
+### 基线与 Write Set
+
+代码基线 `a1c9cf68a23724612243fb267c24d2c43e40fa2c`；本节计划提交后的 HEAD 为开工基线。
+
+允许修改：`crates/transport/**`、`crates/core/**`、`crates/client/**`、`services/coordinator/**`（只添加新迁移，不改已提交的历史迁移）、`apps/desktop/src-tauri/**`、`apps/desktop/src/**`、`packages/ui/**`、`Cargo.toml`、`Cargo.lock`、`deploy/relay/**`、`scripts/test-transport.ps1`、`.github/workflows/transport.yml`、现有后端/客户端 CI 的必要兼容或缓存配置、`README.md`、`docs/IMPLEMENTATION.md`、`docs/API.md`、`docs/CLIENT.md`、`docs/TRANSPORT.md`、`docs/verification/WI-003.md`。
+
+### 必须交付
+
+- 使用已核实兼容 Rust 1.93 的 `iroh` / `iroh-relay` 1.2.x，提交锁文件。复用设备注册时的同一 Ed25519 身份；连接握手公钥须与授权中的双方身份一致，不能另生成匿名 endpoint 绕开设备注册。
+- 增加经设备凭据与当前在线代次校验的连接地址登记、更新和授权查询。发现信息只对有权的账号/会话参与者返回，失效设备不可发布，跨账号邀请不能变成任意设备地址目录。
+- 目标端批准后，grant 只通过认证的端到端连接交付给正确的发起端；发起端向协调服务验证 grant，双方校验会话、设备公钥、nonce、权限与期限后才开放对应数据通道。握手有超时、并发上限和重放处理；拒绝、未批准、错误身份和权限升级必须被拒绝。
+- 实现被封装的会话数据通路（控制、媒体、文件的类型/版本和尺寸边界），为 WI-004/005 提供真正可用的有界读写接口。不能只提供 echo 示例，也不能提前宣称屏幕/文件内容处理完成。
+- 续期、服务端撤销、退出、解绑、断线与租约失效能关闭已建立的 P2P/中继数据通路。用可信服务端剩余 TTL 和本地单调时钟执行有界租约，避免信任对端传来的任意过期时间；退出先取消本地会话，不能被缓慢 HTTP 请求长期阻塞。控制权限不能从 view 推导。
+- 本地直连与自建中继均可配置；使用真实路径/选中路径信息显示 direct/relay/connecting/closed 及 RTT。配置了 relay URL 不等于实际走中继。
+- 测试禁用公网地址发现，明确 loopback 绑定并关闭 UPnP/PCP/NAT-PMP。客户端默认也不自动修改路由器端口映射。中继只绑定本机测试端口；生产部署文件保留可配置域名或公网 IP 和正常 TLS 验证，用户公网机器尚未提供，不部署外部环境。
+- 单独测试强制中继：用 1.2 的 `clear_ip_transports()` 等实际配置禁用 IP 直连并确认选中路径；不要修改系统全局防火墙来制造条件。中继 TLS 使用测试 CA/证书的正确验证，禁止 accept-all verifier。
+- 将原生传输状态/请求与现有 Tauri 界面接通，但长期凭据及 grant 仍不流向 JS。保留未实现媒体/文件能力的真实标识，下一项才能启用主机对应能力。
+
+### 验收
+
+- 本地两个真实 endpoint：授权握手、双向数据、错误公钥/未批准/过期/replay/权限不匹配拒绝；验证已有流在撤权/失联租约到期后不能继续传送业务数据。
+- 用真实协调 HTTP/PostgreSQL 与设备绑定完成至少一条完整传输集成；本地 TLS relay 强制中继也传送并校验数据，检查实际路径。只模拟授权回调的测试不足以作为完整集成证据。
+- `cargo fmt --all -- --check`、传输/客户端/后端适用 tests 与 Clippy、前端 typecheck/build、Windows Tauri 编译。新增迁移在已有本项目数据库和隔离测试库中分别验证，不删除先前数据来掩盖迁移问题。
+- 为公网 NAT 与第二台设备保留部署说明和待验收清单，不把 loopback 成功表述为已完成公网穿透率验证。
+- 更新所有运行端口/进程状态和下一项接口，提交/推送并核对 CI/远端。可复用结论按技能沉淀。
+
+### 记录
+
+等待开工。库能力信息已从 crates.io 核实：iroh / iroh-relay 1.2.0 的最低 Rust 为 1.91。用户尚未提供公网部署目标或第二台设备接入信息。
 
 本项实现提交 `e507412869845f6c2f9677eccafe0af8993ea3f6` 已推送；实现推送后用 `git ls-remote` 核对过远端 `main` 的同一 SHA。[Windows 客户端 CI](https://github.com/wanghao9103/farsail/actions/runs/36380905041) 与 [后端 CI](https://github.com/wanghao9103/farsail/actions/runs/36380905022) 均通过。验收后 Tauri、Vite、协调服务与项目专属容器已停止；`.local/dev.env` 和专属 Docker 卷保留。进入 WI-003 前以最新远端 `main` 为基线核对工作区，继续共享工作区串行写入。
