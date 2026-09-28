@@ -1,0 +1,45 @@
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+!.env.sample
+*.pem
+*.key
+*.p12
+*.pfx
+*.keystore
+*.jks
+secrets/
+.local/
+.codex/
+
+# Rust / frontend build output
+target/
+node_modules/
+dist/
+build/
+.gradle/
+.vite/
+.cache/
+coverage/
+
+# Runtime data and temporary files
+logs/
+runtime-data/
+*.log
+*.tmp
+*.part
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+*.db
+*.db-wal
+*.db-shm
+
+# Editor and operating-system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
