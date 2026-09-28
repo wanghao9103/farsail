@@ -245,3 +245,6 @@ Windows 原生层按显示器所属 DXGI 适配器采集，处理 DPI、负坐�
 
 ### 回查结论
 本项窄查Tauri凭据/WebView边界与独立公开制品验收笔记：适用的是原生凭据隔离、debug/正式构建区分、原生IPC与网页预览分层，以及完整匿名制品核验；旧笔记中“远控尚未实现”的状态已被WI-004更新，不再适用。官方构建入口与WebView2选项以当前Tauri文档和锁定版本核对：https://v2.tauri.app/distribute/windows-installer/ 。
+
+### 执行记录（进行中）
+开工 HEAD `2d96e3e54f3515a48fceb065d3ad65e7e2a940f1`，工作区干净。窄查两篇指定机制笔记并与现有代码核对。沿用0.1.0版本和v2图标；补上Tauri `custom-protocol` feature和release Windows GUI subsystem，官方NSIS currentUser + embedBootstrapper。首次缺WebView2时仍需联网。测试不安装到本机：仅一次性GitHub Windows runner安装，UI Automation驱动普通设置页验证原生IPC/持久化，重装/静默卸载检查数据保留；不添加生产测试后门，不截图桌面。具体结果后续写入WI-008B验证记录。

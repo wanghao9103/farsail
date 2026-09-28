@@ -9,6 +9,9 @@ rust-version.workspace = true
 name = "farsail_desktop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+custom-protocol = ["tauri/custom-protocol"]
+
 [dependencies]
 farsail-client = { path = "../../../crates/client" }
 farsail-core = { path = "../../../crates/core" }

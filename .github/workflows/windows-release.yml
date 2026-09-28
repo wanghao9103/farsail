@@ -1,0 +1,43 @@
+name: Windows preview installer
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: windows-preview-release
+  cancel-in-progress: false
+jobs:
+  package:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.93.0
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-preview
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Build embedded release and NSIS
+        run: ./scripts/package-windows.ps1
+      - name: Install, native WebView IPC, reinstall and uninstall
+        run: ./scripts/test-windows-package.ps1
+      - name: Targeted Rust regressions
+        run: |
+          cargo test --locked -p farsail-client -p farsail-desktop --lib
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo clippy --locked -p farsail-desktop --all-targets -- -D warnings
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-preview-${{ github.sha }}
+          path: .local/windows-package/artifacts/*
+          if-no-files-found: error
+          retention-days: 14
