@@ -2,6 +2,7 @@
 # Build host only. All runtime images included; server never contacts Docker Hub.
 set -euo pipefail
 docker() { MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' command docker "$@"; }
+if [[ $(uname -s) == MINGW* ]]; then jq() { command jq -b "$@"; }; fi
 root=$(cd "$(dirname "$0")/../.." && pwd)
 revision=${1:?revision required}; out=${2:?output directory required}
 mkdir -p "$out"

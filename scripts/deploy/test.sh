@@ -3,6 +3,7 @@
 set -euo pipefail
 docker() { MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' command docker "$@"; }
 openssl() { MSYS_NO_PATHCONV=1 command openssl "$@"; }
+if [[ $(uname -s) == MINGW* ]]; then jq() { command jq -b "$@"; }; fi
 # The disposable CA has no public CRL distribution point. Schannel still verifies
 # its chain/SAN; only unavailable revocation metadata is tolerated in this test.
 curl() {

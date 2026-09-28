@@ -3,6 +3,7 @@
 set -euo pipefail
 docker() { MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*' command docker "$@"; }
 openssl() { MSYS_NO_PATHCONV=1 command openssl "$@"; }
+if [[ $(uname -s) == MINGW* ]]; then jq() { command jq -b "$@"; }; fi
 umask 077
 root=$(cd "$(dirname "$0")/../.." && pwd)
 config="$root/deploy/production"
@@ -123,7 +124,7 @@ load-release)
   done
   # Validate exact expected filenames; never allow checksum files to reference other paths.
   for name in manifest.json farsail-linux-amd64-images.tar.gz; do
-    expected=$(awk -v name="$name" '$2==name {print $1}' "$dest/SHA256SUMS")
+    expected=$(awk -v name="$name" '{sub(/^\*/,"",$2)} $2==name {print $1}' "$dest/SHA256SUMS")
     [[ $expected =~ ^[0-9a-f]{64}$ ]] || fail "Missing/invalid checksum: $name"
     actual=$(sha256sum "$dest/$name" | cut -d' ' -f1)
     [[ $actual == "$expected" ]] || fail "Checksum mismatch: $name"

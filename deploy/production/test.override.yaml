@@ -2,3 +2,6 @@
 services:
   db:
     ports: ["127.0.0.1:55433:5432"]
+    # An internal-only Docker bridge does not forward published host ports.
+    # Only the test DB joins this isolated egress bridge for host-run Rust tests.
+    networks: [backend, egress]

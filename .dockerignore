@@ -5,7 +5,6 @@
 !crates/**
 !services/**
 !apps/desktop/src-tauri/**
-!deploy/production/**
 **/target
 **/.local
 **/*.pem

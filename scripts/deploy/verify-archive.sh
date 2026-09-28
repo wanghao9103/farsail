@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Verify completeness without depending on existing daemon layers/tags.
 set -euo pipefail
+if [[ $(uname -s) == MINGW* ]]; then jq() { command jq -b "$@"; }; fi
 dir=${1:?release directory required}
 archive="$dir/farsail-linux-amd64-images.tar.gz"
 tar -tzf "$archive" > "$dir/archive-files.txt"
