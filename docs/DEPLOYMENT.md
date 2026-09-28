@@ -58,6 +58,8 @@ bash scripts/deploy/farsail.sh preflight
 
 固定发布页包含 `farsail-linux-amd64-images.tar.gz`、`manifest.json`、`SHA256SUMS`。脚本核验附件SHA256、revision、六个image ID和linux/amd64，再更新Compose。依赖源按registry digest锁定；归档使用完整image-ID派生tag，避免save/load不保留RepoDigest。所有服务pull_policy=never，启动显式--pull never。
 
+镜像内容身份以manifest中的 `config_digest` 为准，配置SHA同时绑定rootfs diffIDs。classic/containerd存储的docker inspect .Id可能分别代表config或manifest，不能直接跨机器比较；加载后流式重新导出Docker元数据校验配置SHA，仍不访问镜像仓库，也不保存大型临时tar。manifest的id保留构建引擎观察值供追溯。
+
 ```sh
 bash scripts/deploy/farsail.sh load-release "$RELEASE_SHA"
 ```
@@ -145,6 +147,34 @@ bash scripts/deploy/farsail.sh start
 start总是一起force-recreate gateway/coordinator/relay/Mailpit，避免依赖服务仍留在旧network namespace；短暂中断，卷保留。禁止只重建gateway。回滚先检出旧代码和导入旧归档，再start。本项不改变数据库迁移；未来涉及不可逆迁移时必须评估备份兼容性。
 
 恢复数据库：先stop，以同一state的Compose单独启动db，把选定dump经标准输入传给 `pg_restore -U farsail -d farsail --clean --if-exists --exit-on-error`，再start。--clean覆盖业务库，须由操作者核对备份/停机后执行。不得在公网运行开发测试脚本。完整灾备恢复演练尚未验证。
+
+恢复时先停止定时器及正在执行的续期，避免恢复中重启业务：
+
+```sh
+systemctl stop farsail-renew.timer farsail-renew.service
+```
+
+```sh
+bash scripts/deploy/farsail.sh stop
+```
+
+```sh
+docker compose --env-file .local/production/compose.env -f deploy/production/compose.yaml up -d --pull never --wait db
+```
+
+确认选定备份后，下面单条命令持有实例操作锁并覆盖当前数据库内容：
+
+```sh
+flock .local/production.operation.lock docker compose --env-file .local/production/compose.env -f deploy/production/compose.yaml exec -T db pg_restore -U farsail -d farsail --clean --if-exists --exit-on-error < '<选定的.dump完整路径>'
+```
+
+```sh
+bash scripts/deploy/farsail.sh start
+```
+
+```sh
+systemctl start farsail-renew.timer
+```
 
 ```sh
 bash scripts/deploy/farsail.sh logs

@@ -1,6 +1,11 @@
 name: deployment-pre-release
 on:
   workflow_dispatch:
+    inputs:
+      reuse_verified_4252:
+        description: Verify loader compatibility against the unchanged published 4252 payload
+        type: boolean
+        default: false
 permissions:
   contents: write
 concurrency:
@@ -16,7 +21,9 @@ jobs:
         run: rustup toolchain install 1.93.0 --profile minimal --component rustfmt --component clippy
       - uses: Swatinem/rust-cache@v2
       - uses: docker/setup-buildx-action@v3
+        if: ${{ !inputs.reuse_verified_4252 }}
       - name: Build coordinator
+        if: ${{ !inputs.reuse_verified_4252 }}
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -29,6 +36,7 @@ jobs:
           cache-from: type=gha,scope=coordinator
           cache-to: type=gha,mode=max,scope=coordinator
       - name: Build pinned relay
+        if: ${{ !inputs.reuse_verified_4252 }}
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -41,23 +49,33 @@ jobs:
           cache-from: type=gha,scope=relay
           cache-to: type=gha,mode=max,scope=relay
       - name: Bundle all runtime images
+        if: ${{ !inputs.reuse_verified_4252 }}
         run: |
           bash scripts/deploy/bundle.sh "$GITHUB_SHA" .local/release
           bash scripts/deploy/verify-archive.sh .local/release
           # Remove only the six tags created by this job; unrelated images untouched.
           jq -r '.images[].tag' .local/release/manifest.json | xargs docker image rm
+      - name: Download unchanged published payload anonymously
+        if: ${{ inputs.reuse_verified_4252 }}
+        run: |
+          mkdir -p .local/release
+          for name in manifest.json SHA256SUMS farsail-linux-amd64-images.tar.gz; do
+            curl --fail --location --retry 3 --output ".local/release/$name" "https://github.com/wanghao9103/farsail/releases/download/deploy-4252e9d901e3022175772f563be45df967c3e9cc/$name"
+          done
+          bash scripts/deploy/verify-archive.sh .local/release
       - name: Import archive with fixed tags and verify image IDs
         env:
           FARSAIL_STATE_DIR: ${{ github.workspace }}/.local/deploy-smoke
         run: |
           bash scripts/deploy/farsail.sh init 127.0.0.1 ci@example.test test
-          bash scripts/deploy/farsail.sh load-release "$GITHUB_SHA" .local/release
+          bash scripts/deploy/farsail.sh load-release "$(jq -r .revision .local/release/manifest.json)" .local/release
       - name: Actual Compose, HTTPS, Mailpit, identity and relay regression
         run: |
           cargo fmt --all -- --check
           bash -n scripts/deploy/farsail.sh scripts/deploy/bundle.sh scripts/deploy/test.sh
           bash scripts/deploy/test.sh
       - name: Publish verified prerelease only
+        if: ${{ !inputs.reuse_verified_4252 }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

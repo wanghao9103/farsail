@@ -27,7 +27,7 @@
 | WI-002 | Tauri 客户端登录、设备注册/列表、凭据安全存储、用户/管理员界面 | 完成：本地与 Windows CI 通过，代码已推送 |
 | WI-003 | iroh 端到端连接、应用授权、直连/中继配置与撤权 | 完成：本机专项验证和远端 CI 均通过 |
 | WI-004 | Windows 屏幕采集、用户确认、鼠标键盘输入与可用远控基线 | 本机及三条远端 CI 通过 |
-| WI-008A | 公网 IP 部署包、预构建 Linux 制品与联调准备 | 实现与部署验收进行中 |
+| WI-008A | 公网 IP 部署包、预构建 Linux 制品与联调准备 | 本机/Linux CI通过；修正跨Docker存储导入校验后重新发布中 |
 | WI-005 | 分块双向文件传输、无损压缩、校验/续传、授权与限速 | planned |
 | WI-006 | 实际硬编/解码、多屏与自适应速率、能力协商和 4:4:4 路径 | planned |
 | WI-007 | Android/iOS 手机控制与文件接口、可执行平台构建和验证 | planned |
@@ -213,3 +213,7 @@ Windows 原生层按显示器所属 DXGI 适配器采集，处理 DPI、负坐�
 共享gateway网络命名空间保持协调服务loopback。内部relay准入独立路由、私有bearer、有效设备/账号/登录检查和2秒数据库期限；回环准入代理限制上游连接/读写期限。公网API屏蔽/internal，relay接收限速使用1.2.0实际有效字段。API443/relay8443，监听地址与公网URL分开。首次回环Mailpit仍做真实邮箱验证；显式bootstrap管理员。六镜像离线包使用固定tag+image ID验证，全部pull never；start一起重建共享namespace依赖。证书使用Certbot5.4.0短期IP/webroot、失败可见的systemd续期和Manual证书重载/relay重启。
 
 运行边界：仅farsail-deploy-test、回环58080/58443/58444/58026/55433，私有测试状态和镜像缓存留.local及Docker本项目卷；不改farsail-dev或其他容器。Docker构建、真实测试CA/SMTP/身份/relay及制品发布结果持续记录在 [WI-008A](verification/WI-008A.md)。
+
+最终部署代码 `4252e9d901e3022175772f563be45df967c3e9cc`；[发布CI 36400484173](https://github.com/wanghao9103/farsail/actions/runs/36400484173) 成功，六镜像完整预发布已发布，三个公开附件完整匿名下载、字节数/SHA256核验通过。前一实现提交9d910e6的后端/传输/Windows CI均成功。初版部署CI发现internal网络阻止宿主测试数据库发布，只在test.override修复网络，生产数据库保持私网。测试容器和端口已清理，卷/私有状态保留。用户服务器CA/部署/跨NAT仍交总控继续，不因此把公网远控、文件、HEVC或手机功能标成已验收。制品链接、摘要、命令与边界见WI-008A验证记录。
+
+跨存储复验追加：4252e9d公开归档SHA正确，但classic与containerd的docker inspect .Id语义不同；旧加载脚本在Docker29的containerd存储上误拒绝。因此该预发布已标记Superseded，不作为最终部署版本。正在改为跨存储稳定的image config SHA（包含rootfs diffIDs）并重新发布；不得省略此核验或将当前旧附件直接交用户启动。

@@ -23,5 +23,15 @@ while IFS=$'\t' read -r key source; do
   mv "$out/manifest.new" "$out/manifest.json"
 done < <(jq -r --arg rev "$revision" '.+{COORDINATOR_IMAGE:("farsail/coordinator:"+$rev),RELAY_IMAGE:("farsail/relay:"+$rev)}|to_entries[]|[.key,.value]|@tsv' "$root/deploy/production/images.json")
 docker save "${tags[@]}" | gzip -n -3 > "$out/farsail-linux-amd64-images.tar.gz"
+tar -xOzf "$out/farsail-linux-amd64-images.tar.gz" manifest.json > "$out/docker-manifest.json"
+# inspect .Id is a config digest in classic storage, but may be a manifest/index
+# digest in containerd storage. The image config SHA is stable across both.
+for tag in "${tags[@]}"; do
+  path=$(jq -r --arg tag "$tag" '.[]|select(.RepoTags|index($tag))|.Config' "$out/docker-manifest.json")
+  digest=$(basename "$path" .json)
+  [[ $digest =~ ^[0-9a-f]{64}$ ]]
+  jq --arg tag "$tag" --arg digest "sha256:$digest" '(.images[]|select(.tag==$tag)).config_digest=$digest' "$out/manifest.json" > "$out/manifest.new"
+  mv "$out/manifest.new" "$out/manifest.json"
+done
 (cd "$out" && sha256sum manifest.json farsail-linux-amd64-images.tar.gz > SHA256SUMS)
 printf 'Six-image offline archive ready: %s\n' "$out"

@@ -12,5 +12,9 @@ while IFS= read -r member; do
 done < <(jq -r '.[]|.Config,.Layers[]' "$dir/docker-manifest.json")
 while IFS= read -r tag; do
   jq -e --arg tag "$tag" 'any(.[]; .RepoTags|index($tag))' "$dir/docker-manifest.json" >/dev/null
+  config=$(jq -r --arg tag "$tag" '.[]|select(.RepoTags|index($tag))|.Config' "$dir/docker-manifest.json")
+  expected=$(jq -r --arg tag "$tag" '.images[]|select(.tag==$tag)|.config_digest // .id' "$dir/manifest.json")
+  actual=$(tar -xOzf "$archive" "$config" | sha256sum | cut -d' ' -f1)
+  [[ "sha256:$actual" == "$expected" ]]
 done < <(jq -r '.images[].tag' "$dir/manifest.json")
 printf 'All six fixed tags, image configurations and every referenced layer are present in archive.\n'

@@ -113,7 +113,6 @@ preflight)
 load-release)
   revision=${1:?full commit SHA required}; source_dir=${2:-}
   [[ $revision =~ ^[0-9a-f]{40}$ ]] || fail 'Use the full 40-character revision'
-  [[ $(git -C "$root" rev-parse HEAD) == "$revision" ]] || fail 'Checkout the same fixed revision before loading its release'
   dest=${source_dir:-$state/downloads/$revision}; mkdir -p "$dest"; dest=$(realpath "$dest")
   for name in SHA256SUMS manifest.json farsail-linux-amd64-images.tar.gz; do
     if [[ ! -f $dest/$name ]]; then
@@ -129,20 +128,37 @@ load-release)
     actual=$(sha256sum "$dest/$name" | cut -d' ' -f1)
     [[ $actual == "$expected" ]] || fail "Checksum mismatch: $name"
   done
+  if [[ $(git -C "$root" rev-parse HEAD) != "$revision" ]]; then
+    # Narrow, audited loader-only compatibility upgrade. Runtime service/config
+    # behavior is unchanged; preserve the existing state and cached archive.
+    [[ $revision == 4252e9d901e3022175772f563be45df967c3e9cc &&
+       $(sha256sum "$dest/manifest.json" | cut -d' ' -f1) == dca1d2632104fcfcf6ddcff5c3091b6bc92e2c8a814fd087064ed6df51ed4068 &&
+       $(sha256sum "$dest/farsail-linux-amd64-images.tar.gz" | cut -d' ' -f1) == 23684d126f244ac7d3eae86438308dd099be0020b16cee60cefeda1360f689cd ]] || fail 'Checkout the same fixed revision before loading this release'
+  fi
   jq -e --arg revision "$revision" '.revision==$revision and .platform=="linux/amd64" and (.images|length)==6' "$dest/manifest.json" >/dev/null
   docker load --input "$(native "$dest/farsail-linux-amd64-images.tar.gz")"
+  mapfile -t tags < <(jq -r '.images[].tag' "$dest/manifest.json")
+  for tag in "${tags[@]}"; do
+    [[ $tag =~ ^farsail/[a-z-]+:[a-z0-9-]+$ ]] || fail 'Invalid image tag'
+  done
+  # Stream re-export metadata: no registry calls, no large temporary tar file.
+  # Config hashes also commit to rootfs layer diffIDs and runtime configuration.
+  docker save "${tags[@]}" | tar -xOf - manifest.json > "$state/loaded-image-configs.json"
   cp "$state/compose.env" "$state/compose.env.previous"
   cp "$state/compose.env" "$state/compose.env.new"
-  while IFS=$'\t' read -r key tag id; do
+  while IFS=$'\t' read -r key tag id config_digest; do
     [[ $key =~ ^(COORDINATOR|RELAY|NGINX|POSTGRES|MAILPIT|CERTBOT)_IMAGE$ ]] || fail 'Unexpected image key'
     [[ $tag =~ ^farsail/[a-z-]+:[a-z0-9-]+$ && $id =~ ^sha256:[0-9a-f]{64}$ ]] || fail 'Invalid image metadata'
-    [[ $(docker image inspect "$tag" --format '{{.Id}} {{.Os}}/{{.Architecture}}') == "$id linux/amd64" ]] || fail "Image ID/platform mismatch: $key"
+    [[ $config_digest =~ ^sha256:[0-9a-f]{64}$ ]] || fail 'Invalid image config digest'
+    [[ $(docker image inspect "$tag" --format '{{.Os}}/{{.Architecture}}') == linux/amd64 ]] || fail "Platform mismatch: $key"
+    loaded_config=$(jq -r --arg tag "$tag" '.[]|select(.RepoTags|index($tag))|.Config' "$state/loaded-image-configs.json")
+    [[ "sha256:$(basename "$loaded_config" .json)" == "$config_digest" ]] || fail "Image config digest mismatch: $key"
     sed -i "/^$key=/d" "$state/compose.env.new"
     printf '%s=%s\n' "$key" "$tag" >> "$state/compose.env.new"
-  done < <(jq -r '.images|to_entries[]|[.key,.value.tag,.value.id]|@tsv' "$dest/manifest.json")
+  done < <(jq -r '.images|to_entries[]|[.key,.value.tag,.value.id,(.value.config_digest // .value.id)]|@tsv' "$dest/manifest.json")
   mv "$state/compose.env.new" "$state/compose.env"
   cp "$dest/manifest.json" "$state/manifest.json"
-  printf 'Verified all six image IDs and archive SHA256. Services have not been changed.\n'
+  printf 'Verified all six portable image config digests, platforms and archive SHA256. Services have not been changed.\n'
   ;;
 certificate)
   [[ $(jq -r .mode "$state/settings.json") == production ]] || fail 'Public CA forbidden in tests'
