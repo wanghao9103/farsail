@@ -67,6 +67,11 @@ pub struct RenameInput {
     pub name: String,
 }
 #[derive(Deserialize)]
+pub struct CapabilityInput {
+    pub generation: i64,
+    pub can_host: bool,
+}
+#[derive(Deserialize)]
 pub struct HeartbeatInput {
     pub generation: Option<i64>,
 }
@@ -249,6 +254,27 @@ pub async fn rename(
         return Err(Error::NotFound);
     };
     Ok(Json(owned(&state, p.user_id, id).await?))
+}
+/// A live device may change only its implemented host capability. Disabling
+/// invalidates outstanding requests and grants before the response is sent.
+pub async fn capability(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(input): Json<CapabilityInput>,
+) -> Result<Json<DeviceView>> {
+    let (id, owner) = device_principal(&state, &headers).await?;
+    let mut tx = state.pool.begin().await?;
+    let changed = sqlx::query("UPDATE devices SET can_host=$2 WHERE id=$1 AND generation=$3 AND lease_until>now() AND enabled AND bound AND platform='windows'")
+        .bind(id).bind(input.can_host).bind(input.generation).execute(&mut *tx).await?;
+    if changed.rows_affected() != 1 {
+        return Err(Error::Conflict);
+    }
+    if !input.can_host {
+        sqlx::query("UPDATE remote_sessions SET state='revoked',grant_until=NULL WHERE target_device_id=$1 AND permission IN ('view','control') AND state IN ('pending','approved')")
+            .bind(id).execute(&mut *tx).await?;
+    }
+    tx.commit().await?;
+    Ok(Json(owned(&state, owner, id).await?))
 }
 pub async fn unbind(
     State(state): State<AppState>,

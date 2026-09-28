@@ -13,10 +13,14 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 farsail-client = { path = "../../../crates/client" }
 farsail-core = { path = "../../../crates/core" }
 farsail-transport = { path = "../../../crates/transport" }
+farsail-media = { path = "../../../crates/media" }
+farsail-windows = { path = "../../../crates/windows" }
 iroh = "=1.2.0"
 serde_json = "1"
 tauri = { version = "2.11.5", features = [] }
-tokio = { version = "1", features = ["time"] }
+tokio = { version = "1", features = ["time", "sync", "rt"] }
+serde = { version = "1", features = ["derive"] }
+fs2 = "0.4"
 
 [build-dependencies]
 tauri-build = { version = "2.5.5", features = [] }

@@ -1,9 +1,9 @@
 name: Windows client
 on:
   push:
-    paths: ['apps/desktop/**', 'crates/client/**', 'crates/transport/**', 'packages/ui/**', 'package*.json', 'Cargo.*', '.github/workflows/client.yml']
+    paths: ['apps/desktop/**', 'crates/client/**', 'crates/transport/**', 'crates/media/**', 'crates/windows/**', 'packages/ui/**', 'package*.json', 'Cargo.*', '.github/workflows/client.yml']
   pull_request:
-    paths: ['apps/desktop/**', 'crates/client/**', 'crates/transport/**', 'packages/ui/**', 'package*.json', 'Cargo.*', '.github/workflows/client.yml']
+    paths: ['apps/desktop/**', 'crates/client/**', 'crates/transport/**', 'crates/media/**', 'crates/windows/**', 'packages/ui/**', 'package*.json', 'Cargo.*', '.github/workflows/client.yml']
 jobs:
   build:
     runs-on: windows-latest
@@ -13,6 +13,7 @@ jobs:
         with:
           toolchain: 1.93.0
           components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -22,5 +23,6 @@ jobs:
       - run: npm run build
       - run: cargo fmt --all -- --check
       - run: cargo test -p farsail-client
-      - run: cargo clippy -p farsail-client -p farsail-desktop --all-targets -- -D warnings
+      - run: cargo test -p farsail-media -p farsail-windows -p farsail-desktop --lib
+      - run: cargo clippy -p farsail-client -p farsail-media -p farsail-windows -p farsail-desktop --all-targets -- -D warnings
       - run: cargo build -p farsail-desktop

@@ -1,0 +1,27 @@
+# FarSail Windows 远程查看与输入（WI-004）
+
+Windows 被控端必须登录、绑定设备、启动认证传输，再在本机点“开启本机共享”。开启时实际探测当前显示器的 DXGI duplication，随后以当前心跳代次向协调服务更新 `can_host=true`；首次绑定和文件能力均保持 false。每条请求仍由被控端在页面看到申请账号、设备和权限后明确批准。申请端再连接，`view` 只收画面，`control` 才可发系统输入。本机“立即停止”、断开、窗口关闭、登出和租约失效都会先停止本地流与输入，再尽力撤销服务端授权。
+
+## 媒体契约
+
+首条可用画面链路是 **JPEG 基线**，约 5 FPS，质量 55，最长边限制为 1280×720 的适配尺寸，单张 JPEG 不超过 1 MiB，像素预算不超过 2,073,600。`crates/windows` 按目标显示器查找 DXGI 所属适配器，使用 D3D11 staging texture 映射每行，处理 row pitch、DXGI rotation、负坐标与 per-monitor DPI。仅复制内存，不把实际桌面帧写入文件或日志。`ACCESS_LOST`、安全桌面或模式变化会停止当前会话并显示原因；用户须重新进入普通桌面、重新申请/批准后连接。
+
+`crates/media` 的 `FSM1` 二进制包为：四字节 magic、字节 codec=1（JPEG）、`u32 monitor`、`u64 layout`、`u64 sequence`、`u64 captured_ms`、`u32 width/height`、`i32 origin_x/y`，均为大端，接着是 JPEG。解码前检查长度、像素预算及 JPEG 自身的尺寸，不能仅相信声明的宽高。显示器列表是 `FSL1` 后跟 JSON；查看方通过 `FSS1`+大端 `u32` 选择显示器。切屏重建采集并递增 layout，旧画面的鼠标坐标被拒绝。画面按实际收到的帧计 FPS，网络 RTT 是所选 QUIC 路径的 RTT，不等于画面延迟。H.264/H.265、4:4:4 和自适应码率留给 WI-006。
+
+采集线程只保留一个最新帧槽，DXGI 无新内容或 RGB 与上一帧相同便跳过编码。媒体写入和读取有 400 ms 截止，部分帧超时/reset 会丢帧继续读下一条；应用层每帧 `FSA1`+序号确认，1 秒未确认消费就关闭会话，避免 QUIC 本地 `finish` 后远端未消费的图片积压。发送端以 1.5 MB/s JPEG payload 令牌桶节流；等预算时重新取最新帧，旧帧超过 700 ms 不发送。该预算不包含 QUIC/TLS/IP 首部或重传的网络字节。控制接收与媒体发送分别持续运行，坏图不会占住输入循环。长期公网带宽与延迟仍需双机测量。
+
+## 输入与权限
+
+原生层解析白名单 `Input`：归一化坐标移动、带显示器/布局/坐标的左或右键、双向滚轮、允许的 Windows VK 按下/抬起与最长 64 字符的 Unicode 文本。viewer 先按实际图片适应窗口计算留黑区域，只向图片内发送 0–1 坐标。系统映射到该显示器的物理像素，保留负坐标；按钮/滚轮自行验证并移动到所带位置，不依赖先前的 move 消息。中键、非有限/越界坐标、过期布局、额外 JSON 字段、未知 VK、过大消息被拒绝。
+
+每条控制消息有连续序号；本地发送由有界锁和队列串行，鼠标移动繁忙时可丢弃。主机遇序号缺口或总量超限会关闭会话并释放按键；高频移动超过每秒 120 条时只丢移动，不丢按键抬起或释放命令。执行输入前在持有同一个输入锁时再次检查本机共享开关、会话状态与当前布局。停止先清活动标志，随后持锁释放本会话已注入的键和鼠标按钮；`SendInput` 释放失败会重试并报告清理未完成。viewer 失焦、指针离开画面及“释放按键”会送释放命令。系统安全桌面/UAC/无人登录不支持，也不会提升权限绕过 Windows 限制。
+
+双方校验码使用同一 QUIC/TLS 连接的 exporter，以 `farsail/verify/v1` 和会话 ID、精确权限、双端设备公钥作上下文导出，再显示短码供人工比较。grant、设备 token、私钥和刷新凭据仍只在 Rust。页面收到的二进制帧经 Tauri raw IPC、Blob JPEG 渲染，不把桌面帧放入日志或长期存储。
+
+## 本地运行与验收
+
+先按 [客户端说明](CLIENT.md) 启动本项目 PostgreSQL/Mailpit、协调服务及 Tauri。双端本机集成测试用隔离账号、临时 DPAPI 目录、真实 PostgreSQL/Axum/iroh，正常流程更新主机能力；不手改数据库。`scripts/test-remote.ps1 -RealCapture` 在有交互桌面的本机额外执行真实 DXGI→JPEG→认证连接→解码，实际像素始终只在内存。`cargo test -p farsail-windows real_input_into_own_foreground_window -- --ignored --nocapture` 只在测试程序自建窗口获得并核对前台进程后发送无害文本、组合键和点击；若前台核对失败，测试在注入前失败。CI 没有交互桌面，仅运行合成帧、坐标/旋转、权限与构建测试，不能替代上述两项本机证据。
+
+桌面配置目录通过 Windows 文件排他锁防止并发进程使用同一个刷新令牌；debug IPC 烟测可用 `FARSAIL_TEST_PROFILE_DIR` 指向独立临时目录。停止测试服务用 `scripts/test-coordinator.ps1 -Stop`，仅影响 `farsail-dev` 项目，保留数据卷和忽略的 `.local/dev.env`。公网服务、第二台 Windows、跨 NAT、移动真机及安全桌面均未在 WI-004 验证。
+
+WI-005 可复用 `Session::send/receive` 的 `File` 类型、独立 `files` grant 及服务端能力开关，但必须自己实现分块、校验、续传、限速和停止语义，才能启用 `can_files`。

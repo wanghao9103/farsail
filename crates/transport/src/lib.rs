@@ -20,6 +20,7 @@ use tokio::sync::{Mutex, RwLock};
 
 pub const ALPN: &[u8] = b"farsail/session/1";
 const TIMEOUT: Duration = Duration::from_secs(10);
+const MEDIA_TIMEOUT: Duration = Duration::from_millis(400);
 const LIMIT: usize = 4096;
 #[cfg(test)]
 const LEASE_POLL: Duration = Duration::from_secs(1);
@@ -444,8 +445,33 @@ impl Session {
     pub fn permission(&self) -> RemotePermission {
         self.permission
     }
+    pub fn is_host(&self, local: EndpointId) -> bool {
+        self.target == local
+    }
     pub fn stable_id(&self) -> usize {
         self.conn.stable_id()
+    }
+    /// Both ends derive the same short comparison code from this TLS connection.
+    /// The context includes the approved session and exact permission; no grant is displayed.
+    pub fn verification_code(&self) -> Result<String> {
+        let context = format!(
+            "{}:{}:{}:{}",
+            self.id,
+            self.permission.as_str(),
+            self.source,
+            self.target
+        );
+        let mut out = [0u8; 8];
+        self.conn
+            .export_keying_material(&mut out, b"farsail/verify/v1", context.as_bytes())
+            .map_err(|_| Error::Io("TLS exporter unavailable".into()))?;
+        Ok(format!(
+            "{:04X}-{:04X}-{:04X}-{:04X}",
+            u16::from_be_bytes([out[0], out[1]]),
+            u16::from_be_bytes([out[2], out[3]]),
+            u16::from_be_bytes([out[4], out[5]]),
+            u16::from_be_bytes([out[6], out[7]])
+        ))
     }
     pub async fn wait_closed(&self) {
         let _ = self.conn.closed().await;
@@ -478,6 +504,15 @@ impl Session {
             && Instant::now() < *self.deadline.read().await
             && self.conn.close_reason().is_none()
     }
+    /// Synchronous gate for system input while holding the local input lock.
+    pub fn is_open_now(&self) -> bool {
+        !self.closed.load(Ordering::SeqCst)
+            && self
+                .deadline
+                .try_read()
+                .is_ok_and(|deadline| Instant::now() < *deadline)
+            && self.conn.close_reason().is_none()
+    }
     fn watch_expiry(&self) {
         let s = self.clone();
         tokio::spawn(async move {
@@ -506,17 +541,36 @@ impl Session {
         if frame.bytes.len() > frame.channel.max() {
             return Err(Error::Frame);
         }
-        let mut tx = within(async { self.conn.open_uni().await.map_err(io) }).await?;
+        let timeout = if frame.channel == Channel::Media {
+            MEDIA_TIMEOUT
+        } else {
+            TIMEOUT
+        };
+        let mut tx = tokio::time::timeout(timeout, self.conn.open_uni())
+            .await
+            .map_err(|_| Error::Timeout)?
+            .map_err(io)?;
         let mut head = [0; 6];
         head[0] = 1;
         head[1] = frame.channel.tag();
         head[2..].copy_from_slice(&(frame.bytes.len() as u32).to_be_bytes());
-        within(async {
+        let result = tokio::time::timeout(timeout, async {
             tx.write_all(&head).await.map_err(io)?;
             tx.write_all(&frame.bytes).await.map_err(io)?;
             tx.finish().map_err(io)
         })
-        .await?;
+        .await;
+        match result {
+            Ok(Ok(())) => (),
+            Ok(Err(e)) => {
+                let _ = tx.reset(0u32.into());
+                return Err(e);
+            }
+            Err(_) => {
+                let _ = tx.reset(0u32.into());
+                return Err(Error::Timeout);
+            }
+        }
         self.guard(frame.channel).await
     }
     pub async fn receive(&self) -> Result<Frame> {
@@ -526,7 +580,10 @@ impl Session {
         }
         let mut rx = within(async { self.conn.accept_uni().await.map_err(io) }).await?;
         let mut head = [0; 6];
-        within(async { rx.read_exact(&mut head).await.map_err(io) }).await?;
+        match tokio::time::timeout(Duration::from_secs(1), rx.read_exact(&mut head)).await {
+            Ok(Ok(_)) => (),
+            Ok(Err(_)) | Err(_) => return Err(Error::Timeout),
+        }
         if head[0] != 1 {
             self.close();
             return Err(Error::Frame);
@@ -545,13 +602,34 @@ impl Session {
             return Err(Error::Frame);
         }
         let mut bytes = vec![0; size];
-        within(async { rx.read_exact(&mut bytes).await.map_err(io) }).await?;
-        if within(async { rx.read_to_end(0).await.map_err(io) })
-            .await
-            .is_err()
-        {
-            self.close();
-            return Err(Error::Frame);
+        let read_timeout = if channel == Channel::Media {
+            MEDIA_TIMEOUT
+        } else {
+            TIMEOUT
+        };
+        match tokio::time::timeout(read_timeout, rx.read_exact(&mut bytes)).await {
+            Ok(Ok(_)) => (),
+            Ok(Err(e)) if channel == Channel::Media => {
+                let _ = e;
+                return Err(Error::Timeout);
+            }
+            Ok(Err(e)) => return Err(io(e)),
+            Err(_) => {
+                let _ = rx.stop(0u32.into());
+                return Err(Error::Timeout);
+            }
+        }
+        match tokio::time::timeout(read_timeout, rx.read_to_end(0)).await {
+            Ok(Ok(_)) => (),
+            Ok(Err(_)) if channel == Channel::Media => return Err(Error::Timeout),
+            Ok(Err(_)) => {
+                self.close();
+                return Err(Error::Frame);
+            }
+            Err(_) => {
+                let _ = rx.stop(0u32.into());
+                return Err(Error::Timeout);
+            }
         }
         self.guard(channel).await?;
         Ok(Frame { channel, bytes })
@@ -720,6 +798,10 @@ mod tests {
             .unwrap();
         let dst = host.await.unwrap();
         assert_eq!(src.path().0, "direct");
+        assert_eq!(
+            src.verification_code().unwrap(),
+            dst.verification_code().unwrap()
+        );
         src.send(Frame {
             channel: Channel::Media,
             bytes: b"screen".to_vec(),
@@ -759,6 +841,39 @@ mod tests {
             .await,
             Err(Error::Closed)
         ));
+        source.close().await;
+        target.close().await;
+    }
+    #[tokio::test]
+    async fn reset_media_frame_does_not_poison_next_frame() {
+        let (source, target, auth) = pair().await;
+        let host = tokio::spawn({
+            let target = target.clone();
+            let auth = auth.clone();
+            async move { target.accept(auth).await.unwrap() }
+        });
+        let src = source
+            .connect(target.addr(), "test-session", RemotePermission::View, auth)
+            .await
+            .unwrap();
+        let dst = host.await.unwrap();
+        let mut tx = src.conn.open_uni().await.unwrap();
+        tx.write_all(&[1, Channel::Media.tag(), 0, 0, 0, 20, 1, 2, 3])
+            .await
+            .unwrap();
+        let _ = tx.reset(0u32.into());
+        let disrupted = dst.receive().await;
+        assert!(matches!(disrupted, Err(Error::Timeout)), "{disrupted:?}");
+        assert!(dst.is_open().await);
+        src.send(Frame {
+            channel: Channel::Media,
+            bytes: b"fresh".to_vec(),
+        })
+        .await
+        .unwrap();
+        assert_eq!(dst.receive().await.unwrap().bytes, b"fresh");
+        src.close();
+        dst.close();
         source.close().await;
         target.close().await;
     }

@@ -26,7 +26,7 @@
 | WI-001 | Rust workspace、PostgreSQL 账号/设备/授权服务、隔离本地运行与权限测试 | 完成：本地验收通过，代码已推送 |
 | WI-002 | Tauri 客户端登录、设备注册/列表、凭据安全存储、用户/管理员界面 | 完成：本地与 Windows CI 通过，代码已推送 |
 | WI-003 | iroh 端到端连接、应用授权、直连/中继配置与撤权 | 完成：本机专项验证和远端 CI 均通过 |
-| WI-004 | Windows 屏幕采集、用户确认、鼠标键盘输入与可用远控基线 | ready |
+| WI-004 | Windows 屏幕采集、用户确认、鼠标键盘输入与可用远控基线 | 本机验收通过，远端 CI 待核对 |
 | WI-005 | 分块双向文件传输、无损压缩、校验/续传、授权与限速 | planned |
 | WI-006 | 实际硬编/解码、多屏与自适应速率、能力协商和 4:4:4 路径 | planned |
 | WI-007 | Android/iOS 手机控制与文件接口、可执行平台构建和验证 | planned |
@@ -169,4 +169,6 @@ WI-003 的输入：原生层提供 `NativeClient::take_grant_for_transport` 和 
 
 ### 记录
 
-等待开工。本机有 Intel UHD、NVIDIA Quadro P620 及 Oray 虚拟显示适配器，具体采集和编解码能力均需运行探测。用户没有提供公网目标，手机真机和 Mac 尚不可用。
+Windows 原生层按显示器所属 DXGI 适配器采集，处理 DPI、负坐标、旋转和 row pitch；首条媒体链路是明确标注的低帧率 JPEG，带显示器、布局、序号、尺寸及时间元数据。主机与 viewer 使用已有认证 iroh 会话、最新帧/ACK 和 payload 预算；Windows 原生系统输入在 control 权限与本机共享开关、会话代次、布局快照下执行，停止后释放已注入输入。普通客户端通过带心跳代次的能力 API 启用/关闭 `can_host`，不手改数据库；`can_files` 仍为 false。Tauri viewer 接收 raw binary IPC，显示双方 TLS exporter 校验码、路径 RTT、实际 FPS、权限和停止控件；配置目录使用排他锁。接口与运行方法见 [远控文档](REMOTE.md)，命令、真实采集/安全输入证据及剩余环境缺口见 [WI-004 验证记录](verification/WI-004.md)。
+
+本机真实 PostgreSQL/HTTP/iroh 授权链路与 DXGI→JPEG→解码通过，受控测试窗口中的无害文字、组合键和点击通过，WebView2 二进制 IPC 与单实例烟测通过。H.264/H.265/4:4:4 待 WI-006；文件通道待 WI-005。公网部署目标刚由用户告知总控，本项未连接外部机器，后续需独立服务器联调及第二台 Windows/跨 NAT 验证。

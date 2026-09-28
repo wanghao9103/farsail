@@ -5,11 +5,12 @@ import type { Device, Me, Pending, Remote, User } from "@farsail/ui";
 import "./style.css";
 
 type Tab =
-  "overview" | "devices" | "requests" | "security" | "admin" | "settings";
+  "overview" | "devices" | "requests" | "viewer" | "security" | "admin" | "settings";
 type PublicState = {
   server: string;
   signedIn: boolean;
   deviceId: string | null;
+  sharing: boolean;
 };
 const api = <T,>(op: string, args: Record<string, unknown> = {}): Promise<T> =>
   invoke("call", { op, args });
@@ -22,6 +23,7 @@ function App() {
     server: "http://127.0.0.1:8787",
     signedIn: false,
     deviceId: null,
+    sharing: false,
   });
   const [me, setMe] = useState<Me | null>(null);
   const [tab, setTab] = useState<Tab>("overview");
@@ -36,6 +38,7 @@ function App() {
   const [bindAddr, setBindAddr] = useState("0.0.0.0:0");
   const [forceRelay, setForceRelay] = useState(false);
   const [transportReady, setTransportReady] = useState(false);
+  const [activeView, setActiveView] = useState<string | null>(null);
   const [authMode, setAuthMode] = useState<
     "login" | "register" | "verify" | "resend" | "recover" | "reset"
   >("login");
@@ -143,6 +146,7 @@ function App() {
               ["overview", "总览", "◫"],
               ["devices", "我的设备", "▣"],
               ["requests", "连接请求", "⇄"],
+              ...(activeView ? [["viewer", "远程画面", "▧"]] : []),
               ["security", "账号安全", "◇"],
               ...(me?.role === "admin" ? [["admin", "管理控制台", "⚙"]] : []),
               ["settings", "设置", "☷"],
@@ -160,9 +164,9 @@ function App() {
         </nav>
         <div className="sidebar-foot">
           <div className="status-dot" />
-          账号与授权界面
+          {publicState.sharing ? "本机屏幕共享中" : "本机未共享"}
           <br />
-          <small>远程画面与文件通道待实现</small>
+          <small>JPEG 画面与输入 · 文件待实现</small>
         </div>
       </aside>
       <main>
@@ -176,6 +180,7 @@ function App() {
                     overview: "欢迎登船",
                     devices: "我的设备",
                     requests: "连接请求",
+                    viewer: "远程画面",
                     security: "账号安全",
                     admin: "管理控制台",
                     settings: "设置",
@@ -263,11 +268,11 @@ function App() {
             <div className="card">
               <h2>本机能力</h2>
               <p className="muted">
-                已接入认证加密传输；本机仍未实现远程画面、鼠标键盘控制或文件内容处理，因此注册设备时不声明被控和文件能力。
+                Windows 可启用 JPEG 屏幕共享和鼠标键盘控制。文件传输仍未启用。系统安全桌面、UAC 和无人登录桌面不支持。
               </p>
               <div className="tag-row">
                 <span className="tag ready">账号与设备</span>
-                <span className="tag">画面与输入 · 后续实现</span>
+                <span className="tag ready">Windows 画面与输入</span>
                 <span className="tag">文件传输 · 后续实现</span>
               </div>
             </div>
@@ -284,6 +289,10 @@ function App() {
                 <button className="primary" disabled={busy || !publicState.deviceId}>启动传输</button>
               </form>
               <p className="hint">{transportReady ? "传输端点已启动；会话路径与 RTT 在连接请求页显示。" : "先绑定本机，再启动传输。"}</p>
+              <div className="row-actions">
+                <button className={publicState.sharing ? "danger-text" : "primary"} disabled={busy || !transportReady} onClick={() => void act(() => invoke(publicState.sharing ? "share_disable" : "share_enable"), publicState.sharing ? "已停止本机共享" : "已开启本机共享；每次请求仍需明确批准")}>{publicState.sharing ? "立即停止共享" : "开启本机共享"}</button>
+                <span>{publicState.sharing ? "本机共享已开启 · 等待明确批准" : "本机当前不会提供画面或输入"}</span>
+              </div>
             </div>
           </section>
         ) : tab === "overview" ? (
@@ -314,7 +323,10 @@ function App() {
             busy={busy}
             act={act}
             transportReady={transportReady}
+            onView={(id) => {setActiveView(id);setTab("viewer");}}
           />
+        ) : tab === "viewer" && activeView ? (
+          <Viewer id={activeView} onStop={() => {setActiveView(null);setTab("requests");void refresh();}} />
         ) : tab === "security" ? (
           <Security me={me!} busy={busy} act={act} signOut={signOut} />
         ) : me?.role === "admin" && tab === "admin" ? (
@@ -770,6 +782,7 @@ function Requests({
   busy,
   act,
   transportReady,
+  onView,
 }: {
   devices: Device[];
   requests: Remote[];
@@ -778,13 +791,15 @@ function Requests({
   busy: boolean;
   act: Action;
   transportReady: boolean;
+  onView: (id: string) => void;
 }) {
-  const [paths, setPaths] = useState<Record<string, { state: string; rtt_ms: number | null }>>({});
+  const [paths, setPaths] = useState<Record<string, { state: string; rtt_ms: number | null; verification_code?: string | null; error?: string | null }>>({});
   useEffect(() => {
     if (!transportReady || !native) return;
     const poll = () => {
       for (const r of requests.filter((x) => x.state === "approved")) {
-        void invoke<{ state: string; rtt_ms: number | null }>("transport_status", { id: r.id })
+        void invoke<{ state: string; rtt_ms: number | null; verification_code?: string | null; error?: string | null }>("remote_status", { id: r.id })
+          .catch(() => invoke<{state:string;rtt_ms:number|null}>("transport_status", {id:r.id}))
           .then((v) => setPaths((old) => ({ ...old, [r.id]: v }))).catch(() => {});
       }
     };
@@ -810,7 +825,7 @@ function Requests({
   return (
     <div className="stack">
       <div className="notice-strip">
-        授权后可建立认证加密通道。画面、输入和文件内容处理仍未实现；批准不会开始共享。
+        Windows 主机开启共享后，明确批准的会话可观看 JPEG 画面；控制权限可注入鼠标键盘。文件传输尚未启用。
       </div>
       <div className="two-col">
         <div className="card">
@@ -868,7 +883,7 @@ function Requests({
               >
                 <option value="view">查看</option>
                 <option value="control">控制</option>
-                <option value="files">文件</option>
+                <option value="files" disabled>文件（待实现）</option>
               </select>
             </label>
             <label>
@@ -969,10 +984,10 @@ function Requests({
             <div className="list-row" key={p.id}>
               <div>
                 <strong>
-                  {p.permission} · 发起设备 {short(p.source_device_id)}
+                  {p.permission === "control" ? "控制" : "仅查看"} · {p.source_device_name} ({short(p.source_device_id)})
                 </strong>
                 <small>
-                  申请人 {short(p.requester_id)} · {short(p.id)}
+                  申请人 {p.requester_email} · {short(p.id)}
                 </small>
               </div>
               <div className="row-actions">
@@ -994,12 +1009,12 @@ function Requests({
                   onClick={() => {
                     if (
                       window.confirm(
-                        "批准此授权请求？当前版本不会启动画面或文件传输。",
+                        `批准 ${p.requester_email} 的${p.permission === "control" ? "控制" : "查看"}请求？批准后对方可接收实时画面${p.permission === "control" ? "并操作鼠标键盘" : ""}。`,
                       )
                     )
                       void act(
                         () => api("decide", { id: p.id, approve: true }),
-                        "已批准授权；认证传输可连接，画面与文件尚未启用",
+                        "已批准授权；连接后将提供 JPEG 画面",
                       );
                   }}
                 >
@@ -1027,14 +1042,17 @@ function Requests({
                   {short(r.id)}
                 </small>
                 {r.state === "approved" && <small>链路：{paths[r.id]?.state ?? "未连接"}{paths[r.id]?.rtt_ms != null ? ` · RTT ${paths[r.id].rtt_ms} ms` : ""}</small>}
+                {paths[r.id]?.verification_code && <small>双方校验码：{paths[r.id].verification_code}</small>}
+                {paths[r.id]?.error && paths[r.id]?.state === "closed" && <small>结束原因：{paths[r.id].error}</small>}
               </div>
               <div className="row-actions">
-              {r.state === "approved" && r.source_device_id === state.deviceId && (
-                <button className="secondary" disabled={busy || !transportReady} onClick={() => void act(
-                  () => invoke("transport_connect", { id: r.id, permission: r.permission }),
-                  "认证通道已连接；媒体与文件处理尚未启用",
-                )}>连接</button>
+              {r.state === "approved" && r.source_device_id === state.deviceId && r.permission !== "files" && (
+                <button className="secondary" disabled={busy || !transportReady} onClick={() => void act(async () => {
+                  await invoke("transport_connect", { id: r.id, permission: r.permission });
+                  onView(r.id);
+                }, "已连接远程画面", false)}>连接并查看</button>
               )}
+              {r.source_device_id === state.deviceId && paths[r.id]?.state !== "closed" && paths[r.id]?.state != null && <button className="secondary" onClick={() => onView(r.id)}>查看画面</button>}
               {r.state === "approved" && paths[r.id]?.state !== "closed" && paths[r.id]?.state != null && (
                 <button className="secondary" disabled={busy} onClick={() => void act(
                   () => invoke("transport_close", { id: r.id }), "本机会话已关闭", false,
@@ -1064,6 +1082,96 @@ function Requests({
     </div>
   );
 }
+type RemoteDisplay = { id: number; name: string; x: number; y: number; width: number; height: number; dpi: number; rotation: number };
+type RemoteStatus = { state: string; rtt_ms: number | null; permission: "view" | "control"; verification_code: string | null; displays: RemoteDisplay[]; error: string | null };
+type Picture = { url: string; display: number; layout: number; sequence: number; width: number; height: number };
+function Viewer({ id, onStop }: { id: string; onStop: () => void }) {
+  const [status, setStatus] = useState<RemoteStatus | null>(null);
+  const [picture, setPicture] = useState<Picture | null>(null);
+  const [fps, setFps] = useState(0);
+  const [text, setText] = useState("");
+  const [problem, setProblem] = useState("");
+  const image = useRef<HTMLImageElement>(null);
+  const last = useRef(0);
+  const count = useRef(0);
+  const url = useRef<string | null>(null);
+  const inputQueue = useRef<Promise<unknown>>(Promise.resolve());
+  const inputPending = useRef(0);
+  const lastMove = useRef(0);
+  const control = status?.permission === "control";
+  const controlRef = useRef(control);
+  controlRef.current = control;
+  const send = (input: Record<string, unknown> | null) => {
+    if (!controlRef.current) return;
+    if (input?.kind === "move") {
+      if (performance.now()-lastMove.current < 30 || inputPending.current > 0) return;
+      lastMove.current=performance.now();
+    }
+    if (inputPending.current >= 16) {setProblem("输入队列过长，请停止并重新连接");void invoke("transport_close",{id});return;}
+    inputPending.current++;
+    inputQueue.current=inputQueue.current.then(() => invoke("remote_input",{id,input})).catch((e) => setProblem(errorText(e))).finally(() => {inputPending.current--;});
+  };
+  const keyVk=(e:React.KeyboardEvent) => {
+    if (e.location===KeyboardEvent.DOM_KEY_LOCATION_RIGHT) {
+      if(e.key==="Control")return 0xa3;if(e.key==="Alt")return 0xa5;if(e.key==="Shift")return 0xa1;
+    }
+    if (e.location===KeyboardEvent.DOM_KEY_LOCATION_LEFT) {
+      if(e.key==="Control")return 0xa2;if(e.key==="Alt")return 0xa4;if(e.key==="Shift")return 0xa0;
+    }
+    return e.keyCode;
+  };
+  useEffect(() => {
+    let live = true;
+    last.current = 0;
+    const pollStatus = () => void invoke<RemoteStatus>("remote_status", { id }).then((s) => { if (live) setStatus(s); }).catch((e) => { if (live) setProblem(errorText(e)); });
+    pollStatus();
+    const statusTimer = window.setInterval(pollStatus, 2000);
+    const fpsTimer = window.setInterval(() => { setFps(count.current); count.current = 0; }, 1000);
+    const receive = async () => {
+      while (live) {
+        try {
+          const data = new Uint8Array(await invoke<ArrayBuffer>("media_next", { id, after: last.current }));
+          if (!live) break;
+          if (data.length < 50) continue;
+          const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+          if (String.fromCharCode(...data.slice(0, 4)) !== "FSM1" || data[4] !== 1) continue;
+          const sequence = Number(view.getBigUint64(17));
+          if (sequence <= last.current) continue;
+          const next = URL.createObjectURL(new Blob([data.slice(49)], { type: "image/jpeg" }));
+          const old = url.current; url.current = next;
+          last.current = sequence; count.current++;
+          setPicture({ url: next, display: view.getUint32(5), layout: Number(view.getBigUint64(9)), sequence, width: view.getUint32(33), height: view.getUint32(37) });
+          if (old) URL.revokeObjectURL(old);
+        } catch (e) { if (live) setProblem(errorText(e)); break; }
+      }
+    };
+    void receive();
+    const release = () => send(null);
+    window.addEventListener("blur", release);
+    return () => { live = false; window.clearInterval(statusTimer); window.clearInterval(fpsTimer); window.removeEventListener("blur", release); release(); if (url.current) URL.revokeObjectURL(url.current); };
+  }, [id]);
+  const point = (e: {clientX:number;clientY:number}) => {
+    if (!picture || !image.current) return null;
+    const rect = image.current.getBoundingClientRect();
+    const scale = Math.min(rect.width / picture.width, rect.height / picture.height);
+    const w = picture.width * scale, h = picture.height * scale;
+    const x = (e.clientX - rect.left - (rect.width-w)/2) / w;
+    const y = (e.clientY - rect.top - (rect.height-h)/2) / h;
+    return x >= 0 && x <= 1 && y >= 0 && y <= 1 ? {x,y} : null;
+  };
+  return <section className="stack">
+    <div className="card"><div className="section-heading"><div><h2>{control ? "远程控制" : "仅查看"}</h2><p className="muted">连接 {short(id)} · {status?.state ?? "连接中"} · 网络 RTT {status?.rtt_ms ?? "—"} ms · 实际接收 {fps} FPS</p><p className="muted">双方校验码：<strong>{status?.verification_code ?? "连接中"}</strong>。请通过可信渠道比较。</p></div><button className="danger-text" onClick={() => void invoke("transport_close", { id }).finally(onStop)}>立即停止</button></div>
+      {problem && <div className="alert error">{problem}</div>}{status?.error && <div className="alert error">{status.error}</div>}
+      <label>远端显示器 <select value={picture?.display ?? 1} onChange={(e) => void invoke("media_select", { id, display: Number(e.target.value) }).catch((err) => setProblem(errorText(err)))}>{status?.displays.map((d) => <option key={d.id} value={d.id}>{d.name} · {d.width}×{d.height} · {d.dpi} DPI</option>)}</select></label>
+      <div className="remote-screen" tabIndex={control ? 0 : -1} onKeyDown={(e) => {if (!control) return;e.preventDefault();send({kind:"key",vk:keyVk(e),down:true,repeat:e.repeat});}} onKeyUp={(e) => {if (!control) return;e.preventDefault();send({kind:"key",vk:keyVk(e),down:false});}}>
+        {picture ? <img ref={image} src={picture.url} alt="远端桌面" draggable={false} onMouseMove={(e) => {const p=point(e);if(p)send({kind:"move",display:picture.display,layout:picture.layout,...p});}} onMouseDown={(e) => {if(e.button!==0 && e.button!==2)return;const p=point(e);if(p)send({kind:"button",display:picture.display,layout:picture.layout,...p,button:e.button===2?"right":"left",down:true});}} onMouseUp={(e) => {if(e.button!==0 && e.button!==2)return;const p=point(e);if(p)send({kind:"button",display:picture.display,layout:picture.layout,...p,button:e.button===2?"right":"left",down:false});}} onMouseLeave={() => send(null)} onContextMenu={(e) => e.preventDefault()} onWheel={(e) => {e.preventDefault();const p=point(e);if(p)send({kind:"wheel",display:picture.display,layout:picture.layout,...p,vertical:Math.round(-e.deltaY),horizontal:Math.round(e.deltaX)});}} /> : <span>等待远端 JPEG 画面</span>}
+      </div>
+      {control && <form className="inline-form" onSubmit={(e) => {e.preventDefault();if(text)send({kind:"text",text});setText("");}}><input value={text} onChange={(e) => setText(e.target.value)} maxLength={64} placeholder="向受控窗口输入文字" aria-label="远端文字" /><button className="secondary">发送文字</button><button type="button" className="secondary" onClick={() => send(null)}>释放按键</button></form>}
+      <p className="hint">画面使用低帧率 JPEG；网络 RTT 不是画面延迟。系统安全桌面、UAC 和无人登录桌面不支持。</p>
+    </div>
+  </section>;
+}
+
 function Security({
   me,
   busy,

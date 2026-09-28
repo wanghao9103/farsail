@@ -23,6 +23,10 @@ uuid = { version = "1", features = ["serde"] }
 
 [dev-dependencies]
 tempfile = "3"
+farsail-media = { path = "../media" }
 farsail-coordinator = { path = "../../services/coordinator" }
 axum = "0.8"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "uuid", "migrate"] }
+
+[target.'cfg(windows)'.dev-dependencies]
+farsail-windows = { path = "../windows" }

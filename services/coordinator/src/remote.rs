@@ -69,7 +69,9 @@ pub struct GrantOutput {
 pub struct PendingView {
     pub id: Uuid,
     pub requester_id: Uuid,
+    pub requester_email: String,
     pub source_device_id: Uuid,
+    pub source_device_name: String,
     pub permission: String,
 }
 #[derive(Serialize, Deserialize)]
@@ -275,15 +277,24 @@ pub async fn pending(
     headers: HeaderMap,
 ) -> Result<Json<Vec<PendingView>>> {
     let (device_id, _) = device_principal(&state, &headers).await?;
-    let rows:Vec<(Uuid,Uuid,Uuid,String)> = sqlx::query_as("SELECT id,requester_id,source_device_id,permission FROM remote_sessions WHERE target_device_id=$1 AND state='pending' ORDER BY created_at LIMIT 100")
+    let rows:Vec<(Uuid,Uuid,String,Uuid,String,String)> = sqlx::query_as("SELECT r.id,r.requester_id,u.email,r.source_device_id,s.name,r.permission FROM remote_sessions r JOIN users u ON u.id=r.requester_id JOIN devices s ON s.id=r.source_device_id WHERE r.target_device_id=$1 AND r.state='pending' ORDER BY r.created_at LIMIT 100")
         .bind(device_id).fetch_all(&state.pool).await?;
     Ok(Json(
         rows.into_iter()
             .map(
-                |(id, requester_id, source_device_id, permission)| PendingView {
+                |(
                     id,
                     requester_id,
+                    requester_email,
                     source_device_id,
+                    source_device_name,
+                    permission,
+                )| PendingView {
+                    id,
+                    requester_id,
+                    requester_email,
+                    source_device_id,
+                    source_device_name,
                     permission,
                 },
             )

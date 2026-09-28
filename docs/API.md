@@ -36,8 +36,11 @@ The client generates a long-term Ed25519 keypair and keeps the private key in pl
 | `PATCH /v1/devices/{id}` | `{name}` | user |
 | `DELETE /v1/devices/{id}` | unbinds an enabled own device, revokes credential, invitations and grants | user |
 | `POST /v1/devices/heartbeat` | `{generation:null}` starts a new connection generation; subsequent `{generation:n}` renews a 60-second lease | device |
+| `POST /v1/devices/capability` | `{generation:n,can_host:true|false}` updates a live device's host ability; false transactionally revokes pending/approved view and control requests | device |
 
 A stale generation receives 409 and cannot change the newer connection's lease. The device credential is tied to the login session that issued it; logout, login revocation, password change/recovery, and account disable invalidate it and clear presence. A later login signs a fresh bind challenge to obtain a new token. Unbind leaves an inactive historical row for audit references and frees its public key for a new explicit proof; admin disable retains the binding and requires admin enable before reproof. `device_token` cannot call account or list endpoints.
+
+Windows desktop binding starts with `can_host=false` and `can_files=false`. Its native client probes DXGI and requires the local sharing switch before setting `can_host=true`. The coordinator requires a live matching heartbeat generation. On startup without sharing, the desktop clears a stale host declaration left by an abnormal exit. `can_files` remains false until WI-005.
 
 ## Invitation and remote authorization
 
@@ -48,7 +51,7 @@ Permissions are `view`, `control`, `files` and are distinct. An invitation is va
 | `POST /v1/invitations` | `{target_device_id,permission}` → `{id,code,expires_in}` | target owner user |
 | `POST /v1/invitations/{id}/revoke` | revokes code and dependent grants | target owner user |
 | `POST /v1/remote/request` | `{source_device_id,target_device_id,permission,invitation_code?}` → `{id,state:"pending"}` | requester user + source device header |
-| `GET /v1/remote/pending` | target device's pending requests | target device |
+| `GET /v1/remote/pending` | target device's pending requests, including requester email and source device name for an informed local decision | target device |
 | `POST /v1/remote/{id}/decide` | `{approve:true|false}` → grant on approval, null on denial | target device |
 | `POST /v1/remote/{id}/renew` | new grant token while prior 30-second grant remains live and checks still pass | target device |
 | `POST /v1/remote/{id}/revoke` | revokes request/grant | requester user or target device |

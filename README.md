@@ -6,7 +6,7 @@
 
 正在开发中的开源远程桌面与文件传输工具。账号、设备与授权协调服务使用 Rust；Windows 客户端使用 Tauri 2、React 和 Rust 原生客户端库。
 
-**当前状态：WI-001 协调服务、WI-002 Windows 客户端和 WI-003 认证加密传输已在本机验证。** iroh 数据通道支持本地直连及自建 TLS relay，并已与真实授权服务集成。客户端仍不能采集/处理远程画面、输入或文件内容；公网跨 NAT、手机端与正式安装包仍待验证或实现。
+**当前状态：WI-001 协调服务、WI-002 Windows 客户端、WI-003 认证加密传输及 WI-004 Windows 远程查看/输入基线已在本机验证。** iroh 数据通道支持本地直连及自建 TLS relay；Windows 端可在本机开启共享，逐次批准后传送 JPEG 画面并接受鼠标键盘。文件内容、公网跨 NAT、手机端与正式安装包仍待验证或实现。
 
 ## 计划能力
 
@@ -26,6 +26,7 @@
 - [协调服务 API](docs/API.md)：已实现的账号、设备、邀请、授权状态机和管理员接口。
 - [Windows 客户端](docs/CLIENT.md)：运行方式、凭据边界与已实现界面。
 - [认证传输](docs/TRANSPORT.md)：iroh 握手、短租约、数据通道和路径状态。
+- [Windows 远控](docs/REMOTE.md)：DXGI/JPEG、viewer、输入权限与安全停止。
 - [自建 relay](deploy/relay/README.md)：HTTPS 证书与公网 IP 配置示例。
 - [实施与验收](docs/IMPLEMENTATION.md)：工作项进度及本地验证证据。
 
@@ -44,7 +45,7 @@ $env:FARSAIL_SMTP_PORT = '51025'
 cargo run -p farsail-coordinator
 ```
 
-服务只监听 `127.0.0.1:8787`，Mailpit UI 为 `http://127.0.0.1:58025`。`GET http://127.0.0.1:8787/healthz` 可检查 PostgreSQL。`./scripts/test-coordinator.ps1 -Stop` 仅停止此项目容器；保留本地数据卷。生产实例需要 TLS 反向代理、有效证书、TLS SMTP、备份和限流，不能通过关闭证书校验接入。功能完成状态以 [WI-001](docs/verification/WI-001.md)、[WI-002](docs/verification/WI-002.md) 和 [WI-003](docs/verification/WI-003.md) 验证记录为准。
+服务只监听 `127.0.0.1:8787`，Mailpit UI 为 `http://127.0.0.1:58025`。`GET http://127.0.0.1:8787/healthz` 可检查 PostgreSQL。`./scripts/test-coordinator.ps1 -Stop` 仅停止此项目容器；保留本地数据卷。生产实例需要 TLS 反向代理、有效证书、TLS SMTP、备份和限流，不能通过关闭证书校验接入。功能完成状态以 [WI-001](docs/verification/WI-001.md)、[WI-002](docs/verification/WI-002.md)、[WI-003](docs/verification/WI-003.md) 和 [WI-004](docs/verification/WI-004.md) 验证记录为准。
 
 Windows 客户端本地运行（另开终端分别执行）：
 
@@ -54,7 +55,7 @@ npm ci
 npm run tauri -w @farsail/desktop -- dev
 ```
 
-`./scripts/test-transport.ps1` 可跑前端、真实 PostgreSQL/HTTP 传输集成测试、本地 TLS relay 专项测试和 Tauri 编译。获批请求可建立认证通道，但不会启动屏幕共享或文件内容处理。
+`./scripts/test-remote.ps1 -RealCapture` 可跑前端、真实 PostgreSQL/HTTP/iroh/DXGI 集成测试和 Tauri 编译。日常双端流程是绑定设备→启动传输→被控端本机开启共享→发起授权请求→被控端明确批准→连接并查看。文件内容仍不可用；公网、跨 NAT、第二台 Windows 及手机端没有本项证据。
 
 ## License
 

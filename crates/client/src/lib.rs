@@ -17,7 +17,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use tokio::sync::{Mutex, watch};
+use tokio::sync::{Mutex, broadcast, watch};
 use url::Url;
 
 #[derive(Debug, thiserror::Error)]
@@ -237,6 +237,9 @@ pub struct NativeClient {
     transport_epoch: Mutex<u64>,
     signing_out: AtomicBool,
     cancel_tx: watch::Sender<u64>,
+    host_state: std::sync::atomic::AtomicU64,
+    session_tx: broadcast::Sender<(Session, bool)>,
+    capability_lock: Mutex<()>,
 }
 
 impl NativeClient {
@@ -249,6 +252,7 @@ impl NativeClient {
         let login = read_json::<Login>(&*store, "login")?;
         let device = read_json::<DeviceCredential>(&*store, "device-token")?;
         let (cancel_tx, _) = watch::channel(0u64);
+        let (session_tx, _) = broadcast::channel(16);
         Ok(Self {
             http: Http::builder()
                 .timeout(Duration::from_secs(15))
@@ -269,11 +273,110 @@ impl NativeClient {
             transport_epoch: Mutex::new(0),
             signing_out: AtomicBool::new(false),
             cancel_tx,
+            host_state: std::sync::atomic::AtomicU64::new(0),
+            session_tx,
+            capability_lock: Mutex::new(()),
         })
     }
     pub async fn public_state(&self) -> Value {
         let s = self.state.lock().await;
-        json!({"server": s.base, "signedIn": s.login.is_some(), "deviceId": s.device.as_ref().map(|x| &x.id)})
+        json!({"server": s.base, "signedIn": s.login.is_some(), "deviceId": s.device.as_ref().map(|x| &x.id), "sharing":self.hosting_enabled()})
+    }
+    pub fn subscribe_sessions(&self) -> broadcast::Receiver<(Session, bool)> {
+        self.session_tx.subscribe()
+    }
+    pub fn hosting_enabled(&self) -> bool {
+        self.host_state.load(Ordering::SeqCst) & 1 == 1
+    }
+    pub fn disable_host_local(&self) {
+        let _ = self
+            .host_state
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |state| {
+                Some(state.wrapping_add(2) & !1)
+            });
+    }
+    pub async fn transport_running(&self) -> bool {
+        self.transport.lock().await.is_some()
+    }
+    pub async fn set_host_capability(&self, enabled: bool) -> Result<Value> {
+        if !enabled {
+            self.disable_host_local();
+        }
+        let started = self.host_state.load(Ordering::SeqCst);
+        let _guard = self.capability_lock.lock().await;
+        if enabled && self.host_state.load(Ordering::SeqCst) != started {
+            return Err(Error::Invalid("sharing start cancelled".into()));
+        }
+        let generation = self.state.lock().await.generation.ok_or(Error::Unbound)?;
+        let result = self
+            .transport_request(
+                Method::POST,
+                "/v1/devices/capability",
+                None,
+                Some(json!({"generation":generation,"can_host":enabled})),
+            )
+            .await;
+        if enabled && result.is_err() {
+            self.disable_host_local();
+            let _ = tokio::time::timeout(
+                Duration::from_secs(2),
+                self.transport_request(
+                    Method::POST,
+                    "/v1/devices/capability",
+                    None,
+                    Some(json!({"generation":generation,"can_host":false})),
+                ),
+            )
+            .await;
+        }
+        if result.is_ok() && enabled {
+            let still_current = self.host_state.load(Ordering::SeqCst) == started
+                && !self.signing_out.load(Ordering::SeqCst)
+                && self.transport_running().await
+                && self.state.lock().await.generation == Some(generation);
+            if !still_current {
+                let _ = self
+                    .transport_request(
+                        Method::POST,
+                        "/v1/devices/capability",
+                        None,
+                        Some(json!({"generation":generation,"can_host":false})),
+                    )
+                    .await;
+                return Err(Error::Invalid("sharing start cancelled".into()));
+            }
+            if self
+                .host_state
+                .compare_exchange(started, started | 1, Ordering::SeqCst, Ordering::SeqCst)
+                .is_err()
+            {
+                let _ = self
+                    .transport_request(
+                        Method::POST,
+                        "/v1/devices/capability",
+                        None,
+                        Some(json!({"generation":generation,"can_host":false})),
+                    )
+                    .await;
+                return Err(Error::Invalid("sharing start cancelled".into()));
+            }
+        }
+        result
+    }
+    pub async fn clear_stale_host_capability(&self) -> Result<()> {
+        let _guard = self.capability_lock.lock().await;
+        if self.hosting_enabled() {
+            return Ok(());
+        }
+        let generation = self.state.lock().await.generation.ok_or(Error::Unbound)?;
+        self.transport_request(
+            Method::POST,
+            "/v1/devices/capability",
+            None,
+            Some(json!({"generation":generation,"can_host":false})),
+        )
+        .await?;
+        Ok(())
     }
     pub async fn set_server(&self, base: &str) -> Result<Value> {
         let base = validate_base(base)?;
@@ -381,6 +484,7 @@ impl NativeClient {
         }
     }
     fn clear_auth(&self, s: &mut State) -> Result<()> {
+        self.disable_host_local();
         if let Ok(mut sessions) = self.transport_sessions.try_lock() {
             for session in sessions.values() {
                 session.close();
@@ -1140,6 +1244,16 @@ impl NativeClient {
         Ok(())
     }
     async fn register_transport_session(self: &Arc<Self>, epoch: u64, session: Session) -> bool {
+        let local = self.transport.lock().await.as_ref().map(Transport::id);
+        let Some(local) = local else {
+            session.close();
+            return false;
+        };
+        let is_host = session.is_host(local);
+        if is_host && !self.hosting_enabled() {
+            session.close();
+            return false;
+        }
         let current = self.transport_epoch.lock().await;
         if *current != epoch || self.signing_out.load(Ordering::SeqCst) {
             let id = session.id().to_owned();
@@ -1163,6 +1277,7 @@ impl NativeClient {
         sessions.insert(id.clone(), session.clone());
         drop(sessions);
         drop(current);
+        let _ = self.session_tx.send((session.clone(), is_host));
         let owner = self.clone();
         tokio::spawn(async move {
             session.wait_closed().await;
@@ -1179,6 +1294,8 @@ impl NativeClient {
         true
     }
     pub async fn stop_transport(&self) -> u64 {
+        let was_host = self.hosting_enabled();
+        self.disable_host_local();
         let mut epoch = self.transport_epoch.lock().await;
         *epoch = epoch.wrapping_add(1);
         let next = *epoch;
@@ -1197,6 +1314,10 @@ impl NativeClient {
             tokio::spawn(async move {
                 transport.close().await;
             });
+        }
+        if was_host {
+            let _ =
+                tokio::time::timeout(Duration::from_secs(2), self.set_host_capability(false)).await;
         }
         next
     }
@@ -1246,6 +1367,9 @@ impl Authority for NativeClient {
         Ok(claims)
     }
     async fn issue(&self, id: &str, renew: bool) -> farsail_transport::Result<String> {
+        if !self.hosting_enabled() {
+            return Err(farsail_transport::Error::Denied);
+        }
         if !renew {
             if let Some(token) = self.state.lock().await.grant.get(id).cloned() {
                 return Ok(token);
@@ -1376,6 +1500,76 @@ mod tests {
         assert!(task.await.unwrap().is_err());
         assert!(client.transport.lock().await.is_none());
         server.await.unwrap();
+    }
+    #[tokio::test]
+    async fn delayed_host_enable_cannot_survive_transport_stop() {
+        use axum::{Json, Router, extract::State as AxumState, routing::post};
+        use std::sync::atomic::AtomicUsize;
+        struct Gate {
+            entered: tokio::sync::Notify,
+            release: tokio::sync::Notify,
+            disabled: AtomicUsize,
+        }
+        async fn capability(
+            AxumState(gate): AxumState<Arc<Gate>>,
+            Json(body): Json<Value>,
+        ) -> Json<Value> {
+            if body["can_host"] == true {
+                gate.entered.notify_one();
+                gate.release.notified().await;
+            } else {
+                gate.disabled.fetch_add(1, Ordering::SeqCst);
+            }
+            Json(json!({"can_host":body["can_host"]}))
+        }
+        let gate = Arc::new(Gate {
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+            disabled: AtomicUsize::new(0),
+        });
+        let app = Router::new()
+            .route("/v1/devices/capability", post(capability))
+            .with_state(gate.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = Arc::new(NativeClient::new(Arc::new(MemoryStore::default())).unwrap());
+        client.set_server(&base).await.unwrap();
+        {
+            let mut state = client.state.lock().await;
+            state.device = Some(DeviceCredential {
+                id: "device".into(),
+                device_token: "token".into(),
+                owner_id: "owner".into(),
+                session_id: "session".into(),
+            });
+            state.generation = Some(1);
+        }
+        *client.transport.lock().await = Some(
+            Transport::bind([33; 32], TransportConfig::default())
+                .await
+                .unwrap(),
+        );
+        let task = tokio::spawn({
+            let client = client.clone();
+            async move { client.set_host_capability(true).await }
+        });
+        gate.entered.notified().await;
+        client.stop_transport().await;
+        gate.release.notify_one();
+        assert!(task.await.unwrap().is_err());
+        assert!(!client.hosting_enabled());
+        for _ in 0..50 {
+            if gate.disabled.load(Ordering::SeqCst) > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            gate.disabled.load(Ordering::SeqCst) > 0,
+            "late enable must be compensated on server"
+        );
+        server.abort();
     }
     struct TestAuthority {
         source: iroh::EndpointId,

@@ -182,6 +182,7 @@ pub fn router(state: AppState) -> Router {
                 .delete(device::unbind),
         )
         .route("/v1/devices/heartbeat", post(device::heartbeat))
+        .route("/v1/devices/capability", post(device::capability))
         .route(
             "/v1/devices/endpoint-address",
             post(endpoint_address::publish),

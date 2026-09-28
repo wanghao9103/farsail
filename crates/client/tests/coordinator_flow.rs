@@ -3,6 +3,7 @@ use farsail_client::WindowsStore;
 use farsail_client::{NativeClient, SecureStore};
 use farsail_coordinator::{AppState, Mailer, router};
 use farsail_core::RemotePermission;
+use farsail_media::{FrameMeta, JpegFrame};
 use farsail_transport::{Channel, Config as TransportConfig, Frame};
 use serde_json::{Value, json};
 use sqlx::{PgPool, postgres::PgPoolOptions};
@@ -150,12 +151,8 @@ async fn native_client_against_real_coordinator() {
     assert_eq!(own.as_array().unwrap().len(), 1);
     assert_eq!(own[0]["can_host"], false);
     assert_eq!(own[0]["id"], dev_a);
-    // Simulate a later WI-004 host capability in the isolated schema so the current UI authorization path is exercised.
-    sqlx::query("UPDATE devices SET can_host=true WHERE id=$1")
-        .bind(Uuid::parse_str(&dev_b).unwrap())
-        .execute(&pool)
-        .await
-        .unwrap();
+    b.start_transport(TransportConfig::default()).await.unwrap();
+    b.set_host_capability(true).await.unwrap();
     let invite = b
         .call(
             "invite",
@@ -181,8 +178,7 @@ async fn native_client_against_real_coordinator() {
         .unwrap();
     assert_eq!(decision["approved"], true);
     assert!(decision.get("grant_token").is_none());
-    // Starting for the first time must preserve an unused fresh approval.
-    b.start_transport(TransportConfig::default()).await.unwrap();
+    // The active host capability and endpoint preserve the fresh approval.
     assert_eq!(
         a.call("remote_status", json!({"id":id})).await.unwrap()["state"],
         "approved"
@@ -218,6 +214,54 @@ async fn native_client_against_real_coordinator() {
         .await
         .unwrap();
     assert_eq!(source.receive().await.unwrap().bytes, b"ack");
+    let synthetic = JpegFrame::encode_rgb(
+        FrameMeta {
+            monitor: 1,
+            layout: 1,
+            sequence: 1,
+            captured_ms: 0,
+            width: 32,
+            height: 16,
+            origin_x: -40,
+            origin_y: 0,
+        },
+        &vec![80; 32 * 16 * 3],
+        55,
+    )
+    .unwrap();
+    target
+        .send(Frame {
+            channel: Channel::Media,
+            bytes: synthetic.to_wire().unwrap(),
+        })
+        .await
+        .unwrap();
+    let decoded = JpegFrame::from_wire(&source.receive().await.unwrap().bytes).unwrap();
+    assert_eq!(decoded.meta.origin_x, -40);
+    assert_eq!(decoded.decode_rgb().unwrap().len(), 32 * 16 * 3);
+    #[cfg(windows)]
+    if std::env::var_os("FARSAIL_REAL_CAPTURE").is_some() {
+        let monitor = farsail_windows::displays().unwrap().remove(0);
+        let mut capture = farsail_windows::Capture::new(monitor.id).unwrap();
+        let captured = loop {
+            if let Some(frame) = capture.next_frame(2, 2).unwrap() {
+                break frame;
+            }
+        };
+        target
+            .send(Frame {
+                channel: Channel::Media,
+                bytes: captured.to_wire().unwrap(),
+            })
+            .await
+            .unwrap();
+        let remote = JpegFrame::from_wire(&source.receive().await.unwrap().bytes).unwrap();
+        assert_eq!(remote.meta.monitor, monitor.id);
+        assert_eq!(
+            remote.decode_rgb().unwrap().len(),
+            (remote.meta.width * remote.meta.height * 3) as usize
+        );
+    }
     assert!(
         source
             .send(Frame {
@@ -230,6 +274,7 @@ async fn native_client_against_real_coordinator() {
     b.stop_transport().await;
     assert!(!target.is_open().await);
     b.start_transport(TransportConfig::default()).await.unwrap();
+    b.set_host_capability(true).await.unwrap();
     assert!(
         a.connect_transport(id, RemotePermission::View)
             .await
