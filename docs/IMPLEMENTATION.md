@@ -28,7 +28,7 @@
 | WI-003 | iroh 端到端连接、应用授权、直连/中继配置与撤权 | 完成：本机专项验证和远端 CI 均通过 |
 | WI-004 | Windows 屏幕采集、用户确认、鼠标键盘输入与可用远控基线 | 本机及三条远端 CI 通过 |
 | WI-008A | 公网 IP 部署包、预构建 Linux 制品与联调准备 | 完成：固定六镜像制品、匿名下载、跨Docker存储导入及两轮Linux CI通过 |
-| WI-008B | Windows x64 预览安装包、正式构建与公开制品验收 | 提前执行：ready |
+| WI-008B | Windows x64 预览安装包、正式构建与公开制品验收 | 完成：NSIS、原生安装生命周期、CI与完整匿名下载均通过 |
 | WI-005 | 分块双向文件传输、无损压缩、校验/续传、授权与限速 | planned |
 | WI-006 | 实际硬编/解码、多屏与自适应速率、能力协商和 4:4:4 路径 | planned |
 | WI-007 | Android/iOS 手机控制与文件接口、可执行平台构建和验证 | planned |
@@ -246,5 +246,9 @@ Windows 原生层按显示器所属 DXGI 适配器采集，处理 DPI、负坐�
 ### 回查结论
 本项窄查Tauri凭据/WebView边界与独立公开制品验收笔记：适用的是原生凭据隔离、debug/正式构建区分、原生IPC与网页预览分层，以及完整匿名制品核验；旧笔记中“远控尚未实现”的状态已被WI-004更新，不再适用。官方构建入口与WebView2选项以当前Tauri文档和锁定版本核对：https://v2.tauri.app/distribute/windows-installer/ 。
 
-### 执行记录（进行中）
-开工 HEAD `2d96e3e54f3515a48fceb065d3ad65e7e2a940f1`，工作区干净。窄查两篇指定机制笔记并与现有代码核对。沿用0.1.0版本和v2图标；补上Tauri `custom-protocol` feature和release Windows GUI subsystem，官方NSIS currentUser + embedBootstrapper。首次缺WebView2时仍需联网。测试不安装到本机：仅一次性GitHub Windows runner安装，UI Automation驱动普通设置页验证原生IPC/持久化，重装/静默卸载检查数据保留；不添加生产测试后门，不截图桌面。具体结果后续写入WI-008B验证记录。
+### 执行记录
+开工 HEAD `2d96e3e54f3515a48fceb065d3ad65e7e2a940f1`，工作区干净。窄查两篇指定机制笔记并与现有代码核对。沿用0.1.0版本和v2图标；补上Tauri `custom-protocol` feature和release Windows GUI subsystem，官方NSIS currentUser + embedBootstrapper。首次缺WebView2时仍需联网。测试不安装到本机：仅一次性GitHub Windows runner安装，UI Automation按本测试PID/顶层HWND子树驱动普通设置页验证原生IPC/持久化，重装/静默卸载检查数据保留；不添加生产测试后门，不截图桌面。
+
+正式源码/发布tag固定 `6d79ef8e4c8336cee45840b5c9cd812fe08910dd`，预发布 `windows-preview-0.1.0-6d79ef8`。安装包7720107字节，SHA256 `361e15a22db30be3c3009cad2da813caf81e9fe9e01b054ce6bfca848ce5c01e`。完整 [Windows安装CI 36405852502](https://github.com/wanghao9103/farsail/actions/runs/36405852502) 成功，真实WebView设置保存/重启、三次原生启动、同版重装和卸载保留数据、debug探针缺席均通过；客户端8项/桌面1项单元测试与Clippy通过。原生代码的既有Windows client CI 36404665949也成功。首轮因Tauri临时bundle type补丁造成严格EXE摘要断言失败，改用锁定CLI官方 `--no-binary-patching`（当前无updater）后保持断言并通过。四个公开附件均完整匿名下载，逐个与该CI产物比对摘要和字节数一致。
+
+固定链接、元数据、详细证据/边界见 [WI-008B](verification/WI-008B.md)，第二台Windows步骤见 [WINDOWS_INSTALL](WINDOWS_INSTALL.md)。未签名；未模拟无WebView2系统、未验跨版本数据迁移或用户公网双机。没有本机安装/真实配置变更、没有自启进程或测试端口残留；只保留指定构建/下载缓存，Docker服务和卷未改。总控接续真实CA/公网双机验收，开发顺序返回WI-005/006/007。

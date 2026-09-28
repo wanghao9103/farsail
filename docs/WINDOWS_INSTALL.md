@@ -4,7 +4,7 @@ FarSail 0.1.0 是低帧率 JPEG 查看/鼠标键盘控制预览。需要 Windows
 
 ## 下载与安装
 
-固定发布链接、源码 SHA、安装包 SHA256 和安装验证证据见 [WI-008B](verification/WI-008B.md)。从该预发布同时下载 `FarSail_0.1.0_x64-setup.exe`、`SHA256SUMS.txt`、`release-metadata.json`。PowerShell 在下载目录执行：
+当前固定预发布：[下载安装包](https://github.com/wanghao9103/farsail/releases/download/windows-preview-0.1.0-6d79ef8/FarSail_0.1.0_x64-setup.exe)、[SHA256SUMS.txt](https://github.com/wanghao9103/farsail/releases/download/windows-preview-0.1.0-6d79ef8/SHA256SUMS.txt)，其余元数据见 [发布页](https://github.com/wanghao9103/farsail/releases/tag/windows-preview-0.1.0-6d79ef8)。源码 SHA、安装包 SHA256 和安装验证证据见 [WI-008B](verification/WI-008B.md)。同时下载 `FarSail_0.1.0_x64-setup.exe`、`SHA256SUMS.txt`、`release-metadata.json`。PowerShell 在下载目录执行：
 
 ```powershell
 $expected = ((Get-Content ./SHA256SUMS.txt -Raw).Trim() -split '\s+')[0]
