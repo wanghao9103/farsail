@@ -29,7 +29,8 @@
 | WI-004 | Windows 屏幕采集、用户确认、鼠标键盘输入与可用远控基线 | 本机及三条远端 CI 通过 |
 | WI-008A | 公网 IP 部署包、预构建 Linux 制品与联调准备 | 完成：固定六镜像制品、匿名下载、跨Docker存储导入及两轮Linux CI通过 |
 | WI-008B | Windows x64 预览安装包、正式构建与公开制品验收 | 完成：NSIS、原生安装生命周期、CI与完整匿名下载均通过 |
-| WI-005 | 分块双向文件传输、无损压缩、校验/续传、授权与限速 | ready |
+| WI-008C | 部署下载HTTP/1.1、可靠续传与缓存复用 | ready：优先修复实际部署阻断 |
+| WI-005 | 分块双向文件传输、无损压缩、校验/续传、授权与限速 | 进行中：已暂让写权限给WI-008C，未验证WIP保留 |
 | WI-006 | 实际硬编/解码、多屏与自适应速率、能力协商和 4:4:4 路径 | planned |
 | WI-007 | Android/iOS 手机控制与文件接口、可执行平台构建和验证 | planned |
 | WI-008 | 全链路回归、部署/打包、公开仓库与真实环境验证 | planned |
@@ -281,3 +282,22 @@ Windows 原生层按显示器所属 DXGI 适配器采集，处理 DPI、负坐�
 - fmt/tests/clippy、前端 typecheck/build、Windows Tauri 构建及相关既有回归/CI；记录自启进程/端口并收尾。更新文档、知识沉淀、提交推送核对远端后交接。
 ### 回查与依赖线索
 已回查本项目短租约传输和媒体取消边界笔记：每次业务操作需重查租约/代次，等待队列有界，退出先停本地IO，身份切换不能接受迟到结果；把该机制扩展到文件操作仍须专项验证。cap-std 4.0.3 Dir/from_std_file 文档要求Windows句柄无FILE_SHARE_DELETE以避竞态；需实际核对所选API的链接和无覆盖提交语义。Zstd Decompressor提供输出容量/参数限制，应同时限制原始长度和压缩窗口。参考 https://docs.rs/cap-std/4.0.3/cap_std/fs/struct.Dir.html 、https://docs.rs/zstd/latest/zstd/bulk/struct.Decompressor.html 。库版本与Windows行为以当前构建/测试为准，不能只靠API名称推定安全。
+
+## WI-008C：部署下载断点续传修复
+
+### 触发、基线与写入交接
+用户在公网机器从GitHub下载约284MiB归档，运行40多分钟后遇到curl92/HTTP2 PROTOCOL_ERROR。现有下载器把数据写入.part，但重新运行会从头覆盖，缺少可靠续传。总控已提供使用本机校验过的同一公开包通过scp上传、load-release离线目录导入的即时方案。
+代码基线 `69b2817ff39bb0b9220e45affce7a972561951f0`，本节计划提交后为开工HEAD。WI-005已在原子编辑后明确quiescent，无构建/测试进程，暂停所有写入与提交，保留未提交WIP：Cargo.toml/Cargo.lock、crates/file-transfer/**、crates/client/src/lib.rs、crates/transport/src/lib.rs、services/coordinator/src/device.rs、apps/desktop/src-tauri/Cargo.toml和src/files.rs/src/remote.rs。这些内容未验收，严禁暂存、提交、改写或发布。本项结束由总控明确交回WI-005写权限。
+精确Write Set：scripts/deploy/farsail.sh、新增scripts/deploy/download相关Bash/Node测试与辅助文件、.github/workflows/download.yml、docs/DEPLOYMENT.md、docs/verification/WI-008C.md、docs/IMPLEMENTATION.md。不改Cargo/应用业务/镜像内容/旧发布附件，不重编镜像，不登录用户服务器。
+
+### 必须修复与验收
+- 生产下载显式使用HTTP/1.1、正常HTTPS和有限连接/无进展超时；每次重试从现存.part长度重新发起Range请求，保留失败和中断前的新增进度，避免curl内层重试把本轮进度回退。对永久HTTP/证书/Range错误给出清楚失败，不绕过TLS，不无限循环。
+- 利用已知SHA256先识别已完整下载的.part；即使上次网络收尾报错，校验匹配也能直接采用而不请求网络。未知/损坏内容不得推广为最终文件；摘要不符保留证据并失败，不偷偷删除重下。
+- 小型SHA256SUMS/manifest与大归档分别处理，先取得有效校验信息，再续传和验证大文件；支持原缓存和已初始化state，无需init。保留现有legacy425精确白名单、portable config SHA/rootfs/平台等导入检查；source_dir离线导入继续完全不访问网络。
+- 有意义的本地网络故障测试：可协商HTTP2的测试服务确认客户端使用HTTP1.1；主动中断后下一请求Range偏移前进、最后字节与摘要一致；完全.part在断网时直接采用；损坏摘要不接受；服务器拒绝Range不破坏已下载部分；有限重试和TLS拒绝。用Node/标准工具和测试CA，不用Python/Qt，不接触用户文件。测试监听仅回环，结束清理自己的进程。
+- 对公开原425附件做小型匿名HTTP1.1/Range检查即可；本机已有完整公开包，不重复下载/发布整个近300MB归档来验证一个下载器。必要集成使用现有缓存和严格校验，不能因File WIP运行Cargo或混入未完成代码。
+- 更新操作说明：直接本机上传三个已验证文件的备选路径、旧.part复用、故障信息/进度。不得承诺200Mbps标称带宽等于GitHub实际下载速度。
+- 只暂存上述精确文件，确认File WIP未进入提交；提交/推送固定修复版本、对应CI/证据及知识沉淀。提供保留现有私有配置与缓存的更新命令。完成后停止本项写入，通知总控恢复WI-005。
+
+### 适用经验
+已知GitHub TLS/EOF经验仅支持按实际连接路径诊断、使用命令级选项、保持证书验证；不能把所有失败归因于同一种网络原因。此次有实际curl92和下载器源码缺少-C/外层续传的证据。原六镜像包已完整匿名下载并通过SHA/运行验证，问题是交付可靠性，不能用关闭校验或要求用户再次从头下载来掩盖。
