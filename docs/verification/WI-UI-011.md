@@ -16,3 +16,12 @@
 
 ## Release gate
 Use `.github/workflows/windows-release.yml`; `scripts/test-windows-package.ps1` now checks custom maximize/minimize and close, native settings persistence, reinstall and uninstall retention. Publish exactly the artifact whose hash is in the passing installation report. Source and public asset evidence to be recorded after completion.
+
+## Published evidence
+- Source: `9ad61751506d44837e3e5d8df271914ef9ce7222`.
+- Windows installer CI `36511486164`: success, including native custom maximize/minimize/close, install, settings IPC/restart, reinstall/uninstall retention, Rust tests and Clippy.
+- Windows client CI `36511468941`: success.
+- Release: https://github.com/wanghao9103/farsail/releases/tag/windows-preview-0.1.1-9ad6175
+- Installer: `FarSail_0.1.1_x64-setup.exe`, 7,744,845 bytes, SHA-256 `a79e7dbde64d3f4aec0dfad7861f1562413d26a0448f5df1512d0584f73ab3da`.
+- All four public attachments were downloaded anonymously and matched the CI artifacts byte-for-byte (SHA-256). Package remains unsigned. This release does not claim new real-peer capture/input verification.
+- The existing file-transfer WIP remains unstaged in the shared workspace and is not included in this release. Existing production server images need no update for this client release.
