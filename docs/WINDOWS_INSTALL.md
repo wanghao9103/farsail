@@ -1,14 +1,14 @@
 # Windows x64 预览安装与双机联调
 
-FarSail 0.1.2 是低帧率 JPEG 查看/鼠标键盘控制预览。需要 Windows 10/11 x64 的普通交互桌面；不需要安装 Rust、Node 或开发工具。文件传输、HEVC、自适应视频和手机端尚未交付。安全桌面、UAC 和无人登录桌面不支持。服务器真实 CA、跨 NAT 和两台家用电脑的效果须另行验收。
+FarSail 0.1.3 是低帧率 JPEG 查看/鼠标键盘控制预览。需要 Windows 10/11 x64 的普通交互桌面；不需要安装 Rust、Node 或开发工具。文件传输、HEVC、自适应视频和手机端尚未交付。安全桌面、UAC 和无人登录桌面不支持。服务器真实 CA、跨 NAT 和两台家用电脑的效果须另行验收。
 
 ## 下载与安装
 
-当前固定预发布：[下载安装包](https://github.com/wanghao9103/farsail/releases/download/windows-preview-0.1.2-c65fb77/FarSail_0.1.2_x64-setup.exe)、[SHA256SUMS.txt](https://github.com/wanghao9103/farsail/releases/download/windows-preview-0.1.2-c65fb77/SHA256SUMS.txt)，其余元数据见 [发布页](https://github.com/wanghao9103/farsail/releases/tag/windows-preview-0.1.2-c65fb77)。源码 SHA、安装包 SHA256 和安装验证证据见 [REMOTE-012](verification/WI-REMOTE-012.md)。同时下载 `FarSail_0.1.2_x64-setup.exe`、`SHA256SUMS.txt`、`release-metadata.json`。PowerShell 在下载目录执行：
+当前固定预发布：[下载安装包](https://github.com/wanghao9103/farsail/releases/download/windows-preview-0.1.3-f2f5c6b/FarSail_0.1.3_x64-setup.exe)、[SHA256SUMS.txt](https://github.com/wanghao9103/farsail/releases/download/windows-preview-0.1.3-f2f5c6b/SHA256SUMS.txt)，其余元数据见 [发布页](https://github.com/wanghao9103/farsail/releases/tag/windows-preview-0.1.3-f2f5c6b)。源码 SHA、安装包 SHA256 和安装验证证据见 [UI-RELEASE-013](verification/WI-UI-RELEASE-013.md)。同时下载 `FarSail_0.1.3_x64-setup.exe`、`SHA256SUMS.txt`、`release-metadata.json`。PowerShell 在下载目录执行：
 
 ```powershell
 $expected = ((Get-Content ./SHA256SUMS.txt -Raw).Trim() -split '\s+')[0]
-$actual = (Get-FileHash ./FarSail_0.1.2_x64-setup.exe -Algorithm SHA256).Hash
+$actual = (Get-FileHash ./FarSail_0.1.3_x64-setup.exe -Algorithm SHA256).Hash
 if ($actual -ine $expected) { throw 'SHA256 mismatch: do not install' }
 ```
 
@@ -26,16 +26,16 @@ if ($actual -ine $expected) { throw 'SHA256 mismatch: do not install' }
    ```
 
    在客户端注册，读取对应测试邮件的验证令牌，在“验证邮箱”提交，然后正常登录。测试邮箱不会发到真实邮箱，不要把收件箱端口暴露公网。已配置正式 TLS SMTP 时直接到自己的邮箱收信。第二台电脑可使用同一已验证账号登录，无需重复注册。
-3. 两台电脑登录后均确认绑定本机，给设备取能区分的名称。设置中的 UDP 绑定保持 `0.0.0.0:0`，中继填 `https://<公网IPv4>:8443/`，默认不勾选“始终通过中继连接”，优先尝试 P2P，直连不可用时回退中继；仅排查直连问题时勾选强制中继。传输配置为当前运行期间设置。
+3. 两台电脑登录后均添加本机，默认读取 Windows 计算机名称，也可自行修改。旧的“这台 Windows 电脑”由每台新版客户端各自更新，手动名称保留。连接服务会在开启共享或连接时自动准备；管理员要求修改网络参数时，展开高级连接设置。本机 UDP 监听保持 `0.0.0.0:0`，中继填 `https://<公网IPv4>:8443/`，默认不勾选“始终通过中继连接”，优先尝试 P2P，直连不可用时回退中继；仅排查直连问题时勾选强制中继。传输配置为当前运行期间设置。
 4. 被控电脑点“开启本机共享”，等待显示已共享。控制电脑在“我的设备”刷新，向在线目标发起查看或控制请求。默认由目标端核对申请账号、设备和权限后逐次批准；管理员身份不能代替批准。若希望同账号直接连接，在被控端“我的设备”的本机面板显式开启“远程值守”。此开关默认关闭，停止共享、退出或重启后关闭；关闭值守会结束入站连接并恢复手动批准。
-5. 设备面板的请求获批后自动打开独立远程窗口；高级“连接请求”页也可点“连接并查看”。核对窗口实际链路为 P2P 或中继，在折叠的连接详情比较双方校验码；单纯填写 relay URL 不证明实际走中继。窗口显示实际接收 FPS、网络 RTT 和显示器选择。点击远端画面后获得键盘焦点，可使用最大化、全屏；关闭查看窗口会结束该会话并保留主设备管理窗口。先查看，再在获批 control 会话中对自己准备的无敏感内容窗口测试鼠标键盘。
+5. 设备面板的请求获批后自动打开独立远程窗口；“远程连接”页也可根据批准权限点“连接并查看”或“连接并控制”。核对窗口实际链路为 P2P 或中继，在折叠的连接详情比较双方校验码；单纯填写 relay URL 不证明实际走中继。窗口显示实际接收 FPS、网络 RTT 和显示器选择。点击远端画面后获得键盘焦点，可使用最大化、全屏；关闭查看窗口会结束该会话并保留主设备管理窗口。先查看，再在获批 control 会话中对自己准备的无敏感内容窗口测试鼠标键盘。
 6. 任一端停止会话；被控端关闭本机共享，确认画面与控制停止。关闭窗口或退出也会先停止本地采集和输入。不要把真实桌面截图、验证令牌或账号密码作为公开问题附件。
 
 两端无画面时先检查账号/设备在线、目标已共享与已批准，再检查有效证书和两端 relay 配置。网络 RTT 不等于画面延迟；当前 JPEG 约5 FPS目标不能代表后续视频性能。
 
 ## 升级、卸载与凭据
 
-两端均升级到 0.1.2，以使用完整的断线原因、输入处理和重试行为。已部署的 4252 服务端兼容此客户端，无需重新部署、初始化或重置密钥。先关闭 FarSail 再安装新版本。应用标识维持 `app.farsail.desktop`；原生配置和 DPAPI 加密凭据保存在当前 Windows 用户的 `%LOCALAPPDATA%\app.farsail.desktop`。重装和默认卸载保留该目录。卸载界面若显示删除应用数据选项，请保持未勾选以保留凭据。若希望撤销登录，先在应用内退出；卸载本身不等于服务端撤销会话。不要把该目录复制给其他人或上传。
+两端均升级到 0.1.3，以使用新版界面、计算机名称和已有的断线原因、输入处理与重试行为。已部署的 4252 服务端兼容此客户端，无需重新部署、初始化或重置密钥。先关闭 FarSail 再安装新版本。应用标识维持 `app.farsail.desktop`；原生配置和 DPAPI 加密凭据保存在当前 Windows 用户的 `%LOCALAPPDATA%\app.farsail.desktop`。重装和默认卸载保留该目录。卸载界面若显示删除应用数据选项，请保持未勾选以保留凭据。若希望撤销登录，先在应用内退出；卸载本身不等于服务端撤销会话。不要把该目录复制给其他人或上传。
 
 ## 开发者复现
 
