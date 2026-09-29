@@ -27,3 +27,36 @@ Baseline: `024eb05d89c65318b707605774897f0706574ff2`; planning commit `01817f0`.
 Both endpoints should upgrade for reordered-input tolerance, richer causes and media retry behavior. The wire protocol/ALPN is unchanged and the old coordinator remains compatible; no server redeploy or new image archive is necessary. Static desktops may correctly show 0 FPS while the session is active. Screen capture remains roughly 5 FPS JPEG. No cross-NAT success rate, physical two-PC interaction, elevated-window control, unattended login, HEVC, files or mobile support is claimed. Installers remain unsigned previews.
 
 References: [Tauri capability defaults](https://tauri.app/security/capabilities/), [iroh Connection API](https://docs.rs/iroh/1.2.0/iroh/endpoint/struct.Connection.html). Custom app commands are callable by default, so window labels and current session bindings are checked inside every relevant Rust command; capability names alone are not the security boundary.
+
+## Final delivery (2026-09-29)
+
+Implementation `3519613797c3469024a0ee9979afe76ffd340235`, follow-up `c65fb775b50af8345d0f3716d566b233a683f060`. The latter preserves the peer close cause before iroh local cleanup overwrites it, cancels an in-progress recovery dial when its viewer is cancelled, corrects the incomplete-stream test assumption and removes remaining misleading connected notices. Release tag and all following CI runs point to the exact latter commit.
+
+| Check | Result / evidence |
+| --- | --- |
+| Backend | [36517618587](https://github.com/wanghao9103/farsail/actions/runs/36517618587), success |
+| Transport / real database integration | [36517618586](https://github.com/wanghao9103/farsail/actions/runs/36517618586), success |
+| Windows client / native viewer / UI | [36517618553](https://github.com/wanghao9103/farsail/actions/runs/36517618553), success |
+| Release installer lifecycle | [36517620603](https://github.com/wanghao9103/farsail/actions/runs/36517620603), success |
+| Local transport | 9/9, including TLS relay, expiry/revoke, renewal contention, incomplete stream recovery and close-cause retention |
+| Local client / desktop / media / Windows unit checks | 9 / 2 / 3 / 6 passed; two interactive tests are separate from the default Windows unit suite |
+| Real Windows input | Owned foreground-window test passed; no unrelated window targeted |
+| Real capture and authorization | Final real coordinator flow passed in 91.55s, including 70-second connection hold and DXGI/JPEG round trip in memory |
+| Native viewer IPC | 8 denied operations; maximize/fullscreen/minimize/independent close passed; main remained alive |
+| Browser UI | Both checked-in scripts passed; additional 640×420 viewer check had no horizontal overflow; screenshots contain synthetic graphics only |
+| Static/build | Frontend typecheck/build, Rust fmt, Clippy `-D warnings`, native debug build passed |
+
+The initial transport CI `36517020950` failed on the new test's incorrect earlier-stream assumption; the corrected test then exposed loss of the peer close cause during cleanup. Both issues were addressed and the final full transport suite above passed. Initial installer `36517024650` and client `36517020854` passed but their artifacts were **not** published; only final installer run `36517620603` was used.
+
+[Release](https://github.com/wanghao9103/farsail/releases/tag/windows-preview-0.1.2-c65fb77) / [Installer](https://github.com/wanghao9103/farsail/releases/download/windows-preview-0.1.2-c65fb77/FarSail_0.1.2_x64-setup.exe) / [SHA256SUMS](https://github.com/wanghao9103/farsail/releases/download/windows-preview-0.1.2-c65fb77/SHA256SUMS.txt).
+
+| Public asset | Bytes | SHA-256 |
+| --- | ---: | --- |
+| FarSail_0.1.2_x64-setup.exe | 7,843,396 | `016074d1f492913b138f92286fab6f97f48a307e6ce59a9d55eb96bc07c0ae33` |
+| SHA256SUMS.txt | 95 | `7908a923c8648177eb3c72b29a44e90af3f381beae99b2905fdf41c41e91f8cd` |
+| release-metadata.json | 651 | `a82a818f68613795d276cc53b696c8421f0e21535299509f288b6b061eecec15` |
+| installation-verification.json | 422 | `dc36b391cb007552ebc362aaec1bc36e32cf02cc987aa162cf85f233315772a7` |
+
+All four assets were fully downloaded anonymously with curl (no credentials or curlrc), and individually matched the CI artifact byte counts and hashes. GitHub tag `windows-preview-0.1.2-c65fb77` resolves to `c65fb775b50af8345d0f3716d566b233a683f060`. Installer is `NotSigned`. Native installation, embedded frontend/settings IPC and restart, same-version reinstall, uninstall retaining synthetic user data, and absence of debug probes passed on a disposable Windows runner. This is not a test of physical cross-network control or cross-version data migration.
+
+Runtime cleanup: task-owned Vite and its esbuild child stopped; all debug/native test windows exited. `farsail-reliability` PostgreSQL container, task network and task volumes removed. No project executable remains running from the isolated checkout. Only ignored `target`, `node_modules`, `.local` build/download/test evidence remains. The primary paused file-transfer checkout, existing Docker services, production app/profile, user credentials and public server were not modified. The existing Obsidian media/input-cancellation note was updated with verified mechanisms and explicit evidence limits.

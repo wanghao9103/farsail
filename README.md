@@ -6,7 +6,7 @@
 
 正在开发中的开源远程桌面与文件传输工具。账号、设备与授权协调服务使用 Rust；Windows 客户端使用 Tauri 2、React 和 Rust 原生客户端库。
 
-**当前状态：WI-001 协调服务、WI-002 Windows 客户端、WI-003 认证加密传输及 WI-004 Windows 远程查看/输入基线已在本机验证，WI-008B 提供已验收的 [Windows x64 预览安装包](docs/WINDOWS_INSTALL.md)。** iroh 数据通道支持本地直连及自建 TLS relay；Windows 端可在本机开启共享，逐次批准后传送 JPEG 画面并接受鼠标键盘。安装包未签名；文件内容、公网跨 NAT、HEVC与手机端仍待验证或实现。
+**当前状态：WI-001 协调服务、WI-002 Windows 客户端、WI-003 认证加密传输及 WI-004 Windows 远程查看/输入基线已在本机验证，WI-008B 提供已验收的 [Windows x64 预览安装包](docs/WINDOWS_INSTALL.md)。** iroh 数据通道支持本地直连及自建 TLS relay；Windows 端可在本机开启共享，默认逐次批准后传送 JPEG 画面并接受鼠标键盘；0.1.2 提供独立原生查看窗口、断线清理和本机显式开启的同账号“远程值守”，详见 [验证记录](docs/verification/WI-REMOTE-012.md)。安装包未签名；文件内容、公网跨 NAT、HEVC与手机端仍待验证或实现。
 
 ## 计划能力
 

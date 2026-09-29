@@ -311,3 +311,5 @@ Windows 原生层按显示器所属 DXGI 适配器采集，处理 DPI、负坐�
 ## REMOTE-012：0.1.2 远控可靠性与独立窗口
 
 在独立工作区基于 `024eb05` / 计划 `01817f0` 实施。包含租约读取竞争、乱序输入、焦点和断线队列清理、有界媒体重试、原生独立查看窗口及会话范围 IPC、全新授权的可取消重连、本机默认关闭的“远程值守”。服务端 routes/migrations 与 4252 发布包兼容，无服务端升级要求。真实数据库/HTTP/QUIC 已通过多轮 30 秒租约的 70 秒保持测试，用户现场约 30 秒断开的唯一根因尚未证实；缺口和最终发布证据见 [REMOTE-012](verification/WI-REMOTE-012.md)。WI-005 WIP 和 WI-008C 状态保持。
+
+交付完成：源码 `3519613`、`c65fb77` 已推送；最终 Windows 安装 CI `36517620603`、Windows client `36517618553`、transport `36517618586`、backend `36517618587` 全部 success，均固定 `c65fb775b50af8345d0f3716d566b233a683f060`。预发布 [windows-preview-0.1.2-c65fb77](https://github.com/wanghao9103/farsail/releases/tag/windows-preview-0.1.2-c65fb77) 四个附件完整匿名下载核验一致。安装包 7,843,396 字节，SHA256 `016074d1f492913b138f92286fab6f97f48a307e6ce59a9d55eb96bc07c0ae33`。原生输入、窗口 IPC 隔离/生命周期、本地真实采集与跨多次租约连接均通过；物理双机和跨 NAT 缺口未冒称完成。运行时已收尾，知识笔记已更新，详细后续入口为 [最终交接](REMOTE-RELIABILITY-HANDOFF.md#completed-delivery--coordinator-entry-2026-09-29)。
