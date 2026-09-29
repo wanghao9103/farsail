@@ -50,13 +50,13 @@ function Start-App {
     } while (!$script:appProcess.MainWindowHandle -and [DateTime]::UtcNow -lt $until)
     if (!$script:appProcess.MainWindowHandle) { throw 'No native window' }
     $script:root = [Windows.Automation.AutomationElement]::FromHandle($script:appProcess.MainWindowHandle)
-    $null = Find-UI '欢迎登船'
+    $null = Find-UI '设备控制台'
     $null = Find-UI '未登录'
     $null = Find-UI '本机未共享'
 }
 function Close-App {
     if ($script:appProcess -and !$script:appProcess.HasExited) {
-        $null = $script:appProcess.CloseMainWindow()
+        Click-UI '关闭窗口'
         if (!$script:appProcess.WaitForExit(15000)) { throw 'Native close failed' }
     }
 }
@@ -71,6 +71,15 @@ try {
     $env:FARSAIL_IPC_SMOKE_PATH = Join-Path $PWD '.local/windows-package/forbidden-report.json'
     $env:FARSAIL_TEST_PROFILE_DIR = Join-Path $PWD '.local/windows-package/forbidden-profile'
     Start-App
+    Click-UI '最大化或还原'
+    Start-Sleep -Milliseconds 800
+    $windowPattern = $script:root.GetCurrentPattern([Windows.Automation.WindowPattern]::Pattern)
+    if ($windowPattern.Current.WindowVisualState -ne [Windows.Automation.WindowVisualState]::Maximized) { throw 'Custom maximize failed' }
+    Click-UI '最大化或还原'
+    Click-UI '最小化'
+    Start-Sleep -Milliseconds 800
+    if ($windowPattern.Current.WindowVisualState -ne [Windows.Automation.WindowVisualState]::Minimized) { throw 'Custom minimize failed' }
+    $windowPattern.SetWindowVisualState([Windows.Automation.WindowVisualState]::Normal)
     Click-UI '*设置'
     $input = Find-UI '服务地址' 'Edit'
     $value = $input.GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern)
