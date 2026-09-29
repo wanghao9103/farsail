@@ -11,12 +11,12 @@ use std::{
     collections::{HashSet, VecDeque},
     net::SocketAddr,
     sync::{
-        Arc,
+        Arc, Mutex as StdMutex, RwLock,
         atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
 };
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::Mutex;
 
 pub const ALPN: &[u8] = b"farsail/session/1";
 const TIMEOUT: Duration = Duration::from_secs(10);
@@ -414,6 +414,7 @@ pub struct Session {
     target: EndpointId,
     deadline: Arc<RwLock<Instant>>,
     closed: Arc<AtomicBool>,
+    end_reason: Arc<StdMutex<Option<&'static str>>>,
 }
 impl Session {
     fn new(
@@ -435,6 +436,7 @@ impl Session {
             target,
             deadline: Arc::new(RwLock::new(deadline)),
             closed: Arc::new(AtomicBool::new(false)),
+            end_reason: Arc::new(StdMutex::new(None)),
         };
         session.watch_expiry();
         Ok(session)
@@ -499,9 +501,39 @@ impl Session {
         self.closed.store(true, Ordering::SeqCst);
         self.conn.close(0u32.into(), b"closed");
     }
+    pub fn close_with_reason(&self, reason: &'static str) {
+        let mut saved = self.end_reason.lock().unwrap();
+        if saved.is_none() {
+            *saved = Some(reason);
+        }
+        self.closed.store(true, Ordering::SeqCst);
+        self.conn.close(0u32.into(), reason.as_bytes());
+    }
+    /// Only bounded public codes cross the UI; never transport internals or tokens.
+    pub fn end_reason(&self) -> &'static str {
+        if let Some(reason) = *self.end_reason.lock().unwrap() {
+            return reason;
+        }
+        use iroh::endpoint::ConnectionError;
+        match self.conn.close_reason() {
+            Some(ConnectionError::TimedOut) => "network_timeout",
+            Some(ConnectionError::ApplicationClosed(c)) => match c.reason.as_ref() {
+                b"media_timeout" => "media_timeout",
+                b"input_failed" => "input_failed",
+                b"input_sequence" => "input_sequence",
+                b"lease_expired" => "lease_expired",
+                b"authorization_failed" => "authorization_failed",
+                b"renewal_failed" => "renewal_failed",
+                b"capture_failed" => "capture_failed",
+                b"stopped" => "stopped",
+                _ => "session_ended",
+            },
+            _ => "session_ended",
+        }
+    }
     pub async fn is_open(&self) -> bool {
         !self.closed.load(Ordering::SeqCst)
-            && Instant::now() < *self.deadline.read().await
+            && Instant::now() < *self.deadline.read().unwrap()
             && self.conn.close_reason().is_none()
     }
     /// Synchronous gate for system input while holding the local input lock.
@@ -509,7 +541,7 @@ impl Session {
         !self.closed.load(Ordering::SeqCst)
             && self
                 .deadline
-                .try_read()
+                .read()
                 .is_ok_and(|deadline| Instant::now() < *deadline)
             && self.conn.close_reason().is_none()
     }
@@ -520,7 +552,9 @@ impl Session {
             loop {
                 tick.tick().await;
                 if !s.is_open().await {
-                    s.close();
+                    if s.conn.close_reason().is_none() && !s.closed.load(Ordering::SeqCst) {
+                        s.close_with_reason("lease_expired");
+                    }
                     break;
                 }
             }
@@ -653,14 +687,14 @@ impl Session {
                         if validate(&c, &s.id, s.permission, s.source, s.target).is_err() { break; }
                         let Ok(deadline) = c.deadline() else { break };
                         token = offer.token;
-                        *s.deadline.write().await = deadline;
+                        *s.deadline.write().unwrap() = deadline;
                         failed_at = None;
                         if tx.write_all(b"ok").await.is_err() || tx.finish().is_err() { break; }
                     }
                     _ = tick.tick() => {
                         match authority.inspect(&s.id, &token).await {
                             Ok(c) if validate(&c,&s.id,s.permission,s.source,s.target).is_ok() => {
-                                if let Ok(deadline) = c.deadline() { *s.deadline.write().await = deadline; failed_at = None; }
+                                if let Ok(deadline) = c.deadline() { *s.deadline.write().unwrap() = deadline; failed_at = None; }
                                 else { break; }
                             }
                             _ => {
@@ -672,7 +706,9 @@ impl Session {
                     }
                 }
             }
-            s.close();
+            if s.is_open().await {
+                s.close_with_reason("authorization_failed");
+            }
         });
     }
     fn watch_host<A: Authority>(&self, authority: Arc<A>, mut token: String) {
@@ -714,7 +750,7 @@ impl Session {
                 match authority.inspect(&s.id, &token).await {
                     Ok(c) if validate(&c, &s.id, s.permission, s.source, s.target).is_ok() => {
                         if let Ok(deadline) = c.deadline() {
-                            *s.deadline.write().await = deadline;
+                            *s.deadline.write().unwrap() = deadline;
                         } else {
                             break;
                         }
@@ -722,7 +758,9 @@ impl Session {
                     _ => break,
                 }
             }
-            s.close();
+            if s.is_open().await {
+                s.close_with_reason("renewal_failed");
+            }
         });
     }
 }
@@ -797,6 +835,23 @@ mod tests {
             .await
             .unwrap();
         let dst = host.await.unwrap();
+        let ready = Arc::new(std::sync::Barrier::new(2));
+        let writer = std::thread::spawn({
+            let ready = ready.clone();
+            let deadline = src.deadline.clone();
+            move || {
+                let mut lease = deadline.write().unwrap();
+                ready.wait();
+                std::thread::sleep(Duration::from_millis(20));
+                *lease += Duration::from_secs(1);
+            }
+        });
+        ready.wait();
+        assert!(
+            src.is_open_now(),
+            "an in-progress renewal is not a closed lease"
+        );
+        writer.join().unwrap();
         assert_eq!(src.path().0, "direct");
         assert_eq!(
             src.verification_code().unwrap(),
@@ -841,6 +896,40 @@ mod tests {
             .await,
             Err(Error::Closed)
         ));
+        source.close().await;
+        target.close().await;
+    }
+    #[tokio::test]
+    async fn independent_streams_can_deliver_later_input_first_and_report_close_reason() {
+        let (source, target, auth) = pair().await;
+        let host = tokio::spawn({
+            let target = target.clone();
+            let auth = auth.clone();
+            async move { target.accept(auth).await.unwrap() }
+        });
+        let src = source
+            .connect(target.addr(), "test-session", RemotePermission::View, auth)
+            .await
+            .unwrap();
+        let dst = host.await.unwrap();
+        let mut earlier = src.conn.open_uni().await.unwrap();
+        src.send(Frame {
+            channel: Channel::Media,
+            bytes: b"sequence-2".to_vec(),
+        })
+        .await
+        .unwrap();
+        assert_eq!(dst.receive().await.unwrap().bytes, b"sequence-2");
+        earlier.write_all(&[1, 2, 0, 0, 0, 10]).await.unwrap();
+        earlier.write_all(b"sequence-1").await.unwrap();
+        earlier.finish().unwrap();
+        assert_eq!(dst.receive().await.unwrap().bytes, b"sequence-1");
+        src.close_with_reason("media_timeout");
+        dst.wait_closed().await;
+        assert_eq!(dst.end_reason(), "media_timeout");
+        // Local cleanup must preserve the original actionable cause.
+        dst.close();
+        assert_eq!(dst.end_reason(), "media_timeout");
         source.close().await;
         target.close().await;
     }

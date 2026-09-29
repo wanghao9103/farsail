@@ -163,6 +163,14 @@ async fn native_client_against_real_coordinator() {
     let request = a.call("request",json!({"source_device_id":dev_a,"target_device_id":dev_b,"permission":"view","invitation_code":invite["code"]})).await.unwrap();
     assert_eq!(request["state"], "pending");
     let id = request["id"].as_str().unwrap();
+    // Remote watch never grants another account's invitation automatically.
+    assert_eq!(b.public_state().await["remoteWatch"], false);
+    b.set_remote_watch(true).unwrap();
+    b.approve_same_account_pending().await.unwrap();
+    assert_eq!(
+        a.call("remote_status", json!({"id":id})).await.unwrap()["state"],
+        "pending"
+    );
     assert_eq!(
         b.call("pending", Value::Null)
             .await
@@ -214,6 +222,87 @@ async fn native_client_against_real_coordinator() {
         .await
         .unwrap();
     assert_eq!(source.receive().await.unwrap().bytes, b"ack");
+    // Production lease cadence (transport is a dependency, without cfg(test)).
+    // Cross several 30s grant lifetimes with real HTTP token rotation and heartbeats.
+    let first_expiry =
+        a.call("remote_status", json!({"id":id})).await.unwrap()["grant_expires_at"].clone();
+    for _ in 0..7 {
+        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+        a.call("heartbeat", Value::Null).await.unwrap();
+        b.call("heartbeat", Value::Null).await.unwrap();
+        assert!(
+            source.is_open().await,
+            "source survived lease rotation: {}",
+            source.end_reason()
+        );
+        assert!(
+            target.is_open().await,
+            "target survived lease rotation: {}",
+            target.end_reason()
+        );
+        target
+            .send(Frame {
+                channel: Channel::Media,
+                bytes: b"lease alive".to_vec(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(source.receive().await.unwrap().bytes, b"lease alive");
+    }
+    assert_ne!(
+        a.call("remote_status", json!({"id":id})).await.unwrap()["grant_expires_at"],
+        first_expiry
+    );
+    // Same-account consent is checked by the host against authoritative requester identity.
+    let c_dir = tempfile::tempdir().unwrap();
+    let c = Arc::new(client(c_dir.path().to_path_buf(), &base));
+    c.set_server(&base).await.unwrap();
+    c.call(
+        "login",
+        json!({"email":"native-b@example.test","password":"correct horse battery staple"}),
+    )
+    .await
+    .unwrap();
+    let dev_c = c
+        .call("bind", json!({"name":"Same account source"}))
+        .await
+        .unwrap()["id"]
+        .clone();
+    c.call("heartbeat", Value::Null).await.unwrap();
+    let same = c
+        .call(
+            "request",
+            json!({"source_device_id":dev_c,"target_device_id":dev_b,"permission":"control"}),
+        )
+        .await
+        .unwrap();
+    b.set_remote_watch(false).unwrap();
+    b.approve_same_account_pending().await.unwrap();
+    assert_eq!(
+        c.call("remote_status", json!({"id":same["id"]}))
+            .await
+            .unwrap()["state"],
+        "pending"
+    );
+    b.set_remote_watch(true).unwrap();
+    b.approve_same_account_pending().await.unwrap();
+    assert_eq!(
+        c.call("remote_status", json!({"id":same["id"]}))
+            .await
+            .unwrap()["state"],
+        "approved"
+    );
+    c.call("revoke_remote", json!({"id":same["id"]}))
+        .await
+        .unwrap();
+    b.approve_same_account_pending().await.unwrap();
+    assert_eq!(
+        c.call("remote_status", json!({"id":same["id"]}))
+            .await
+            .unwrap()["state"],
+        "revoked"
+    );
+    c.stop_transport().await;
     let synthetic = JpegFrame::encode_rgb(
         FrameMeta {
             monitor: 1,

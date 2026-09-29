@@ -29,7 +29,7 @@ $pe = [BitConverter]::ToInt32($bytes, 0x3c)
 if ([BitConverter]::ToUInt16($bytes, $pe + 4) -ne 0x8664) { throw 'Application is not AMD64' }
 if ([BitConverter]::ToUInt16($bytes, $pe + 24 + 68) -ne 2) { throw 'Release must use Windows GUI subsystem' }
 $strings = [Text.Encoding]::ASCII.GetString($bytes)
-foreach ($probe in @('FARSAIL_IPC_SMOKE_PATH','FARSAIL_TEST_PROFILE_DIR','ipc_smoke_report','ipc_media_smoke')) {
+foreach ($probe in @('FARSAIL_IPC_SMOKE_PATH','FARSAIL_TEST_PROFILE_DIR','ipc_smoke_report','ipc_media_smoke','FARSAIL_VIEWER_SMOKE','ipc_viewer_state')) {
     if ($strings.Contains($probe)) { throw "Debug probe in release: $probe" }
 }
 if ((Get-FileHash apps/desktop/src-tauri/icons/icon.ico).Hash -ne (Get-FileHash assets/branding/farsail-v2/icon.ico).Hash) {

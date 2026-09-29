@@ -1,0 +1,8 @@
+{
+  "identifier": "viewer",
+  "description": "Remote viewer window controls; native commands additionally enforce session ownership",
+  "windows": [
+    "viewer-*"
+  ],
+  "permissions": []
+}

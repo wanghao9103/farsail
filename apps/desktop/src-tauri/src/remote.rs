@@ -5,7 +5,7 @@ use farsail_transport::{Channel, Frame, Session};
 use farsail_windows::{Capture, Display, Input, InputSink, displays};
 use serde_json::{Value, json};
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     sync::{
         Arc, Mutex as StdMutex,
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
@@ -13,6 +13,49 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::{Mutex, Semaphore, watch};
+
+fn ended_message(reason: &str) -> &'static str {
+    match reason {
+        "media_timeout" => "画面传输连续超时，正在等待重新授权连接",
+        "network_timeout" => "网络连接中断，正在等待重新授权连接",
+        "lease_expired" => "授权租约到期，已停止画面和输入；请检查协调服务连接",
+        "authorization_failed" => "授权检查失败或已被撤销，会话已安全结束",
+        "renewal_failed" => "授权续期失败，会话已安全结束；请检查双方到协调服务的连接",
+        "input_failed" => "被控端无法执行输入；请检查窗口权限、UAC 或桌面切换",
+        "input_sequence" => "输入消息缺失或顺序异常，会话已安全结束",
+        "capture_failed" => "被控端屏幕采集已停止",
+        "stopped" => "会话已结束，画面与输入已停止",
+        _ => "对方已结束连接或授权失效，画面与输入已停止",
+    }
+}
+
+/// Independent QUIC streams can arrive out of order. Retain at most 32 small
+/// commands for 2 seconds; never apply a later keyup before its keydown.
+#[derive(Default)]
+struct InputOrder {
+    last: u64,
+    pending: BTreeMap<u64, Vec<u8>>,
+    deadline: Option<tokio::time::Instant>,
+}
+impl InputOrder {
+    fn push(&mut self, seq: u64, bytes: Vec<u8>) -> Result<Vec<Vec<u8>>, ()> {
+        if seq <= self.last || seq - self.last > 32 || self.pending.contains_key(&seq) {
+            return Err(());
+        }
+        self.pending.insert(seq, bytes);
+        let mut ready = Vec::new();
+        while let Some(bytes) = self.pending.remove(&(self.last + 1)) {
+            self.last += 1;
+            ready.push(bytes);
+        }
+        if self.pending.is_empty() {
+            self.deadline = None;
+        } else if self.deadline.is_none() {
+            self.deadline = Some(tokio::time::Instant::now() + Duration::from_secs(2));
+        }
+        Ok(ready)
+    }
+}
 
 struct Live {
     session: Session,
@@ -57,6 +100,9 @@ impl RemoteRuntime {
     }
 
     async fn attach(self: &Arc<Self>, session: Session, host: bool) {
+        if session.permission() == RemotePermission::Files {
+            return;
+        }
         if host && !self.client.hosting_enabled() {
             session.close();
             return;
@@ -103,20 +149,21 @@ impl RemoteRuntime {
             if let Err(e) = live.input.lock().unwrap().release_all() {
                 *live.error.lock().unwrap() = Some(format!("input cleanup incomplete: {e}"));
             }
+            let code = live.session.end_reason();
             live.session.close();
             let reason = live
                 .error
                 .lock()
                 .unwrap()
                 .clone()
-                .unwrap_or_else(|| "session ended".into());
+                .unwrap_or_else(|| ended_message(code).into());
             let mut finished = owner.finished.lock().await;
             if finished.len() >= 32
                 && let Some(old) = finished.keys().next().cloned()
             {
                 finished.remove(&old);
             }
-            finished.insert(live.session.id().into(),json!({"id":live.session.id(),"state":"closed","rtt_ms":null,"permission":live.session.permission(),"sharing":live.host,"verification_code":live.session.verification_code().ok(),"displays":*live.displays.lock().unwrap(),"error":reason}));
+            finished.insert(live.session.id().into(),json!({"id":live.session.id(),"state":"closed","rtt_ms":null,"permission":live.session.permission(),"sharing":live.host,"verification_code":live.session.verification_code().ok(),"displays":*live.displays.lock().unwrap(),"error":reason,"reason":code,"retryable":matches!(code,"network_timeout" | "media_timeout")}));
             drop(finished);
             let mut sessions = owner.sessions.lock().await;
             if sessions
@@ -216,7 +263,11 @@ impl RemoteRuntime {
         let sender_live = live.clone();
         let sender = tokio::spawn(async move {
             let mut budget = ByteBudget::new(BASELINE_PAYLOAD_BPS);
-            'sending: while rx.changed().await.is_ok() {
+            let mut missed = 0;
+            'sending: loop {
+                if missed == 0 && rx.changed().await.is_err() {
+                    break;
+                }
                 let (bytes, sequence) = loop {
                     if !sender_live.alive.load(Ordering::SeqCst) {
                         break 'sending;
@@ -232,7 +283,7 @@ impl RemoteRuntime {
                         .duration_since(UNIX_EPOCH)
                         .map_or(u64::MAX, |t| t.as_millis() as u64)
                         .saturating_sub(frame.meta.captured_ms);
-                    if age > 700 {
+                    if age > 700 && missed == 0 {
                         continue 'sending;
                     }
                     let wait = budget.charge(bytes.len());
@@ -242,27 +293,32 @@ impl RemoteRuntime {
                     }
                     break (bytes, frame.meta.sequence);
                 };
-                if sender_live
+                let sent = sender_live
                     .session
                     .send(Frame {
                         channel: Channel::Media,
                         bytes,
                     })
-                    .await
-                    .is_err()
-                {
+                    .await;
+                if sent.is_err() && !matches!(sent, Err(farsail_transport::Error::Timeout)) {
                     break;
                 }
-                if !wait_for_ack(&mut ack_rx, sequence, Duration::from_secs(1)).await {
-                    *sender_live.error.lock().unwrap() =
-                        Some("viewer did not consume frame before deadline".into());
-                    break;
+                if sent.is_err()
+                    || !wait_for_ack(&mut ack_rx, sequence, Duration::from_secs(2)).await
+                {
+                    missed += 1;
+                    if missed >= 3 {
+                        sender_live.session.close_with_reason("media_timeout");
+                        break;
+                    }
+                } else {
+                    missed = 0;
                 }
             }
             sender_live.alive.store(false, Ordering::SeqCst);
             sender_live.session.close();
         });
-        let mut last_input = 0u64;
+        let mut input_order = InputOrder::default();
         let mut input_window = std::time::Instant::now();
         let mut input_count = 0u32;
         let mut move_count = 0u32;
@@ -274,7 +330,22 @@ impl RemoteRuntime {
                 break;
             }
             {
-                let incoming = live.session.receive().await;
+                let incoming = if input_order.pending.is_empty() {
+                    live.session.receive().await
+                } else {
+                    match tokio::time::timeout_at(
+                        input_order.deadline.unwrap(),
+                        live.session.receive(),
+                    )
+                    .await
+                    {
+                        Ok(result) => result,
+                        Err(_) => {
+                            live.session.close_with_reason("input_sequence");
+                            break;
+                        }
+                    }
+                };
                 let frame = match incoming {
                     Ok(f) => f,
                     Err(farsail_transport::Error::Timeout) => continue,
@@ -301,49 +372,59 @@ impl RemoteRuntime {
                     && &frame.bytes[..4] == b"FSI1"
                 {
                     let seq = u64::from_be_bytes(frame.bytes[4..12].try_into().unwrap());
-                    if seq != last_input.wrapping_add(1) {
-                        *live.error.lock().unwrap() =
-                            Some("input sequence gap; session stopped safely".into());
-                        break;
-                    }
-                    last_input = seq;
-                    if input_window.elapsed() >= Duration::from_secs(1) {
-                        input_window = std::time::Instant::now();
-                        input_count = 0;
-                        move_count = 0;
-                    }
-                    input_count += 1;
-                    if input_count > 240 {
-                        *live.error.lock().unwrap() =
-                            Some("input rate exceeded; session stopped safely".into());
-                        break;
-                    }
-                    let mut sink = live.input.lock().unwrap();
-                    if !live.alive.load(Ordering::SeqCst)
-                        || !self.client.hosting_enabled()
-                        || !live.session.is_open_now()
-                    {
-                        break;
-                    }
-                    if &frame.bytes[12..] == b"FSR1" {
-                        if let Err(e) = sink.release_all() {
+                    let ready = match input_order.push(seq, frame.bytes[12..].to_vec()) {
+                        Ok(ready) => ready,
+                        Err(()) => {
+                            live.session.close_with_reason("input_sequence");
+                            break;
+                        }
+                    };
+                    for payload in ready {
+                        if input_window.elapsed() >= Duration::from_secs(1) {
+                            input_window = std::time::Instant::now();
+                            input_count = 0;
+                            move_count = 0;
+                        }
+                        input_count += 1;
+                        if input_count > 240 {
+                            live.session.close_with_reason("input_failed");
                             *live.error.lock().unwrap() =
-                                Some(format!("input cleanup incomplete: {e}"));
+                                Some("input rate exceeded; session stopped safely".into());
+                            break;
                         }
-                    } else if let Ok(input) = serde_json::from_slice::<Input>(&frame.bytes[12..]) {
-                        if matches!(&input, Input::Move { .. }) {
-                            move_count += 1;
-                            if move_count > 120 {
-                                continue;
+                        let mut sink = live.input.lock().unwrap();
+                        if !live.alive.load(Ordering::SeqCst)
+                            || !self.client.hosting_enabled()
+                            || !live.session.is_open_now()
+                        {
+                            break;
+                        }
+                        if &payload == b"FSR1" {
+                            if let Err(e) = sink.release_all() {
+                                *live.error.lock().unwrap() =
+                                    Some(format!("input cleanup incomplete: {e}"));
                             }
-                        }
-                        let current = live.current.lock().unwrap().clone();
-                        if let Err(e) = sink.apply(
-                            input,
-                            current.as_ref().map(|x| &x.0),
-                            current.as_ref().map_or(0, |x| x.1),
-                        ) {
-                            *live.error.lock().unwrap() = Some(e.to_string());
+                        } else if let Ok(input) = serde_json::from_slice::<Input>(&payload) {
+                            if matches!(&input, Input::Move { .. }) {
+                                move_count += 1;
+                                if move_count > 120 {
+                                    continue;
+                                }
+                            }
+                            let current = live.current.lock().unwrap().clone();
+                            if let Err(e) = sink.apply(
+                                input,
+                                current.as_ref().map(|x| &x.0),
+                                current.as_ref().map_or(0, |x| x.1),
+                            ) {
+                                if matches!(e, farsail_windows::Error::Geometry) {
+                                    continue;
+                                }
+                                *live.error.lock().unwrap() = Some(format!(
+                                    "系统输入失败：{e}；请检查被控窗口权限和桌面状态"
+                                ));
+                                live.session.close_with_reason("input_failed");
+                            }
                         }
                     }
                 }
@@ -351,6 +432,7 @@ impl RemoteRuntime {
         }
         sender.abort();
         if capture_failed.load(Ordering::SeqCst) {
+            live.session.close_with_reason("capture_failed");
             self.client.disable_host_local();
             let _ = self.client.set_host_capability(false).await;
         }
@@ -374,11 +456,11 @@ impl RemoteRuntime {
                 if let Ok(list) = serde_json::from_slice::<Vec<Display>>(&frame.bytes[4..]) {
                     *live.displays.lock().unwrap() = list;
                 }
-            } else if let Ok(image) = JpegFrame::from_wire(&frame.bytes)
-                && image.meta.sequence > last_sequence
-            {
-                last_sequence = image.meta.sequence;
-                sender.send_replace(Some(frame.bytes));
+            } else if let Ok(image) = JpegFrame::from_wire(&frame.bytes) {
+                if image.meta.sequence > last_sequence {
+                    last_sequence = image.meta.sequence;
+                    sender.send_replace(Some(frame.bytes));
+                }
                 let mut ack = b"FSA1".to_vec();
                 ack.extend_from_slice(&last_sequence.to_be_bytes());
                 if live
@@ -399,6 +481,13 @@ impl RemoteRuntime {
     pub async fn status(&self, id: &str) -> Result<Value, String> {
         let live = self.sessions.lock().await.get(id).cloned();
         let Some(live) = live else {
+            if let Ok(Some(session)) = self.client.transport_session(id).await
+                && session.is_open().await
+            {
+                return Ok(
+                    json!({"id":id,"state":"connecting","permission":session.permission(),"displays":[],"error":null}),
+                );
+            }
             return self
                 .finished
                 .lock()
@@ -407,21 +496,32 @@ impl RemoteRuntime {
                 .cloned()
                 .ok_or("remote session not active".into());
         };
+        if !live.alive.load(Ordering::SeqCst) || !live.session.is_open().await {
+            let reason = live.session.end_reason();
+            return Ok(
+                json!({"id":id,"state":"closed","permission":live.session.permission(),"displays":[],"rtt_ms":null,"verification_code":null,"error":ended_message(reason),"reason":reason,"retryable":matches!(reason,"network_timeout" | "media_timeout")}),
+            );
+        }
         let (path, rtt) = live.session.path();
         Ok(
             json!({"id":id,"state":path,"rtt_ms":rtt,"permission":live.session.permission(),"sharing":live.host,"verification_code":live.session.verification_code().map_err(|e|e.to_string())?,"displays":*live.displays.lock().unwrap(),"error":*live.error.lock().unwrap()}),
         )
     }
     pub async fn next_frame(&self, id: &str, after: u64) -> Result<Vec<u8>, String> {
-        let mut receiver = self
-            .sessions
-            .lock()
-            .await
-            .get(id)
-            .cloned()
-            .ok_or("remote session not active")?
-            .frame
-            .clone();
+        let live = self.sessions.lock().await.get(id).cloned();
+        let Some(live) = live else {
+            if let Ok(Some(session)) = self.client.transport_session(id).await
+                && session.is_open().await
+            {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                return Ok(Vec::new());
+            }
+            return Err("会话已结束，画面与输入已停止".into());
+        };
+        if !live.alive.load(Ordering::SeqCst) || !live.session.is_open().await {
+            return Err("会话已结束，画面与输入已停止".into());
+        }
+        let mut receiver = live.frame.clone();
         for _ in 0..2 {
             if let Some(bytes) = receiver.borrow_and_update().as_ref()
                 && let Ok(frame) = JpegFrame::from_wire(bytes)
@@ -429,11 +529,10 @@ impl RemoteRuntime {
             {
                 return Ok(bytes.clone());
             }
-            if tokio::time::timeout(Duration::from_millis(450), receiver.changed())
-                .await
-                .is_err()
-            {
-                break;
+            match tokio::time::timeout(Duration::from_millis(450), receiver.changed()).await {
+                Ok(Ok(())) => (),
+                Ok(Err(_)) => return Err("会话已结束，画面与输入已停止".into()),
+                Err(_) => break,
             }
         }
         Ok(Vec::new())
@@ -504,6 +603,9 @@ impl RemoteRuntime {
         } else {
             live.send_lock.lock().await
         };
+        if !live.alive.load(Ordering::SeqCst) || !live.session.is_open().await {
+            return Err("会话已结束，输入已停止".into());
+        }
         let mut bytes = b"FSI1".to_vec();
         bytes.extend_from_slice(
             &live
@@ -527,6 +629,7 @@ impl RemoteRuntime {
     pub async fn stop(&self, id: &str) {
         let live = self.sessions.lock().await.remove(id);
         if let Some(live) = live {
+            live.session.close_with_reason("stopped");
             live.alive.store(false, Ordering::SeqCst);
             if let Err(e) = live.input.lock().unwrap().release_all() {
                 *live.error.lock().unwrap() = Some(format!("input cleanup incomplete: {e}"));
@@ -553,5 +656,20 @@ impl RemoteRuntime {
         for id in ids {
             self.stop(&id).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn reordered_input_is_applied_once_in_order_and_bounded() {
+        let mut order = InputOrder::default();
+        assert!(order.push(2, vec![2]).unwrap().is_empty());
+        assert!(order.deadline.is_some());
+        assert_eq!(order.push(1, vec![1]).unwrap(), vec![vec![1], vec![2]]);
+        assert!(order.deadline.is_none());
+        assert!(order.push(2, vec![2]).is_err());
+        assert!(order.push(35, vec![35]).is_err());
     }
 }

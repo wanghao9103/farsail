@@ -238,6 +238,7 @@ pub struct NativeClient {
     signing_out: AtomicBool,
     cancel_tx: watch::Sender<u64>,
     host_state: std::sync::atomic::AtomicU64,
+    auto_approve: std::sync::atomic::AtomicU64,
     session_tx: broadcast::Sender<(Session, bool)>,
     capability_lock: Mutex<()>,
 }
@@ -274,13 +275,14 @@ impl NativeClient {
             signing_out: AtomicBool::new(false),
             cancel_tx,
             host_state: std::sync::atomic::AtomicU64::new(0),
+            auto_approve: std::sync::atomic::AtomicU64::new(0),
             session_tx,
             capability_lock: Mutex::new(()),
         })
     }
     pub async fn public_state(&self) -> Value {
         let s = self.state.lock().await;
-        json!({"server": s.base, "signedIn": s.login.is_some(), "deviceId": s.device.as_ref().map(|x| &x.id), "sharing":self.hosting_enabled()})
+        json!({"server": s.base, "signedIn": s.login.is_some(), "deviceId": s.device.as_ref().map(|x| &x.id), "sharing":self.hosting_enabled(), "remoteWatch":self.auto_approve.load(Ordering::SeqCst) & 1 == 1})
     }
     pub fn subscribe_sessions(&self) -> broadcast::Receiver<(Session, bool)> {
         self.session_tx.subscribe()
@@ -289,11 +291,108 @@ impl NativeClient {
         self.host_state.load(Ordering::SeqCst) & 1 == 1
     }
     pub fn disable_host_local(&self) {
+        self.set_remote_watch(false).ok();
         let _ = self
             .host_state
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |state| {
                 Some(state.wrapping_add(2) & !1)
             });
+    }
+    /// Local, process-lifetime opt-in. Never restored from account/server state.
+    pub fn set_remote_watch(&self, enabled: bool) -> Result<()> {
+        let host_epoch = self.host_state.load(Ordering::SeqCst);
+        if enabled && host_epoch & 1 == 0 {
+            return Err(Error::Invalid("请先开启本机共享".into()));
+        }
+        self.auto_approve
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+                Some(n.wrapping_add(2) & !1 | u64::from(enabled))
+            })
+            .ok();
+        if enabled && self.host_state.load(Ordering::SeqCst) != host_epoch {
+            self.set_remote_watch(false)?;
+            return Err(Error::Invalid("共享已停止，远程值守未开启".into()));
+        }
+        Ok(())
+    }
+    pub async fn approve_same_account_pending(&self) -> Result<()> {
+        let epoch = self.auto_approve.load(Ordering::SeqCst);
+        let host_epoch = self.host_state.load(Ordering::SeqCst);
+        if epoch & 1 == 0 || host_epoch & 1 == 0 {
+            return Ok(());
+        }
+        let mut s = self.state.lock().await;
+        let owner = s.owner.clone().ok_or(Error::Unbound)?;
+        if s.device.as_ref().is_none_or(|d| d.owner_id != owner) {
+            return Err(Error::Unbound);
+        }
+        let rows = self
+            .device(&mut s, Method::GET, "/v1/remote/pending", None)
+            .await?;
+        for row in rows.as_array().into_iter().flatten() {
+            if row["requester_id"].as_str() != Some(&owner)
+                || !matches!(row["permission"].as_str(), Some("view" | "control"))
+            {
+                continue;
+            }
+            if self.auto_approve.load(Ordering::SeqCst) != epoch
+                || self.host_state.load(Ordering::SeqCst) != host_epoch
+            {
+                break;
+            }
+            let id = uuid(row["id"].as_str().ok_or(Error::Unbound)?)?;
+            let result = self
+                .device(
+                    &mut s,
+                    Method::POST,
+                    &format!("/v1/remote/{id}/decide"),
+                    Some(json!({"approve":true})),
+                )
+                .await;
+            if self.auto_approve.load(Ordering::SeqCst) != epoch
+                || self.host_state.load(Ordering::SeqCst) != host_epoch
+            {
+                // A late approval cannot survive opt-out, stop, logout or identity change.
+                let _ = self
+                    .device(
+                        &mut s,
+                        Method::POST,
+                        &format!("/v1/remote/{id}/revoke"),
+                        None,
+                    )
+                    .await;
+                break;
+            }
+            if let Ok(v) = result
+                && let Some(token) = v["grant_token"].as_str()
+            {
+                s.grant.insert(id, token.into());
+            }
+        }
+        Ok(())
+    }
+    pub async fn revoke_host_approvals(&self) -> Result<()> {
+        let mut s = self.state.lock().await;
+        let ids: Vec<_> = s.grant.drain().map(|(id, _)| id).collect();
+        let mut failed = None;
+        for id in ids {
+            if let Err(e) = self
+                .device(
+                    &mut s,
+                    Method::POST,
+                    &format!("/v1/remote/{id}/revoke"),
+                    None,
+                )
+                .await
+            {
+                failed = Some(e);
+            }
+        }
+        // The local grants are already removed, even if the coordinator is unreachable.
+        match failed {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
     }
     pub async fn transport_running(&self) -> bool {
         self.transport.lock().await.is_some()
@@ -1453,6 +1552,87 @@ mod tests {
         assert!(validate_base("http://203.0.113.10").is_err());
         assert!(validate_base("https://user:pass@example.com").is_err());
         assert!(validate_base("https://example.com/path").is_err());
+    }
+    #[tokio::test]
+    async fn late_remote_watch_approval_is_revoked_after_opt_out() {
+        use axum::{
+            Json, Router,
+            routing::{get, post},
+        };
+        let seen = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let revoked = Arc::new(AtomicBool::new(false));
+        let id = "00000000-0000-0000-0000-000000000001";
+        let app = Router::new()
+            .route(
+                "/v1/remote/pending",
+                get(move || async move {
+                    Json(json!([{"id":id,"requester_id":"owner","permission":"control"}]))
+                }),
+            )
+            .route(
+                &format!("/v1/remote/{id}/decide"),
+                post({
+                    let seen = seen.clone();
+                    let release = release.clone();
+                    move || {
+                        let seen = seen.clone();
+                        let release = release.clone();
+                        async move {
+                            seen.notify_one();
+                            release.notified().await;
+                            Json(json!({"grant_token":"synthetic"}))
+                        }
+                    }
+                }),
+            )
+            .route(
+                &format!("/v1/remote/{id}/revoke"),
+                post({
+                    let revoked = revoked.clone();
+                    move || {
+                        let revoked = revoked.clone();
+                        async move {
+                            revoked.store(true, Ordering::SeqCst);
+                            Json(Value::Null)
+                        }
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client = Arc::new(NativeClient::new(Arc::new(MemoryStore::default())).unwrap());
+        client
+            .set_server(&format!("http://{}", listener.local_addr().unwrap()))
+            .await
+            .unwrap();
+        assert!(client.set_remote_watch(true).is_err());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        {
+            let mut s = client.state.lock().await;
+            s.owner = Some("owner".into());
+            s.device = Some(DeviceCredential {
+                id: "target".into(),
+                owner_id: "owner".into(),
+                device_token: "synthetic".into(),
+                session_id: "synthetic".into(),
+            });
+        }
+        client.host_state.store(1, Ordering::SeqCst);
+        client.set_remote_watch(true).unwrap();
+        let approval = tokio::spawn({
+            let client = client.clone();
+            async move { client.approve_same_account_pending().await }
+        });
+        seen.notified().await;
+        client.set_remote_watch(false).unwrap();
+        release.notify_one();
+        approval.await.unwrap().unwrap();
+        assert!(revoked.load(Ordering::SeqCst));
+        assert!(client.state.lock().await.grant.is_empty());
+        client.set_remote_watch(true).unwrap();
+        client.disable_host_local();
+        assert_eq!(client.public_state().await["remoteWatch"], false);
+        server.abort();
     }
     #[tokio::test]
     async fn delayed_transport_start_cannot_survive_stop() {

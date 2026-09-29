@@ -26,3 +26,28 @@ jobs:
       - run: cargo test -p farsail-media -p farsail-windows -p farsail-desktop --lib
       - run: cargo clippy -p farsail-client -p farsail-media -p farsail-windows -p farsail-desktop --all-targets -- -D warnings
       - run: cargo build -p farsail-desktop
+      - name: Native viewer isolation and browser interaction regressions
+        run: |
+          npm install --no-save --package-lock=false playwright
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Force .local | Out-Null
+          $vite = Start-Process node -ArgumentList '../../node_modules/vite/bin/vite.js --host 127.0.0.1 --port 1420 --strictPort' -WorkingDirectory (Join-Path $PWD 'apps/desktop') -WindowStyle Hidden -PassThru
+          try {
+            for ($n=0; $n -lt 30; $n++) {
+              try { Invoke-WebRequest http://127.0.0.1:1420 -UseBasicParsing | Out-Null; break } catch { Start-Sleep -Seconds 1 }
+            }
+            ./scripts/test-native-viewer.ps1
+            $env:UI_BROWSER = 'msedge'
+            $env:NODE_PATH = Join-Path $PWD 'node_modules'
+            node scripts/test-desktop-ui.cjs
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            node scripts/test-remote-viewer.cjs
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } finally { if (!$vite.HasExited) { Stop-Process -Id $vite.Id -Force } }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: viewer-verification
+          path: |
+            .local/native-viewer-verification.json
+            .local/ui-verification/*.png

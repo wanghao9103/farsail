@@ -1320,3 +1320,17 @@ main {
     max-height: 220px;
   }
 }
+/* Native viewer owns the full client area; connection details stay collapsed. */
+.viewer-window { height: 100vh; padding: 12px; background: #101719; color: #e5efec; }
+.viewer-body { height: 100%; display: flex; flex-direction: column; gap: 10px; }
+.viewer-toolbar { display: flex; justify-content: space-between; align-items: start; gap: 12px; }
+.viewer-toolbar p { margin: 4px 0; font-size: 12px; }
+.viewer-toolbar .row-actions { flex-wrap: wrap; }
+.viewer-toolbar button { border: 1px solid #344b5c; border-radius: 7px; background: #1c3040; color: #d7e8ee; padding: 7px 10px; font-size: 12px; }
+.viewer-toolbar button.danger-text { color: #ffacac; background: transparent; }
+.viewer-window .remote-screen { flex: 1; min-height: 100px; max-height: none; margin: 0; overflow: hidden; }
+.viewer-window .remote-screen img { width: 100%; height: 100%; object-fit: contain; }
+.viewer-window .remote-screen:focus { outline: 2px solid #69d8b3; outline-offset: -2px; }
+.viewer-window .inline-form { margin: 0; }
+.viewer-window .hint { margin: 0; font-size: 11px; }
+.viewer-window select { max-width: 400px; }

@@ -188,7 +188,7 @@ const fs = require("node:fs");
   await page.getByRole("button", { name: "仅查看屏幕", exact: true }).click();
   await page.getByRole("button", { name: "取消连接", exact: true }).waitFor();
   await page.evaluate(() => (window.fixture.requests[0].state = "approved"));
-  await page.getByRole("button", { name: /远程画面/ }).waitFor();
+  await page.waitForFunction(() => window.fixture.calls.some(x => x.cmd === "viewer_open"));
   const connections = await page.evaluate(() =>
     window.fixture.calls.filter((x) => x.cmd === "transport_connect"),
   );

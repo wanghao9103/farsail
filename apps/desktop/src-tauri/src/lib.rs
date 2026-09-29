@@ -4,51 +4,68 @@ use farsail_transport::Config as TransportConfig;
 use std::sync::Arc;
 use tauri::Manager;
 mod remote;
+mod viewer;
 use fs2::FileExt;
 use remote::RemoteRuntime;
+#[cfg(debug_assertions)]
+use viewer::ipc_viewer_state;
+use viewer::{viewer_open, viewer_reconnect, viewer_window_action};
 #[cfg(debug_assertions)]
 static IPC_SMOKE_STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 #[tauri::command]
-async fn state(client: tauri::State<'_, Arc<NativeClient>>) -> Result<serde_json::Value, String> {
+async fn state(
+    window: tauri::WebviewWindow,
+    client: tauri::State<'_, Arc<NativeClient>>,
+) -> Result<serde_json::Value, String> {
+    viewer::main_only(&window)?;
     Ok(client.public_state().await)
 }
 #[tauri::command]
 async fn set_server(
+    window: tauri::WebviewWindow,
     client: tauri::State<'_, Arc<NativeClient>>,
     server: String,
 ) -> Result<serde_json::Value, String> {
+    viewer::main_only(&window)?;
     client.set_server(&server).await.map_err(|e| e.to_string())
 }
 #[tauri::command]
 async fn call(
+    window: tauri::WebviewWindow,
     client: tauri::State<'_, Arc<NativeClient>>,
     remote: tauri::State<'_, Arc<RemoteRuntime>>,
     op: String,
     args: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
+    viewer::main_only(&window)?;
     if matches!(
         op.as_str(),
         "logout" | "password" | "unbind_device" | "bind"
     ) {
+        viewer::cancel_all(window.app_handle());
         client.disable_host_local();
         remote.stop_all().await;
     }
     if op == "revoke_remote"
         && let Some(id) = args.get("id").and_then(serde_json::Value::as_str)
     {
+        viewer::cancel_session(window.app_handle(), id);
         remote.stop(id).await;
     }
     client.call(&op, args).await.map_err(|e| e.to_string())
 }
 #[tauri::command]
-fn monitors() -> Result<Vec<farsail_windows::Display>, String> {
+fn monitors(window: tauri::WebviewWindow) -> Result<Vec<farsail_windows::Display>, String> {
+    viewer::main_only(&window)?;
     farsail_windows::displays().map_err(|e| e.to_string())
 }
 #[tauri::command]
 async fn share_enable(
+    window: tauri::WebviewWindow,
     client: tauri::State<'_, Arc<NativeClient>>,
 ) -> Result<serde_json::Value, String> {
+    viewer::main_only(&window)?;
     if !client.transport_running().await {
         return Err("start the transport endpoint first".into());
     }
@@ -62,9 +79,11 @@ async fn share_enable(
 }
 #[tauri::command]
 async fn share_disable(
+    window: tauri::WebviewWindow,
     client: tauri::State<'_, Arc<NativeClient>>,
     remote: tauri::State<'_, Arc<RemoteRuntime>>,
 ) -> Result<serde_json::Value, String> {
+    viewer::main_only(&window)?;
     client.disable_host_local();
     remote.stop_hosts().await;
     client
@@ -74,44 +93,54 @@ async fn share_disable(
 }
 #[tauri::command]
 async fn remote_status(
+    window: tauri::WebviewWindow,
     remote: tauri::State<'_, Arc<RemoteRuntime>>,
     id: String,
 ) -> Result<serde_json::Value, String> {
+    viewer::scoped(&window, &id)?;
     remote.status(&id).await
 }
 #[tauri::command]
 async fn media_next(
+    window: tauri::WebviewWindow,
     remote: tauri::State<'_, Arc<RemoteRuntime>>,
     id: String,
     after: u64,
 ) -> Result<tauri::ipc::Response, String> {
+    viewer::scoped(&window, &id)?;
     Ok(tauri::ipc::Response::new(
         remote.next_frame(&id, after).await?,
     ))
 }
 #[tauri::command]
 async fn media_select(
+    window: tauri::WebviewWindow,
     remote: tauri::State<'_, Arc<RemoteRuntime>>,
     id: String,
     display: u32,
 ) -> Result<(), String> {
+    viewer::scoped(&window, &id)?;
     remote.select(&id, display).await
 }
 #[tauri::command]
 async fn remote_input(
+    window: tauri::WebviewWindow,
     remote: tauri::State<'_, Arc<RemoteRuntime>>,
     id: String,
     input: Option<serde_json::Value>,
 ) -> Result<(), String> {
+    viewer::scoped(&window, &id)?;
     remote.input(&id, input).await
 }
 #[tauri::command]
 async fn transport_start(
+    window: tauri::WebviewWindow,
     client: tauri::State<'_, Arc<NativeClient>>,
     relay_url: Option<String>,
     force_relay: bool,
     bind_addr: String,
 ) -> Result<serde_json::Value, String> {
+    viewer::main_only(&window)?;
     let relay = relay_url
         .filter(|s| !s.is_empty())
         .map(|s| {
@@ -141,10 +170,12 @@ async fn transport_start(
 }
 #[tauri::command]
 async fn transport_connect(
+    window: tauri::WebviewWindow,
     client: tauri::State<'_, Arc<NativeClient>>,
     id: String,
     permission: String,
 ) -> Result<serde_json::Value, String> {
+    viewer::main_only(&window)?;
     let permission = match permission.as_str() {
         "view" => RemotePermission::View,
         "control" => RemotePermission::Control,
@@ -158,9 +189,11 @@ async fn transport_connect(
 }
 #[tauri::command]
 async fn transport_status(
+    window: tauri::WebviewWindow,
     client: tauri::State<'_, Arc<NativeClient>>,
     id: String,
 ) -> Result<serde_json::Value, String> {
+    viewer::main_only(&window)?;
     client
         .transport_status(&id)
         .await
@@ -168,15 +201,45 @@ async fn transport_status(
 }
 #[tauri::command]
 async fn transport_close(
+    window: tauri::WebviewWindow,
     client: tauri::State<'_, Arc<NativeClient>>,
     remote: tauri::State<'_, Arc<RemoteRuntime>>,
     id: String,
 ) -> Result<(), String> {
+    viewer::scoped(&window, &id)?;
+    if window.label() != "main" {
+        viewer::cancel(window.app_handle(), window.label());
+    } else {
+        viewer::cancel_session(window.app_handle(), &id);
+    }
     remote.stop(&id).await;
+    let _ = client
+        .call("revoke_remote", serde_json::json!({"id":id}))
+        .await;
     client
         .close_transport_session(&id)
         .await
         .map_err(|e| e.to_string())
+}
+#[tauri::command]
+async fn remote_watch(
+    window: tauri::WebviewWindow,
+    client: tauri::State<'_, Arc<NativeClient>>,
+    remote: tauri::State<'_, Arc<RemoteRuntime>>,
+    enabled: bool,
+) -> Result<(), String> {
+    viewer::main_only(&window)?;
+    client
+        .set_remote_watch(enabled)
+        .map_err(|e| e.to_string())?;
+    if !enabled {
+        remote.stop_hosts().await;
+        client
+            .revoke_host_approvals()
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 #[cfg(debug_assertions)]
 #[tauri::command]
@@ -210,6 +273,8 @@ pub fn run() {
     farsail_windows::ensure_dpi_awareness().expect("FarSail requires per-monitor DPI awareness");
     let builder = tauri::Builder::default()
         .on_page_load(|webview, _| {
+            #[cfg(debug_assertions)]
+            if std::env::var_os("FARSAIL_VIEWER_SMOKE").is_some() { viewer::smoke_probe(webview); return; }
             #[cfg(not(debug_assertions))]
             let _ = webview;
             #[cfg(debug_assertions)]
@@ -256,12 +321,42 @@ pub fn run() {
                     }
                 }
             });
+            app.manage(viewer::Windows::default());
+            let watch_client = client.clone();
+            tauri::async_runtime::spawn(async move {
+                let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
+                loop { tick.tick().await; let _ = watch_client.approve_same_account_pending().await; }
+            });
             app.manage(client);
             app.manage(remote);
+            #[cfg(debug_assertions)]
+            viewer::smoke_setup(app.handle())?;
             Ok(())
         });
     let builder = builder.on_window_event(|window, event| {
+        #[cfg(debug_assertions)]
+        if matches!(event, tauri::WindowEvent::Destroyed) && window.label() == "viewer-smoke"
+            && let Ok(path) = std::env::var("FARSAIL_IPC_SMOKE_PATH") {
+                let _ = std::fs::write(format!("{path}.closed"), serde_json::json!({"mainExists":window.app_handle().get_webview_window("main").is_some()}).to_string());
+            }
         if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            if window.label() != "main" {
+                if let Some(id) = viewer::cancel(window.app_handle(), window.label()) {
+                    api.prevent_close();
+                    let remote = window.state::<Arc<RemoteRuntime>>().inner().clone();
+                    let client = window.state::<Arc<NativeClient>>().inner().clone();
+                    let window = window.clone();
+                    tauri::async_runtime::spawn(async move {
+                        remote.stop(&id).await;
+                        let _ = client
+                            .call("revoke_remote", serde_json::json!({"id":id}))
+                            .await;
+                        let _ = window.destroy();
+                    });
+                }
+                return;
+            }
+            viewer::cancel_all(window.app_handle());
             static CLOSING: std::sync::atomic::AtomicBool =
                 std::sync::atomic::AtomicBool::new(false);
             if !CLOSING.swap(true, std::sync::atomic::Ordering::SeqCst) {
@@ -286,6 +381,11 @@ pub fn run() {
                     )
                     .await;
                     client.stop_transport().await;
+                    for (label, child) in window.app_handle().webview_windows() {
+                        if label != "main" {
+                            let _ = child.destroy();
+                        }
+                    }
                     let _ = window.destroy();
                 });
             }
@@ -293,6 +393,10 @@ pub fn run() {
     });
     #[cfg(debug_assertions)]
     let builder = builder.invoke_handler(tauri::generate_handler![
+        viewer_window_action,
+        viewer_open,
+        viewer_reconnect,
+        remote_watch,
         state,
         set_server,
         call,
@@ -307,11 +411,16 @@ pub fn run() {
         media_next,
         media_select,
         remote_input,
+        ipc_viewer_state,
         ipc_smoke_report,
         ipc_media_smoke
     ]);
     #[cfg(not(debug_assertions))]
     let builder = builder.invoke_handler(tauri::generate_handler![
+        viewer_window_action,
+        viewer_open,
+        viewer_reconnect,
+        remote_watch,
         state,
         set_server,
         call,

@@ -18,6 +18,7 @@ type PublicState = {
   signedIn: boolean;
   deviceId: string | null;
   sharing: boolean;
+  remoteWatch?: boolean;
 };
 const api = <T,>(op: string, args: Record<string, unknown> = {}): Promise<T> =>
   invoke("call", { op, args });
@@ -45,7 +46,6 @@ function App() {
   const [bindAddr, setBindAddr] = useState("0.0.0.0:0");
   const [forceRelay, setForceRelay] = useState(false);
   const [transportReady, setTransportReady] = useState(false);
-  const [activeView, setActiveView] = useState<string | null>(null);
   const [authMode, setAuthMode] = useState<
     "login" | "register" | "verify" | "resend" | "recover" | "reset"
   >("login");
@@ -221,7 +221,6 @@ function App() {
               ["overview", "总览", "◫"],
               ["devices", "我的设备", "▣"],
               ["requests", "连接请求", "⇄"],
-              ...(activeView ? [["viewer", "远程画面", "▧"]] : []),
               ["security", "账号安全", "◇"],
               ...(me?.role === "admin" ? [["admin", "管理控制台", "⚙"]] : []),
               ["settings", "共享与设置", "☷"],
@@ -488,8 +487,9 @@ function App() {
               }
             }}
             onView={(id) => {
-              setActiveView(id);
-              setTab("viewer");
+              void invoke("viewer_open", { id }).catch((e) =>
+                setProblem(errorText(e)),
+              );
             }}
             onNavigate={setTab}
             devices={devices}
@@ -507,17 +507,9 @@ function App() {
             act={act}
             transportReady={transportReady}
             onView={(id) => {
-              setActiveView(id);
-              setTab("viewer");
-            }}
-          />
-        ) : tab === "viewer" && activeView ? (
-          <Viewer
-            id={activeView}
-            onStop={() => {
-              setActiveView(null);
-              setTab("requests");
-              void refresh();
+              void invoke("viewer_open", { id }).catch((e) =>
+                setProblem(errorText(e)),
+              );
             }}
           />
         ) : tab === "security" ? (
@@ -1002,6 +994,7 @@ function Devices({
               permission: request.permission,
             });
             onView(request.id);
+            setConnectionNote("已在独立窗口打开，可返回管理设备。");
           } catch (e) {
             setConnectionNote("连接失败，请检查双方网络和共享状态后重试。");
             throw e;
@@ -1010,7 +1003,7 @@ function Devices({
             setConnecting(false);
           }
         },
-        "已连接远程电脑",
+        "已打开独立远程窗口",
         false,
       );
     } else if (request.state !== "pending") {
@@ -1167,7 +1160,9 @@ function Devices({
                 <div className="sharing-panel">
                   <div>
                     <h3>允许其他设备连接本机</h3>
-                    <p className="muted">开启后，每次查看或控制仍需你批准。</p>
+                    <p className="muted">
+                      开启后可接收连接请求；默认每次需要批准。
+                    </p>
                   </div>
                   <button
                     className={state.sharing ? "secondary" : "primary"}
@@ -1194,6 +1189,34 @@ function Devices({
                     ? "本机正在等待连接；你可以随时停止共享。"
                     : "共享已关闭，其他设备不能查看或控制本机。"}
                 </p>
+                <div className="sharing-panel">
+                  <div>
+                    <h3>远程值守</h3>
+                    <p className="muted">
+                      开启后，同账号设备可直接连接，无需逐次批准。
+                    </p>
+                    <p className="hint">
+                      仅本次共享有效；关闭会结束现有入站连接并恢复手动批准。需要系统已登录且应用运行。
+                    </p>
+                  </div>
+                  <button
+                    disabled={busy || !state.sharing}
+                    className={state.remoteWatch ? "secondary" : "primary"}
+                    onClick={() =>
+                      void act(
+                        () =>
+                          invoke("remote_watch", {
+                            enabled: !state.remoteWatch,
+                          }),
+                        state.remoteWatch
+                          ? "远程值守已关闭，恢复手动批准"
+                          : "远程值守已开启",
+                      )
+                    }
+                  >
+                    {state.remoteWatch ? "关闭远程值守" : "开启远程值守"}
+                  </button>
+                </div>
                 <h3>
                   等待批准的连接 <span className="count">{pending.length}</span>
                 </h3>
@@ -1806,6 +1829,7 @@ type RemoteStatus = {
   verification_code: string | null;
   displays: RemoteDisplay[];
   error: string | null;
+  retryable?: boolean;
 };
 type Picture = {
   url: string;
@@ -1815,7 +1839,26 @@ type Picture = {
   width: number;
   height: number;
 };
-function Viewer({ id, onStop }: { id: string; onStop: () => void }) {
+function ViewerWindow({ initialId }: { initialId: string }) {
+  const [id, setId] = useState(initialId);
+  return (
+    <Viewer
+      key={id}
+      id={id}
+      onReconnect={setId}
+      onStop={() => void invoke("viewer_window_action", { action: "close" })}
+    />
+  );
+}
+function Viewer({
+  id,
+  onStop,
+  onReconnect,
+}: {
+  id: string;
+  onStop: () => void;
+  onReconnect: (id: string) => void;
+}) {
   const [status, setStatus] = useState<RemoteStatus | null>(null);
   const [picture, setPicture] = useState<Picture | null>(null);
   const [fps, setFps] = useState(0);
@@ -1828,7 +1871,12 @@ function Viewer({ id, onStop }: { id: string; onStop: () => void }) {
   const inputQueue = useRef<Promise<unknown>>(Promise.resolve());
   const inputPending = useRef(0);
   const lastMove = useRef(0);
-  const control = status?.permission === "control";
+  const [ended, setEnded] = useState(false);
+  const [reconnecting, setReconnecting] = useState(false);
+  const screen = useRef<HTMLDivElement>(null);
+  const generation = useRef(0);
+  const control =
+    !ended && status?.state !== "closed" && status?.permission === "control";
   const controlRef = useRef(control);
   controlRef.current = control;
   const send = (input: Record<string, unknown> | null) => {
@@ -1840,13 +1888,28 @@ function Viewer({ id, onStop }: { id: string; onStop: () => void }) {
     }
     if (inputPending.current >= 16) {
       setProblem("输入队列过长，请停止并重新连接");
-      void invoke("transport_close", { id });
+      generation.current++;
+      controlRef.current = false;
+      setEnded(true);
+      setPicture(null);
+      void invoke("transport_close", { id }).catch(() => {});
       return;
     }
+    const epoch = generation.current;
     inputPending.current++;
     inputQueue.current = inputQueue.current
-      .then(() => invoke("remote_input", { id, input }))
-      .catch((e) => setProblem(errorText(e)))
+      .then(() => {
+        if (epoch === generation.current && controlRef.current)
+          return invoke("remote_input", { id, input });
+      })
+      .catch((e) => {
+        generation.current++;
+        controlRef.current = false;
+        setEnded(true);
+        setPicture(null);
+        setProblem(errorText(e));
+        void invoke("transport_close", { id }).catch(() => {});
+      })
       .finally(() => {
         inputPending.current--;
       });
@@ -1862,27 +1925,68 @@ function Viewer({ id, onStop }: { id: string; onStop: () => void }) {
       if (e.key === "Alt") return 0xa4;
       if (e.key === "Shift") return 0xa0;
     }
+    if (e.key === "Control") return 0xa2;
+    if (e.key === "Alt") return 0xa4;
+    if (e.key === "Shift") return 0xa0;
     return e.keyCode;
   };
   useEffect(() => {
     let live = true;
     last.current = 0;
+    let receiving = true;
+    let terminal = false;
+    const finish = (s?: RemoteStatus, error?: unknown) => {
+      if (!live || terminal) return;
+      terminal = true;
+      receiving = false;
+      generation.current++;
+      controlRef.current = false;
+      setEnded(true);
+      setPicture(null);
+      setFps(0);
+      count.current = 0;
+      if (url.current) {
+        URL.revokeObjectURL(url.current);
+        url.current = null;
+      }
+      setProblem(
+        s?.error || (error ? errorText(error) : "会话已结束，画面与输入已停止"),
+      );
+      if (s?.retryable) {
+        setReconnecting(true);
+        void invoke<{ id: string }>("viewer_reconnect")
+          .then((r) => {
+            if (live) onReconnect(r.id);
+          })
+          .catch((e) => {
+            if (live) {
+              setProblem(errorText(e));
+              setReconnecting(false);
+            }
+          });
+      }
+    };
     const pollStatus = () =>
       void invoke<RemoteStatus>("remote_status", { id })
         .then((s) => {
-          if (live) setStatus(s);
+          if (live) {
+            setStatus(s);
+            if (s.state === "closed") finish(s);
+          }
         })
         .catch((e) => {
-          if (live) setProblem(errorText(e));
+          finish(undefined, e);
         });
     pollStatus();
-    const statusTimer = window.setInterval(pollStatus, 2000);
+    const statusTimer = window.setInterval(() => {
+      if (!terminal) pollStatus();
+    }, 750);
     const fpsTimer = window.setInterval(() => {
       setFps(count.current);
       count.current = 0;
     }, 1000);
     const receive = async () => {
-      while (live) {
+      while (live && receiving) {
         try {
           const data = new Uint8Array(
             await invoke<ArrayBuffer>("media_next", {
@@ -1890,7 +1994,7 @@ function Viewer({ id, onStop }: { id: string; onStop: () => void }) {
               after: last.current,
             }),
           );
-          if (!live) break;
+          if (!live || !receiving) break;
           if (data.length < 50) continue;
           const view = new DataView(
             data.buffer,
@@ -1921,20 +2025,30 @@ function Viewer({ id, onStop }: { id: string; onStop: () => void }) {
           });
           if (old) URL.revokeObjectURL(old);
         } catch (e) {
-          if (live) setProblem(errorText(e));
+          if (live && !terminal) {
+            try {
+              finish(await invoke<RemoteStatus>("remote_status", { id }));
+            } catch {
+              finish(undefined, e);
+            }
+          }
           break;
         }
       }
     };
     void receive();
-    const release = () => send(null);
+    const release = () => {
+      generation.current++;
+      send(null);
+    };
     window.addEventListener("blur", release);
     return () => {
       live = false;
       window.clearInterval(statusTimer);
       window.clearInterval(fpsTimer);
       window.removeEventListener("blur", release);
-      release();
+      generation.current++;
+      controlRef.current = false;
       if (url.current) URL.revokeObjectURL(url.current);
     };
   }, [id]);
@@ -1952,35 +2066,73 @@ function Viewer({ id, onStop }: { id: string; onStop: () => void }) {
     return x >= 0 && x <= 1 && y >= 0 && y <= 1 ? { x, y } : null;
   };
   return (
-    <section className="stack">
-      <div className="card">
-        <div className="section-heading">
+    <section className="viewer-window">
+      <div className="viewer-body">
+        <div className="viewer-toolbar">
           <div>
-            <h2>{control ? "远程控制" : "仅查看"}</h2>
+            <strong>
+              {ended
+                ? "会话已结束"
+                : status?.permission === "control"
+                  ? "远程控制"
+                  : "仅查看"}
+            </strong>
             <p className="muted">
-              连接 {short(id)} · {status?.state ?? "连接中"} · 网络 RTT{" "}
-              {status?.rtt_ms ?? "—"} ms · 实际接收 {fps} FPS
+              连接 {short(id)} ·{" "}
+              {status?.state === "direct"
+                ? "P2P 直连"
+                : status?.state === "relay"
+                  ? "中继回退"
+                  : ended
+                    ? "已断开"
+                    : "协商路径中"}{" "}
+              · 网络 RTT {status?.rtt_ms ?? "—"} ms · 实际接收 {fps} FPS
             </p>
-            <p className="muted">
-              双方校验码：
-              <strong>{status?.verification_code ?? "连接中"}</strong>
-              。请通过可信渠道比较。
-            </p>
+            <details>
+              <summary>连接详情</summary>
+              <p className="muted">
+                双方校验码：
+                <strong>{status?.verification_code ?? "连接中"}</strong>
+                。请通过可信渠道比较。路径可在直连与中继间迁移，无需重新授权。
+              </p>
+            </details>
           </div>
-          <button
-            className="danger-text"
-            onClick={() =>
-              void invoke("transport_close", { id }).finally(onStop)
-            }
-          >
-            立即停止
-          </button>
+          <div className="row-actions">
+            <button
+              onClick={() =>
+                void invoke("viewer_window_action", { action: "minimize" })
+              }
+            >
+              最小化
+            </button>
+            <button
+              onClick={() =>
+                void invoke("viewer_window_action", { action: "maximize" })
+              }
+            >
+              最大化 / 还原
+            </button>
+            <button
+              onClick={() =>
+                void invoke("viewer_window_action", { action: "fullscreen" })
+              }
+            >
+              全屏 / 退出全屏
+            </button>
+            <button className="danger-text" onClick={onStop}>
+              {reconnecting ? "取消重连并关闭" : "结束并关闭"}
+            </button>
+          </div>
         </div>
         {problem && <div className="alert error">{problem}</div>}
         {status?.error && <div className="alert error">{status.error}</div>}
         <label>
           远端显示器{" "}
+          {reconnecting && (
+            <span role="status">正在重连（最多 3 次）；等待新的授权批准…</span>
+          )}
           <select
+            disabled={ended}
             value={picture?.display ?? 1}
             onChange={(e) =>
               void invoke("media_select", {
@@ -1998,6 +2150,11 @@ function Viewer({ id, onStop }: { id: string; onStop: () => void }) {
         </label>
         <div
           className="remote-screen"
+          ref={screen}
+          onBlur={() => {
+            generation.current++;
+            send(null);
+          }}
           tabIndex={control ? 0 : -1}
           onKeyDown={(e) => {
             if (!control) return;
@@ -2027,6 +2184,8 @@ function Viewer({ id, onStop }: { id: string; onStop: () => void }) {
                   });
               }}
               onMouseDown={(e) => {
+                e.preventDefault();
+                screen.current?.focus({ preventScroll: true });
                 if (e.button !== 0 && e.button !== 2) return;
                 const p = point(e);
                 if (p)
@@ -2052,7 +2211,10 @@ function Viewer({ id, onStop }: { id: string; onStop: () => void }) {
                     down: false,
                   });
               }}
-              onMouseLeave={() => send(null)}
+              onMouseLeave={() => {
+                generation.current++;
+                send(null);
+              }}
               onContextMenu={(e) => e.preventDefault()}
               onWheel={(e) => {
                 e.preventDefault();
@@ -2063,13 +2225,23 @@ function Viewer({ id, onStop }: { id: string; onStop: () => void }) {
                     display: picture.display,
                     layout: picture.layout,
                     ...p,
-                    vertical: Math.round(-e.deltaY),
-                    horizontal: Math.round(e.deltaX),
+                    vertical: Math.max(
+                      -1200,
+                      Math.min(1200, Math.round(-e.deltaY)),
+                    ),
+                    horizontal: Math.max(
+                      -1200,
+                      Math.min(1200, Math.round(e.deltaX)),
+                    ),
                   });
               }}
             />
           ) : (
-            <span>等待远端 JPEG 画面</span>
+            <span>
+              {ended
+                ? "会话已结束，远端画面已清除"
+                : "等待远端 JPEG 画面；点击画面后使用键盘"}
+            </span>
           )}
         </div>
         {control && (
@@ -2491,6 +2663,12 @@ function Admin({ busy, act }: { busy: boolean; act: Action }) {
 
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <App />
+    {new URLSearchParams(window.location.search).get("viewer") ? (
+      <ViewerWindow
+        initialId={new URLSearchParams(window.location.search).get("viewer")!}
+      />
+    ) : (
+      <App />
+    )}
   </React.StrictMode>,
 );
