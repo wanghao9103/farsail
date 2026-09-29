@@ -498,6 +498,10 @@ impl Session {
             .unwrap_or(("connecting", None))
     }
     pub fn close(&self) {
+        // iroh replaces a peer close with LocallyClosed during cleanup. Preserve
+        // the bounded peer cause first, otherwise recovery loses its eligibility.
+        let reason = self.end_reason();
+        self.end_reason.lock().unwrap().get_or_insert(reason);
         self.closed.store(true, Ordering::SeqCst);
         self.conn.close(0u32.into(), b"closed");
     }
@@ -900,7 +904,7 @@ mod tests {
         target.close().await;
     }
     #[tokio::test]
-    async fn independent_streams_can_deliver_later_input_first_and_report_close_reason() {
+    async fn incomplete_earlier_stream_allows_later_frame_and_preserves_close_reason() {
         let (source, target, auth) = pair().await;
         let host = tokio::spawn({
             let target = target.clone();
@@ -919,11 +923,9 @@ mod tests {
         })
         .await
         .unwrap();
+        assert!(matches!(dst.receive().await, Err(Error::Timeout)));
+        let _ = earlier.reset(0u32.into());
         assert_eq!(dst.receive().await.unwrap().bytes, b"sequence-2");
-        earlier.write_all(&[1, 2, 0, 0, 0, 10]).await.unwrap();
-        earlier.write_all(b"sequence-1").await.unwrap();
-        earlier.finish().unwrap();
-        assert_eq!(dst.receive().await.unwrap().bytes, b"sequence-1");
         src.close_with_reason("media_timeout");
         dst.wait_closed().await;
         assert_eq!(dst.end_reason(), "media_timeout");

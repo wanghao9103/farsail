@@ -21,6 +21,13 @@ pub struct Binding {
     retrying: AtomicBool,
     attempts: AtomicU32,
 }
+impl Binding {
+    async fn wait_cancelled(&self) {
+        while !self.cancelled.load(Ordering::SeqCst) {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+}
 #[derive(Default)]
 pub struct Windows(pub Mutex<HashMap<String, Arc<Binding>>>);
 
@@ -270,7 +277,12 @@ pub async fn viewer_reconnect(window: tauri::WebviewWindow) -> Result<Value, Str
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 match client.call("remote_status", json!({"id":id})).await {
                     Ok(r) if r["state"] == "approved" => {
-                        connected = client.connect_transport(&id, binding.permission).await.is_ok();
+                        if binding.cancelled.load(Ordering::SeqCst) { break; }
+                        connected = tokio::select! {
+                            biased;
+                            _ = binding.wait_cancelled() => false,
+                            result = client.connect_transport(&id, binding.permission) => result.is_ok(),
+                        };
                         break;
                     }
                     Ok(r) if r["state"] != "pending" => {
