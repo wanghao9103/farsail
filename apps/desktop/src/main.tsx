@@ -365,7 +365,12 @@ function App() {
             </button>
           ))}
         </nav>
-        <div className="sidebar-foot">
+        <div
+          className="sidebar-foot"
+          role="status"
+          aria-label={publicState.sharing ? "本机屏幕共享中" : "本机未共享"}
+          title={publicState.sharing ? "本机屏幕共享中" : "本机未共享"}
+        >
           <div
             className={`status-dot ${publicState.sharing ? "is-sharing" : ""}`}
           />

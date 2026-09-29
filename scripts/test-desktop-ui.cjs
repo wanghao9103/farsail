@@ -524,6 +524,12 @@ const fs = require("node:fs");
     { width: 680, height: 700 },
   ]) {
     await page.setViewportSize(size);
+    assert(
+      await page
+        .getByRole("status", { name: "本机屏幕共享中", exact: true })
+        .isVisible(),
+      "compact desktop sidebar must retain sharing status",
+    );
     for (const name of [
       "总览",
       "我的设备",

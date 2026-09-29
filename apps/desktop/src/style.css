@@ -1685,9 +1685,20 @@ main > .alert {
     padding: 0 6px 26px;
   }
   .brand div,
-  .side-label,
-  .sidebar-foot {
+  .side-label {
     display: none;
+  }
+  .sidebar-foot {
+    display: block;
+    padding: 14px 0;
+    text-align: center;
+    font-size: 0;
+  }
+  .sidebar-foot small {
+    display: none;
+  }
+  .sidebar-foot .status-dot {
+    margin: 0;
   }
   .sidebar nav button,
   .sidebar nav button:not(.active) {
