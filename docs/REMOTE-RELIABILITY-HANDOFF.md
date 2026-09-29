@@ -1,0 +1,27 @@
+# Remote reliability and usability release
+
+Baseline: `024eb05d89c65318b707605774897f0706574ff2`, released Windows UI 0.1.1. Work only in `C:/Users/wangy/.codex/worktrees/remote-session-reliability/远程`. The primary `D:/working/远程` has paused WI-005 file-transfer changes and must not be edited, built, stashed or reset.
+
+## User-authorized result
+The user reported remote screen works but mouse/keyboard do not, followed by `closed`, 0 FPS, `remote session not active`, `session ended` while a stale frame and success banner remain. They request all recent improvements, implementation, push and new release:
+1. Find and fix input/session failure with evidence, clear Chinese ended state and no queued input after disconnect.
+2. Bounded automatic reconnection for transient network failure, cancelable; NEVER revive explicitly stopped/revoked/disabled sessions. Existing old grant cannot simply be reused: preserve fresh authoritative authorization and finite leases.
+3. P2P preferred with relay fallback and explicit visible path/status. Inspect force-relay and default relay behavior; distinguish reconnect vs path migration. No false NAT traversal claim based only on loopback.
+4. Independent native remote window, maximize/fullscreen, compact toolbar/display selector, details collapsed. Closing the viewer closes its session, main device manager stays. Scope child-window native IPC permissions to session; do not broadly grant account/admin IPC or launch arbitrary URLs.
+5. On-host explicit opt-in for same-account automatic approval. Default off, requires active local sharing and valid source/target identities; other accounts still explicit approval. Turning off/stop sharing/revoke/logout must retain correct revocation semantics. This is NOT login-screen/UAC unattended control. Native host can potentially auto-decide same-account pending requests if account equality is authoritatively available; otherwise implement a safe server API/migration. Document compatibility and required server upgrade precisely.
+
+## Write set and runtime boundaries
+Allowed: desktop frontend/Tauri/windows/media/transport/client/core as required, coordinator routes/models/migrations/tests as necessary for authorization, UI package types, targeted tests and scripts/workflows, release versions, docs. No unrelated codec/mobile/file-transfer changes. Use scoped commits. Keep server credentials, mail and account data out of repo/logs. No direct login to user's public server; no SSH credentials available. Public read-only health checks allowed. Any local Docker services use task-specific project/ports and secrets under ignored `.local`; do not alter existing initialized deployment or profiles. Do not run user-installed production app with its credentials. Use test-owned windows/PIDs for native input. Do not bypass TLS or permissions.
+
+## Existing investigations (hypotheses, not proven root cause)
+- Viewer in `apps/desktop/src/main.tsx` uses control permission even in closed state, continues queued IPC and renders stale JPEG; click target is img inside focusable div, keyboard focus not explicitly acquired.
+- `remote.rs` drops numerous receive/send errors, sends generic `session ended`; host InputSink errors are only host-local status. Need actionable bounded diagnostics to viewer without sensitive data.
+- Host uses 1s application ACK deadline; transport media timeout 400ms; user screenshot RTT ~91ms. Investigate tolerance to jitter without unbounded old-frame queues or loosening grant enforcement.
+- Input messages use continuous sequence on per-message uni streams, native send mutex and frontend bounded serialized queue. Verify actual ordering and release after blur/stop.
+- Current reconnect contract closes old session grants; fresh request/decision needed unless safe scoped authority protocol changes.
+- Root 0.1.1 added `scripts/test-desktop-ui.cjs` with synthetic IPC; this is not native/cross-network proof. Last native package CI 36511486164 passed titlebar, settings, install/reinstall/uninstall. Release workflow is manually dispatched, publishing is separate.
+
+## Required verification/release
+Use development knowledge bootstrap narrow search for media/input cancellation and transport leases; capture verified mechanisms afterward. Diagnose before changing timeouts. Add meaningful regression for input focus, stopped/failed queues, failure reporting, reconnect cancellation/authorization, same-account opt-in boundaries, viewer close/minimize/maximize and scoped IPC. Real Windows input only on an owned test window; actual protocol tests with local service and synthetic identity. Verify normal plus jitter/loss/disconnect scenario where possible; state unavailable physical cross-NAT evidence honestly.
+
+Produce one coherent new Windows preview (0.1.2 or next unused), push scoped source commits to origin main only on fresh remote check; do not overwrite existing release. Wait for CI, publish exact tested artifacts, anonymous hash verify. If server changed, create verified compatible server release/deployment instructions; do not rebuild huge unchanged images without need. Do not publish a client requiring an unavailable server version. Update docs/IMPLEMENTATION.md and verification with commits/tests/releases, preserve deferred WI-005/WI-008C. Final handoff must give source commits, test results, native evidence and gaps, installer URLs/hashes, any server upgrade command and stopped process inventory. Root is coordinator; user authorization covers this same-project task coordination.
