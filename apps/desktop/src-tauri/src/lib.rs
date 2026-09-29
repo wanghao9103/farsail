@@ -3,6 +3,7 @@ use farsail_core::RemotePermission;
 use farsail_transport::Config as TransportConfig;
 use std::sync::Arc;
 use tauri::Manager;
+mod computer;
 mod remote;
 mod viewer;
 use fs2::FileExt;
@@ -19,7 +20,9 @@ async fn state(
     client: tauri::State<'_, Arc<NativeClient>>,
 ) -> Result<serde_json::Value, String> {
     viewer::main_only(&window)?;
-    Ok(client.public_state().await)
+    let mut state = client.public_state().await;
+    state["computerName"] = serde_json::json!(computer::name());
+    Ok(state)
 }
 #[tauri::command]
 async fn set_server(

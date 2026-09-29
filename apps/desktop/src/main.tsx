@@ -14,17 +14,97 @@ type Tab =
   | "admin"
   | "settings";
 type PublicState = {
+  computerName?: string | null;
   server: string;
   signedIn: boolean;
   deviceId: string | null;
   sharing: boolean;
   remoteWatch?: boolean;
 };
+type ConnectionInvitation = {
+  id: string;
+  code: string;
+  target: string;
+  permission: "view" | "control";
+  visible: boolean;
+};
+type SignupInvitation = {
+  id: string;
+  code: string;
+  email: string;
+  visible: boolean;
+};
 const api = <T,>(op: string, args: Record<string, unknown> = {}): Promise<T> =>
   invoke("call", { op, args });
 const native = "__TAURI_INTERNALS__" in window;
 const errorText = (e: unknown) => String(e instanceof Error ? e.message : e);
+const readableError = (raw: string) => {
+  if (/local sign-out complete/.test(raw))
+    return "本机已退出登录，但服务器尚未确认。请在网络恢复后检查其他登录记录。";
+  if (/HTTP 400\b/.test(raw))
+    return "提交的信息无效或已过期，请检查填写内容后重试。";
+  if (/HTTP 401\b|signed out/i.test(raw))
+    return "登录信息无效或已过期，请重新登录；新账号请先验证邮箱。";
+  if (/HTTP 403\b/.test(raw))
+    return "目前不允许执行此操作，请检查账号权限、设备共享和对方批准状态。";
+  if (/HTTP 404\b/.test(raw)) return "未找到该设备或记录，请刷新后重试。";
+  if (/HTTP 409\b/.test(raw)) return "状态已发生变化，请刷新后重试。";
+  if (/HTTP 429\b/.test(raw)) return "操作过于频繁，请稍后再试。";
+  if (/no interactive display/i.test(raw))
+    return "无法获取本机屏幕，请先登录 Windows 桌面再开启共享。";
+  if (/relay URL|relay did not become reachable/i.test(raw))
+    return "无法连接中继服务器，请在高级连接设置中检查 HTTPS 地址和网络。";
+  if (/invalid UDP bind/i.test(raw))
+    return "本机监听地址格式不正确，可恢复为 0.0.0.0:0 后重试。";
+  if (/unbound|device not bound/i.test(raw))
+    return "请先将这台电脑添加到账号，再尝试连接。";
+  if (/[\u3400-\u9fff]/.test(raw)) return raw;
+  return "操作未完成，请检查网络和服务器设置后重试。";
+};
+function ErrorMessage({ error }: { error: string }) {
+  const message = readableError(error);
+  return (
+    <div className="error-message">
+      <span>{message}</span>
+      {message !== error && (
+        <details>
+          <summary>查看错误详情</summary>
+          <code>{error}</code>
+        </details>
+      )}
+    </div>
+  );
+}
+const copyText = async (value: string) => {
+  try {
+    await navigator.clipboard.writeText(value);
+  } catch {
+    throw new Error("无法自动复制，请选中显示的内容后手动复制。");
+  }
+};
 const short = (id: string) => id.slice(0, 8);
+const permissionLabel = (value: string) =>
+  ({ view: "仅查看屏幕", control: "查看并控制", files: "文件传输" })[value] ??
+  "未知权限";
+const requestLabel = (value: string) =>
+  ({
+    pending: "等待批准",
+    approved: "已批准",
+    denied: "已拒绝",
+    revoked: "已取消或结束",
+    expired: "已过期",
+  })[value] ?? "状态待确认";
+const pathLabel = (value?: string) =>
+  ({
+    direct: "已直连",
+    relay: "已通过中继连接",
+    connected: "已连接",
+    connecting: "正在连接",
+    closed: "已断开",
+  })[value ?? ""] ?? "尚未连接";
+const deviceLabel = (id: string, devices: Device[], localId: string | null) =>
+  `${devices.find((d) => d.id === id)?.name ?? `设备 ${short(id)}`}${id === localId ? "（本机）" : ""}`;
+const dateLabel = (value: string) => new Date(value).toLocaleString();
 
 function App() {
   const [publicState, setPublicState] = useState<PublicState>({
@@ -46,10 +126,16 @@ function App() {
   const [bindAddr, setBindAddr] = useState("0.0.0.0:0");
   const [forceRelay, setForceRelay] = useState(false);
   const [transportReady, setTransportReady] = useState(false);
+  const [connectionInvite, setConnectionInvite] =
+    useState<ConnectionInvitation | null>(null);
+  const [signupInvite, setSignupInvite] = useState<SignupInvitation | null>(
+    null,
+  );
   const [authMode, setAuthMode] = useState<
     "login" | "register" | "verify" | "resend" | "recover" | "reset"
   >("login");
   const refreshVersion = useRef(0);
+  const nameMigrationAttempts = useRef(new Set<string>());
 
   const refresh = useCallback(async () => {
     if (!native) {
@@ -78,7 +164,10 @@ function App() {
       }
     });
     if (!p.signedIn) {
+      setConnectionInvite(null);
+      setSignupInvite(null);
       setTransportReady(false);
+
       setMe(null);
       setDevices([]);
       setRequests([]);
@@ -94,11 +183,34 @@ function App() {
         api<Remote[]>("remote_sessions"),
       ]);
       if (version !== refreshVersion.current) return;
-      setDevices(all);
       setRequests(sessions);
       const q = await invoke<PublicState>("state");
       if (version !== refreshVersion.current) return;
       setPublicState(q);
+      const local = all.find((d) => d.id === q.deviceId);
+      const computerName = q.computerName?.trim();
+      const migrationKey = `${q.server}/${current.id}/${q.deviceId}`;
+      // Upgrade only the legacy default of this client, never another device or a custom alias.
+      if (
+        local?.name === "这台 Windows 电脑" &&
+        computerName &&
+        computerName !== local.name &&
+        !nameMigrationAttempts.current.has(migrationKey)
+      ) {
+        nameMigrationAttempts.current.add(migrationKey);
+        try {
+          await api("rename_device", { id: local.id, name: computerName });
+          if (version !== refreshVersion.current) return;
+          local.name = computerName;
+        } catch {
+          if (version !== refreshVersion.current) return;
+          setProblem(
+            "未能同步本机的计算机名称，暂时保留原名称。你可以在设备信息与管理中修改名称，或重新打开应用后重试。",
+          );
+        }
+      }
+      if (version !== refreshVersion.current) return;
+      setDevices(all);
       if (q.deviceId) {
         const rows = await api<Pending[]>("pending");
         if (version === refreshVersion.current) setPending(rows);
@@ -130,10 +242,24 @@ function App() {
       setNotice(message);
       if (reload) await refresh();
     } catch (e) {
+      // Failed mutations may still stop sharing or clear local credentials.
+      if (reload) await refresh().catch(() => {});
       setProblem(errorText(e));
     } finally {
       setBusy(false);
     }
+  };
+  const resetConnection = () => {
+    setTransportReady(false);
+  };
+  const prepareTransport = async () => {
+    if (transportReady) return;
+    await invoke("transport_start", {
+      relayUrl: relayUrl || null,
+      forceRelay,
+      bindAddr,
+    });
+    setTransportReady(true);
   };
   const signOut = () =>
     act(async () => {
@@ -141,6 +267,7 @@ function App() {
       try {
         await api("logout");
       } finally {
+        resetConnection();
         setMe(null);
         setDevices([]);
         setRequests([]);
@@ -211,7 +338,7 @@ function App() {
           <img src="/icon.png" alt="" />
           <div>
             <strong>FarSail</strong>
-            <span>遥舟 · 设备与授权</span>
+            <span>遥舟 · 远程连接</span>
           </div>
         </div>
         <div className="side-label">工作空间</div>
@@ -220,7 +347,7 @@ function App() {
             [
               ["overview", "总览", "◫"],
               ["devices", "我的设备", "▣"],
-              ["requests", "连接请求", "⇄"],
+              ["requests", "远程连接", "⇄"],
               ["security", "账号安全", "◇"],
               ...(me?.role === "admin" ? [["admin", "管理控制台", "⚙"]] : []),
               ["settings", "共享与设置", "☷"],
@@ -229,6 +356,8 @@ function App() {
             <button
               key={id}
               className={tab === id ? "active" : ""}
+              aria-label={label}
+              title={label}
               onClick={() => setTab(id)}
             >
               <span>{icon}</span>
@@ -255,7 +384,7 @@ function App() {
                   {
                     overview: "设备控制台",
                     devices: "我的设备",
-                    requests: "连接请求",
+                    requests: "远程连接",
                     viewer: "远程画面",
                     security: "账号安全",
                     admin: "管理控制台",
@@ -281,7 +410,7 @@ function App() {
         </header>
         {problem && (
           <div className="alert error" role="alert">
-            <span>{problem}</span>
+            <ErrorMessage error={problem} />
             <button onClick={() => setProblem("")} aria-label="关闭错误">
               ×
             </button>
@@ -295,228 +424,249 @@ function App() {
             </button>
           </div>
         )}
-        {!me && tab !== "settings" ? (
-          <Auth
-            mode={authMode}
-            setMode={setAuthMode}
-            busy={busy}
-            act={act}
-            onLogin={async (args) => {
-              const current = await api<Me>("login", args);
-              setMe(current);
-              setTab("devices");
-            }}
-          />
-        ) : tab === "settings" ? (
-          <section className="stack">
-            <div className="card">
-              <div className="section-heading">
-                <div>
-                  <div className="eyebrow">CONNECTION</div>
-                  <h2>服务器连接</h2>
+        <div
+          className={`workspace-content page-${!me && tab !== "settings" ? "auth" : tab}`}
+        >
+          {!me && tab !== "settings" ? (
+            <Auth
+              mode={authMode}
+              setMode={setAuthMode}
+              busy={busy}
+              act={act}
+              onLogin={async (args) => {
+                resetConnection();
+                const current = await api<Me>("login", args);
+                setMe(current);
+                setTab("devices");
+              }}
+            />
+          ) : tab === "settings" ? (
+            <section className="stack">
+              <div className="card">
+                <div className="section-heading">
+                  <div>
+                    <div className="eyebrow">CONNECTION</div>
+                    <h2>服务器连接</h2>
+                  </div>
+                </div>
+                <p className="muted">
+                  填写管理员提供的服务器地址。通过互联网连接时，请使用 HTTPS
+                  地址。
+                </p>
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    void act(
+                      () => invoke("set_server", { server }),
+                      "服务地址已保存",
+                    );
+                  }}
+                  className="inline-form"
+                >
+                  <input
+                    aria-label="服务地址"
+                    value={server}
+                    onChange={(e) => setServer(e.target.value)}
+                  />
+                  <button className="primary" disabled={busy || !!me}>
+                    保存地址
+                  </button>
+                </form>
+                {me && <p className="hint">请先退出登录再修改服务地址。</p>}
+              </div>
+              <div className="card">
+                <h2>当前版本支持</h2>
+                <p className="muted">
+                  Windows
+                  电脑可共享屏幕，也可在批准后允许对方操作鼠标键盘。暂不支持文件传输、系统权限确认界面和未登录的桌面。
+                </p>
+                <div className="tag-row">
+                  <span className="tag ready">账号与设备</span>
+                  <span className="tag ready">屏幕查看与控制</span>
+                  <span className="tag">文件传输 · 暂不支持</span>
                 </div>
               </div>
-              <p className="muted">
-                本机开发可用回环 HTTP。公网地址须为证书有效的 HTTPS，也支持
-                HTTPS IP 地址。
-              </p>
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  void act(
-                    () => invoke("set_server", { server }),
-                    "服务地址已保存",
-                  );
-                }}
-                className="inline-form"
-              >
-                <input
-                  aria-label="服务地址"
-                  value={server}
-                  onChange={(e) => setServer(e.target.value)}
-                />
-                <button className="primary" disabled={busy || !!me}>
-                  保存地址
-                </button>
-              </form>
-              {me && <p className="hint">请先退出登录再修改服务地址。</p>}
-            </div>
-            <div className="card">
-              <h2>本机能力</h2>
-              <p className="muted">
-                Windows 可启用 JPEG
-                屏幕共享和鼠标键盘控制。文件传输仍未启用。系统安全桌面、UAC
-                和无人登录桌面不支持。
-              </p>
-              <div className="tag-row">
-                <span className="tag ready">账号与设备</span>
-                <span className="tag ready">Windows 画面与输入</span>
-                <span className="tag">文件传输 · 后续实现</span>
-              </div>
-            </div>
-            <div className="card">
-              <h2>让另一台设备连接这台电脑</h2>
-              <ol className="setup-guide">
-                <li>
-                  <strong>绑定电脑</strong>：在首页将本机添加到你的账号。
-                </li>
-                <li>
-                  <strong>启动连接服务</strong>
-                  ：填写管理员提供的中继地址，然后点击下方启动按钮。
-                </li>
-                <li>
-                  <strong>允许本机共享</strong>
-                  ：开启后，前往“连接请求”批准对方的连接。
-                </li>
-              </ol>
-              <p className="muted">
-                默认按服务器地址使用 8443
-                中继端口；管理员提供不同地址时，请在此修改。开启共享后默认逐次批准；在本机设备面板显式开启“远程值守”后，同账号连接可自动批准。
-              </p>
-              <form
-                className="form"
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  void act(
-                    async () => {
-                      await invoke("transport_start", {
-                        relayUrl: relayUrl || null,
-                        forceRelay,
-                        bindAddr,
-                      });
-                      setTransportReady(true);
-                    },
-                    "安全传输已启动",
-                    false,
-                  );
-                }}
-              >
-                <label>
-                  中继服务器地址
-                  <input
-                    aria-label="中继地址"
-                    placeholder="https://服务器IP:8443/"
-                    value={relayUrl}
-                    onChange={(e) => setRelayUrl(e.target.value)}
-                  />
-                </label>
-                <details className="advanced-settings">
+              <div className="card">
+                <h2>让另一台设备连接这台电脑</h2>
+                <ol className="setup-guide">
+                  <li>
+                    <strong>添加本机</strong>：先在“总览”将这台电脑添加到账号。
+                  </li>
+                  <li>
+                    <strong>开启本机共享</strong>
+                    ：点击下方按钮，应用会自动准备连接。
+                  </li>
+                  <li>
+                    <strong>批准对方</strong>
+                    ：收到请求后，在“待我批准”选择允许查看或控制。
+                  </li>
+                </ol>
+                <p className="muted">
+                  停止共享会断开正在访问本机的连接。你连接其他电脑的操作不受影响。
+                </p>
+                <div className="row-actions">
+                  <button
+                    className={publicState.sharing ? "secondary" : "primary"}
+                    disabled={busy || !publicState.deviceId}
+                    onClick={() =>
+                      void act(
+                        async () => {
+                          if (!publicState.sharing) await prepareTransport();
+                          await invoke(
+                            publicState.sharing
+                              ? "share_disable"
+                              : "share_enable",
+                          );
+                        },
+                        publicState.sharing
+                          ? "已停止本机共享，对方不能继续查看或控制本机"
+                          : "本机共享已开启，默认收到连接请求后需要批准",
+                      )
+                    }
+                  >
+                    {publicState.sharing ? "停止本机共享" : "开启本机共享"}
+                  </button>
+                  {publicState.sharing && (
+                    <button
+                      className="secondary"
+                      onClick={() => setTab("requests")}
+                    >
+                      管理远程连接
+                    </button>
+                  )}
+                </div>
+                {!publicState.deviceId && (
+                  <p className="hint">
+                    {me
+                      ? "请先添加这台电脑。"
+                      : "请先登录账号，再添加这台电脑。"}
+                    <button
+                      className="text-button"
+                      onClick={() => setTab("overview")}
+                    >
+                      {me ? "去添加本机" : "去登录"}
+                    </button>
+                  </p>
+                )}
+                <details className="advanced-settings connection-settings">
                   <summary>高级连接设置（通常无需修改）</summary>
-                  <label>
-                    本机 UDP 监听地址
-                    <input
-                      aria-label="UDP 绑定地址"
-                      value={bindAddr}
-                      onChange={(e) => setBindAddr(e.target.value)}
-                    />
-                  </label>
-                  <label>
-                    <input
-                      type="checkbox"
-                      checked={forceRelay}
-                      onChange={(e) => setForceRelay(e.target.checked)}
-                    />{" "}
-                    始终通过中继连接（排查直连问题时使用）
-                  </label>
+                  <p className="muted">
+                    默认中继地址使用服务器的 8443
+                    端口。只有管理员提供了其他参数时才需修改。应用设置会断开本机当前连接并停止共享，之后可重新开启。
+                  </p>
+                  <form
+                    className="form"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      void act(async () => {
+                        resetConnection();
+                        await invoke("transport_start", {
+                          relayUrl: relayUrl || null,
+                          forceRelay,
+                          bindAddr,
+                        });
+                        setTransportReady(true);
+                      }, "连接设置已应用。如需让他人连接本机，请重新开启共享");
+                    }}
+                  >
+                    <label>
+                      中继服务器地址
+                      <input
+                        aria-label="中继地址"
+                        placeholder="https://服务器IP:8443/"
+                        value={relayUrl}
+                        onChange={(e) => setRelayUrl(e.target.value)}
+                      />
+                    </label>
+                    <label>
+                      本机 UDP 监听地址
+                      <input
+                        aria-label="UDP 绑定地址"
+                        value={bindAddr}
+                        onChange={(e) => setBindAddr(e.target.value)}
+                      />
+                    </label>
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={forceRelay}
+                        onChange={(e) => setForceRelay(e.target.checked)}
+                      />{" "}
+                      始终通过中继连接（排查直连问题时使用）
+                    </label>
+                    <button
+                      className="primary"
+                      disabled={busy || !publicState.deviceId}
+                    >
+                      应用连接设置
+                    </button>
+                  </form>
                 </details>
-                <button
-                  className="primary"
-                  disabled={busy || !publicState.deviceId}
-                >
-                  {transportReady ? "重新启动连接服务" : "启动连接服务"}
-                </button>
-              </form>
-              <p className="hint">
-                {transportReady
-                  ? "连接服务已启动，下一步：点击“开启本机共享”。"
-                  : "尚未启动。请先在首页绑定电脑，再填写中继地址并启动连接服务。"}
-              </p>
-              <div className="row-actions">
-                <button
-                  className={publicState.sharing ? "danger-text" : "primary"}
-                  disabled={busy || !transportReady}
-                  onClick={() =>
-                    void act(
-                      () =>
-                        invoke(
-                          publicState.sharing
-                            ? "share_disable"
-                            : "share_enable",
-                        ),
-                      publicState.sharing
-                        ? "已停止本机共享"
-                        : "已开启本机共享；每次请求仍需明确批准",
-                    )
-                  }
-                >
-                  {publicState.sharing ? "立即停止共享" : "开启本机共享"}
-                </button>
-                <span>
-                  {publicState.sharing
-                    ? "本机共享已开启 · 等待明确批准"
-                    : "尚未开启：其他设备不能查看或控制这台电脑"}
-                </span>
               </div>
-            </div>
-          </section>
-        ) : tab === "overview" ? (
-          <Overview
-            me={me!}
-            state={publicState}
-            devices={devices}
-            requests={requests}
-            pending={pending}
-            busy={busy}
-            act={act}
-            onRefresh={refresh}
-            onNavigate={setTab}
-          />
-        ) : tab === "devices" ? (
-          <Devices
-            pending={pending}
-            onRefresh={refresh}
-            requests={requests}
-            prepareTransport={async () => {
-              if (!transportReady) {
-                await invoke("transport_start", {
-                  relayUrl: relayUrl || null,
-                  forceRelay,
-                  bindAddr,
-                });
-                setTransportReady(true);
-              }
-            }}
-            onView={(id) => {
-              void invoke("viewer_open", { id }).catch((e) =>
-                setProblem(errorText(e)),
-              );
-            }}
-            onNavigate={setTab}
-            devices={devices}
-            state={publicState}
-            busy={busy}
-            act={act}
-          />
-        ) : tab === "requests" ? (
-          <Requests
-            devices={devices}
-            requests={requests}
-            pending={pending}
-            state={publicState}
-            busy={busy}
-            act={act}
-            transportReady={transportReady}
-            onView={(id) => {
-              void invoke("viewer_open", { id }).catch((e) =>
-                setProblem(errorText(e)),
-              );
-            }}
-          />
-        ) : tab === "security" ? (
-          <Security me={me!} busy={busy} act={act} signOut={signOut} />
-        ) : me?.role === "admin" && tab === "admin" ? (
-          <Admin busy={busy} act={act} />
-        ) : null}
+            </section>
+          ) : tab === "overview" ? (
+            <Overview
+              me={me!}
+              state={publicState}
+              devices={devices}
+              requests={requests}
+              pending={pending}
+              busy={busy}
+              act={act}
+              onRefresh={refresh}
+              onNavigate={setTab}
+            />
+          ) : tab === "devices" ? (
+            <Devices
+              pending={pending}
+              onRefresh={refresh}
+              requests={requests}
+              prepareTransport={prepareTransport}
+              onConnectionReset={resetConnection}
+              onView={async (id) => {
+                await invoke("viewer_open", { id });
+              }}
+              onNavigate={setTab}
+              devices={devices}
+              state={publicState}
+              busy={busy}
+              act={act}
+            />
+          ) : tab === "requests" ? (
+            <Requests
+              devices={devices}
+              requests={requests}
+              pending={pending}
+              state={publicState}
+              busy={busy}
+              act={act}
+              transportReady={transportReady}
+              invitation={connectionInvite}
+              setInvitation={setConnectionInvite}
+              prepareTransport={prepareTransport}
+              onRefresh={refresh}
+              onNavigate={setTab}
+              onView={async (id) => {
+                await invoke("viewer_open", { id });
+              }}
+            />
+          ) : tab === "security" ? (
+            <Security
+              me={me!}
+              busy={busy}
+              act={act}
+              signOut={signOut}
+              onConnectionReset={resetConnection}
+            />
+          ) : me?.role === "admin" && tab === "admin" ? (
+            <Admin
+              busy={busy}
+              act={act}
+              invitation={signupInvite}
+              setInvitation={setSignupInvite}
+            />
+          ) : null}
+        </div>
       </main>
     </div>
   );
@@ -598,14 +748,21 @@ function Auth({
         setMode("verify");
       }, "验证邮件已重新发送");
     if (mode === "recover")
-      return act(
-        () => api("recover_request", { email }),
-        "如果账号存在，恢复邮件已发送",
-      );
-    return act(
-      () => api("recover_complete", { token, password: newPassword }),
-      "密码已更新，请重新登录",
-    );
+      return act(async () => {
+        await api("recover_request", { email });
+        setToken("");
+        setMode("reset");
+      }, "如果该邮箱可以找回密码，重置邮件将发送至邮箱，请输入邮件中的重置码");
+    return act(async () => {
+      await api("recover_complete", {
+        token: token.trim(),
+        password: newPassword,
+      });
+      setToken("");
+      setNewPassword("");
+      setPassword("");
+      setMode("login");
+    }, "密码已更新，请使用新密码登录");
   };
   return (
     <div className="auth-wrap">
@@ -651,7 +808,15 @@ function Auth({
         <p className="muted">
           {mode === "verify"
             ? `最后一步：输入${email ? `发送至 ${email} 的邮件` : "验证邮件"}中的完整验证码。`
-            : "连接你的设备，从可信的身份开始。"}
+            : mode === "reset"
+              ? "输入重置邮件中的完整重置码，再设置至少 12 个字符的新密码。"
+              : mode === "recover"
+                ? "填写注册邮箱，我们会向符合条件的账号发送密码重置邮件。"
+                : mode === "register"
+                  ? "使用邮箱注册，密码至少需要 12 个字符。"
+                  : mode === "resend"
+                    ? "填写注册邮箱和密码，重新获取验证邮件。"
+                    : "登录后即可添加本机、连接电脑或开启共享。"}
         </p>
         <form
           onSubmit={(e) => {
@@ -731,30 +896,34 @@ function Auth({
                   ? "完成验证"
                   : mode === "login"
                     ? "登录"
-                    : "继续"}
+                    : mode === "resend"
+                      ? "重新发送验证邮件"
+                      : mode === "recover"
+                        ? "发送密码重置邮件"
+                        : "保存新密码并返回登录"}
           </button>
         </form>
         <div className="auth-links">
           {(
-            [
-              "login",
-              "register",
-              "verify",
-              "resend",
-              "recover",
-              "reset",
-            ] as const
-          )
-            .filter(
-              (x) =>
-                x !== mode &&
-                (mode !== "verify" || x === "resend" || x === "login"),
-            )
-            .map((x) => (
-              <button key={x} onClick={() => setMode(x)}>
-                {titles[x]}
-              </button>
-            ))}
+            {
+              login: ["register", "recover", "verify"],
+              register: ["login"],
+              verify: ["resend", "login"],
+              resend: ["verify", "login"],
+              recover: ["reset", "login"],
+              reset: ["recover", "login"],
+            }[mode] as (typeof mode)[]
+          ).map((x) => (
+            <button key={x} disabled={busy} onClick={() => setMode(x)}>
+              {x === "reset"
+                ? "已有重置码"
+                : x === "resend"
+                  ? "没收到验证邮件"
+                  : x === "recover" && mode === "reset"
+                    ? "重新发送重置邮件"
+                    : titles[x]}
+            </button>
+          ))}
         </div>
       </section>
     </div>
@@ -783,7 +952,11 @@ function Overview({
   onNavigate: (t: Tab) => void;
 }) {
   const local = devices.find((x) => x.id === state.deviceId);
-  const [name, setName] = useState("这台 Windows 电脑");
+  const [name, setName] = useState(state.computerName ?? "");
+  const nameEdited = useRef(false);
+  useEffect(() => {
+    if (!nameEdited.current && state.computerName) setName(state.computerName);
+  }, [state.computerName]);
   return (
     <div className="stack">
       <div className="hero">
@@ -823,29 +996,41 @@ function Overview({
         <div className="card attention">
           <div>
             <div className="eyebrow">DEVICE IDENTITY</div>
-            <h2>绑定这台电脑</h2>
+            <h2>添加这台电脑</h2>
             <p>
-              将这台电脑添加到你的账号。绑定后可发起连接；允许其他设备连接时，请另行开启本机共享。
+              添加后可连接你的其他电脑。如果希望他人连接本机，还需要开启本机共享。
             </p>
           </div>
           <form
             className="inline-form"
             onSubmit={(e) => {
               e.preventDefault();
-              void act(() => api("bind", { name }), "本机设备已绑定");
+              void act(
+                () => api("bind", { name: name.trim() }),
+                "这台电脑已添加，可前往“我的设备”开始连接",
+              );
             }}
           >
             <input
               aria-label="本机设备名称"
               value={name}
-              onChange={(e) => setName(e.target.value)}
+              onChange={(e) => {
+                nameEdited.current = true;
+                setName(e.target.value);
+              }}
+              placeholder="输入这台电脑的名称"
               maxLength={80}
               required
             />
-            <button className="primary" disabled={busy}>
+            <button className="primary" disabled={busy || !name.trim()}>
               添加这台电脑
             </button>
           </form>
+          <p className="muted">
+            {state.computerName
+              ? "已读取系统的计算机名称，你也可以自行修改。"
+              : "暂时无法读取计算机名称，请手动填写后添加。"}
+          </p>
         </div>
       ) : (
         <div className="card local-device">
@@ -854,7 +1039,7 @@ function Overview({
             <h2>{local?.name ?? "本机设备"}</h2>
             <p className="muted">
               设备 ID {short(state.deviceId)} ·{" "}
-              {local?.online ? "在线" : "等待心跳"} · 仅授权客户端
+              {local?.online ? "在线" : "正在更新在线状态"}
             </p>
           </div>
           <div className="stack">
@@ -865,48 +1050,50 @@ function Overview({
               {state.sharing ? "管理本机共享" : "设置本机共享"}
             </button>
             <small className="muted">
-              先启动传输，再开启共享；连接仍需你批准。
+              默认每次连接需批准；本机可单独开启同账号远程值守。
             </small>
           </div>
         </div>
       )}
-      <div className="card">
+      <div className="card overview-history">
         <div className="section-heading">
           <div>
             <div className="eyebrow">ACTIVITY</div>
-            <h2>最近授权会话</h2>
+            <h2>最近的远程连接</h2>
           </div>
           <button
             className="text-button"
             onClick={() => onNavigate("requests")}
           >
-            全部请求 →
+            全部连接 →
           </button>
         </div>
-        {requests.length ? (
-          requests.slice(0, 4).map((x) => (
-            <div className="list-row" key={x.id}>
-              <div>
-                <strong>
-                  {x.permission === "view"
-                    ? "查看"
-                    : x.permission === "control"
-                      ? "控制"
-                      : "文件"}
-                  申请
-                </strong>
-                <small>
-                  {short(x.source_device_id)} → {short(x.target_device_id)}
-                </small>
+        <div
+          className="overview-records"
+          tabIndex={0}
+          aria-label="最近远程连接列表"
+        >
+          {requests.length ? (
+            requests.slice(0, 4).map((x) => (
+              <div className="list-row" key={x.id}>
+                <div>
+                  <strong>{permissionLabel(x.permission)}</strong>
+                  <small>
+                    {deviceLabel(x.source_device_id, devices, state.deviceId)} →{" "}
+                    {deviceLabel(x.target_device_id, devices, state.deviceId)}
+                  </small>
+                </div>
+                <span
+                  className={"tag " + (x.state === "pending" ? "warm" : "")}
+                >
+                  {requestLabel(x.state)}
+                </span>
               </div>
-              <span className={"tag " + (x.state === "pending" ? "warm" : "")}>
-                {x.state}
-              </span>
-            </div>
-          ))
-        ) : (
-          <Empty text="尚无授权请求。绑定设备后可在“连接请求”中发起。" />
-        )}
+            ))
+          ) : (
+            <Empty text="还没有远程连接。前往“我的设备”，选择电脑开始连接。" />
+          )}
+        </div>
       </div>
     </div>
   );
@@ -923,6 +1110,7 @@ function Devices({
   requests,
   pending,
   prepareTransport,
+  onConnectionReset,
   onView,
   onRefresh,
   onNavigate,
@@ -934,7 +1122,8 @@ function Devices({
   requests: Remote[];
   pending: Pending[];
   prepareTransport: () => Promise<void>;
-  onView: (id: string) => void;
+  onConnectionReset: () => void;
+  onView: (id: string) => Promise<void>;
   onRefresh: () => Promise<void>;
   onNavigate: (tab: Tab) => void;
   devices: Device[];
@@ -993,8 +1182,8 @@ function Devices({
               id: request.id,
               permission: request.permission,
             });
-            onView(request.id);
-            setConnectionNote("已在独立窗口打开，可返回管理设备。");
+            await onView(request.id);
+            setConnectionNote("已在独立窗口打开，可继续管理设备。");
           } catch (e) {
             setConnectionNote("连接失败，请检查双方网络和共享状态后重试。");
             throw e;
@@ -1039,7 +1228,9 @@ function Devices({
             permission,
           }));
         setWaiting({ id: result.id, target });
-        setConnectionNote("等待对方批准，批准后自动打开远程画面。");
+        setConnectionNote(
+          "等待对方批准，批准后会在此页面打开画面；切换页面后可到“远程连接”查看进度。",
+        );
       } catch (e) {
         setConnectionNote("未能发起连接，请检查服务器设置和设备状态。");
         throw e;
@@ -1050,7 +1241,7 @@ function Devices({
     }, "已发送连接请求");
   };
   const blocked = !state.deviceId
-    ? "先在首页添加这台电脑，才能发起连接。"
+    ? "先在“总览”添加这台电脑，才能发起连接。"
     : !device?.enabled
       ? "这台设备已停用。"
       : !device?.online
@@ -1132,7 +1323,7 @@ function Devices({
           </button>
         )}
       </div>
-      <div className="device-detail-pane">
+      <div className="device-detail-pane" key={device?.id}>
         {device ? (
           <>
             <div className="section-heading">
@@ -1161,7 +1352,7 @@ function Devices({
                   <div>
                     <h3>允许其他设备连接本机</h3>
                     <p className="muted">
-                      开启后可接收连接请求；默认每次需要批准。
+                      默认每次连接需要你批准；启用下方“远程值守”后，同账号设备可自动批准。停止共享会断开正在访问本机的连接。
                     </p>
                   </div>
                   <button
@@ -1181,7 +1372,7 @@ function Devices({
                       )
                     }
                   >
-                    {state.sharing ? "停止共享" : "开启本机共享"}
+                    {state.sharing ? "停止本机共享" : "开启本机共享"}
                   </button>
                 </div>
                 <p className="hint">
@@ -1196,7 +1387,8 @@ function Devices({
                       开启后，同账号设备可直接连接，无需逐次批准。
                     </p>
                     <p className="hint">
-                      仅本次共享有效；关闭会结束现有入站连接并恢复手动批准。需要系统已登录且应用运行。
+                      仅本次共享有效。关闭后会断开正在访问本机的连接，恢复逐次批准；需要
+                      Windows 已登录且应用保持运行。
                     </p>
                   </div>
                   <button
@@ -1304,14 +1496,8 @@ function Devices({
                   >
                     仅查看屏幕
                   </button>
-                  <button
-                    className="secondary"
-                    disabled
-                    title="此版本尚未提供文件传输"
-                  >
-                    文件传输 · 开发中
-                  </button>
                 </div>
+                <p className="muted">此版本暂不支持文件传输。</p>
                 <p className="muted">{blocked}</p>
                 {(waiting || connecting || connectionNote) && (
                   <div className="notice-strip" role="status">
@@ -1343,18 +1529,27 @@ function Devices({
                 )}
               </>
             )}
-            <div className="device-facts">
-              <span>设备 ID</span>
-              <code>{device.id}</code>
-              <span>最后在线</span>
-              <span>
-                {device.last_seen_at
-                  ? new Date(device.last_seen_at).toLocaleString()
-                  : "暂无记录"}
-              </span>
-            </div>
-            <details className="advanced-settings">
-              <summary>设备管理</summary>
+            <details className="advanced-settings device-management">
+              <summary>设备信息与管理</summary>
+              <div className="device-facts">
+                <span>设备 ID</span>
+                <code>{device.id}</code>
+                <button
+                  className="text-button"
+                  disabled={busy}
+                  onClick={() =>
+                    void act(() => copyText(device.id), "设备 ID 已复制", false)
+                  }
+                >
+                  复制设备 ID
+                </button>
+                <span>最后在线</span>
+                <span>
+                  {device.last_seen_at
+                    ? new Date(device.last_seen_at).toLocaleString()
+                    : "暂无记录"}
+                </span>
+              </div>
               {editing ? (
                 <form
                   className="inline-form"
@@ -1382,6 +1577,14 @@ function Devices({
                   >
                     保存名称
                   </button>
+                  <button
+                    className="secondary"
+                    type="button"
+                    disabled={busy}
+                    onClick={() => setEditing(false)}
+                  >
+                    取消改名
+                  </button>
                 </form>
               ) : (
                 <button
@@ -1391,23 +1594,27 @@ function Devices({
                     setEditing(true);
                   }}
                 >
-                  重命名
+                  修改设备名称
                 </button>
               )}
               {confirmUnbind ? (
                 <div className="notice-strip">
-                  <p>解绑后，此设备的连接凭据和授权将被撤销。</p>
+                  <p>
+                    从账号移除“{device.name}
+                    ”后，与此设备相关的连接将结束。以后使用需要在该电脑重新添加。本机当前连接和共享也会停止。
+                  </p>
                   <button
                     className="danger-text"
                     disabled={busy}
                     onClick={() =>
                       void act(async () => {
+                        onConnectionReset();
                         await api("unbind_device", { id: device.id });
                         setConfirmUnbind(false);
-                      }, "设备已解绑")
+                      }, "设备已从账号移除，需要使用时可在该电脑重新添加")
                     }
                   >
-                    确认解绑
+                    确认移除设备
                   </button>
                   <button
                     className="text-button"
@@ -1421,7 +1628,7 @@ function Devices({
                   className="danger-text"
                   onClick={() => setConfirmUnbind(true)}
                 >
-                  解绑设备
+                  从账号移除设备
                 </button>
               )}
             </details>
@@ -1441,6 +1648,11 @@ function Requests({
   busy,
   act,
   transportReady,
+  prepareTransport,
+  onRefresh,
+  invitation,
+  setInvitation,
+  onNavigate,
   onView,
 }: {
   devices: Device[];
@@ -1450,7 +1662,14 @@ function Requests({
   busy: boolean;
   act: Action;
   transportReady: boolean;
-  onView: (id: string) => void;
+  prepareTransport: () => Promise<void>;
+  onRefresh: () => Promise<void>;
+  invitation: ConnectionInvitation | null;
+  setInvitation: React.Dispatch<
+    React.SetStateAction<ConnectionInvitation | null>
+  >;
+  onNavigate: (tab: Tab) => void;
+  onView: (id: string) => Promise<void>;
 }) {
   const [paths, setPaths] = useState<
     Record<
@@ -1488,13 +1707,37 @@ function Requests({
     return () => window.clearInterval(timer);
   }, [requests, transportReady]);
   const [target, setTarget] = useState(""),
-    [inviteTarget, setInviteTarget] = useState(""),
+    [inviteTarget, setInviteTarget] = useState(invitation?.target ?? ""),
     [permission, setPermission] = useState<"view" | "control" | "files">(
       "view",
     ),
-    [code, setCode] = useState(""),
-    [invite, setInvite] = useState(""),
-    [inviteId, setInviteId] = useState("");
+    [code, setCode] = useState("");
+  const [section, setSection] = useState(
+    pending.length ? "incoming" : "active",
+  );
+  const [invitePermission, setInvitePermission] = useState<"view" | "control">(
+    invitation?.permission ?? "view",
+  );
+  const invite = invitation?.code ?? "";
+  const inviteId = invitation?.id ?? "";
+  const generatedInvite = invitation;
+  const inviteVisible = invitation?.visible ?? true;
+  const pendingCount = requests.filter((r) => r.state === "pending").length;
+  useEffect(() => {
+    if (!pendingCount) return;
+    const timer = window.setInterval(
+      () => void onRefresh().catch(() => {}),
+      2000,
+    );
+    return () => window.clearInterval(timer);
+  }, [pendingCount, onRefresh]);
+  const activeRequests = requests.filter((r) =>
+    ["pending", "approved"].includes(r.state),
+  );
+  const shownRequests =
+    section === "history"
+      ? requests.filter((r) => !["pending", "approved"].includes(r.state))
+      : activeRequests;
   const targets = devices.filter(
     (x) =>
       x.id !== state.deviceId &&
@@ -1503,32 +1746,64 @@ function Requests({
       (permission === "files" ? x.can_files : x.can_host),
   );
   return (
-    <div className="stack">
-      <div className="notice-strip">
-        Windows 主机开启共享后，明确批准的会话可观看 JPEG
-        画面；控制权限可注入鼠标键盘。文件传输尚未启用。
+    <div className="connections-workspace">
+      <div className="section-heading connection-intro">
+        <p className="muted">
+          管理远程电脑的连接。对方允许后，才能查看或控制屏幕。
+        </p>
+        <div className="row-actions">
+          <button
+            className="text-button"
+            disabled={busy}
+            onClick={() => void act(onRefresh, "连接状态已刷新", false)}
+          >
+            刷新连接状态
+          </button>
+          <button className="secondary" onClick={() => onNavigate("devices")}>
+            从我的设备连接
+          </button>
+        </div>
       </div>
-      <div className="two-col">
-        <div className="card">
+      <div className="section-switcher" role="group" aria-label="连接分类">
+        {[
+          ["active", `当前连接 (${activeRequests.length})`],
+          ["incoming", `待我批准 (${pending.length})`],
+          ["history", "连接记录"],
+          ["new", "连接他人电脑"],
+          ["invite", "邀请他人连接"],
+        ].map(([id, label]) => (
+          <button
+            key={id}
+            className={section === id ? "active" : ""}
+            aria-pressed={section === id}
+            onClick={() => setSection(id)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      <div className="connection-content">
+        <div className="card connection-form-pane" hidden={section !== "new"}>
           <div className="eyebrow">REQUEST ACCESS</div>
-          <h2>申请授权</h2>
+          <h2>连接他人电脑</h2>
           <p className="muted">
-            目标设备须在线且声明相应能力。跨账号设备可填写其 ID 和一次性邀请码。
+            请对方开启共享，并把设备 ID
+            和一次性邀请码发给你。自己的电脑可直接从“我的设备”连接。
           </p>
           <form
             className="form"
             onSubmit={(e) => {
               e.preventDefault();
-              void act(
-                () =>
-                  api("request", {
-                    source_device_id: state.deviceId,
-                    target_device_id: target,
-                    permission,
-                    invitation_code: code || undefined,
-                  }),
-                "授权请求已提交",
-              );
+              void act(async () => {
+                await prepareTransport();
+                await api("request", {
+                  source_device_id: state.deviceId,
+                  target_device_id: target.trim(),
+                  permission,
+                  invitation_code: code.trim() || undefined,
+                });
+                setSection("active");
+              }, "连接请求已发送，请等待对方批准；可在“当前连接”查看进度");
             }}
           >
             <label>
@@ -1539,7 +1814,7 @@ function Requests({
                   setTarget(e.target.value === "custom" ? "" : e.target.value)
                 }
               >
-                <option value="custom">手动输入设备 ID</option>
+                <option value="custom">输入对方提供的设备 ID</option>
                 {targets.map((d) => (
                   <option key={d.id} value={d.id}>
                     {d.name}
@@ -1549,21 +1824,22 @@ function Requests({
             </label>
             <input
               aria-label="目标设备 ID"
-              placeholder="目标设备 UUID"
+              placeholder="粘贴对方的完整设备 ID"
               value={target}
               onChange={(e) => setTarget(e.target.value)}
               required
             />
             <label>
-              权限
+              连接后可以做什么
               <select
+                aria-label="连接后可以做什么"
                 value={permission}
                 onChange={(e) =>
                   setPermission(e.target.value as typeof permission)
                 }
               >
-                <option value="view">查看</option>
-                <option value="control">控制</option>
+                <option value="view">仅查看屏幕</option>
+                <option value="control">查看屏幕并操作鼠标键盘</option>
                 <option value="files" disabled>
                   文件（待实现）
                 </option>
@@ -1578,16 +1854,29 @@ function Requests({
               />
             </label>
             <button className="primary" disabled={busy || !state.deviceId}>
-              提交请求
+              发送连接请求
             </button>
           </form>
-          {!state.deviceId && <p className="hint">请先在总览绑定本机。</p>}
+          {!state.deviceId && (
+            <p className="hint">
+              请先添加这台电脑。
+              <button
+                className="text-button"
+                onClick={() => onNavigate("overview")}
+              >
+                去添加本机
+              </button>
+            </p>
+          )}
         </div>
-        <div className="card">
+        <div
+          className="card connection-form-pane"
+          hidden={section !== "invite"}
+        >
           <div className="eyebrow">SHARE ACCESS</div>
-          <h2>生成临时邀请</h2>
+          <h2>邀请他人连接我的电脑</h2>
           <p className="muted">
-            目标设备在线且具备对应能力时，可创建一次性邀请码。请通过可信渠道手动交给对方。
+            选择已开启共享的电脑，生成一次性邀请码。对方发起连接后，你仍需在那台电脑上批准。
           </p>
           <form
             className="form"
@@ -1597,10 +1886,15 @@ function Requests({
                 async () => {
                   const v = await api<{ code: string; id: string }>("invite", {
                     target_device_id: inviteTarget,
-                    permission,
+                    permission: invitePermission,
                   });
-                  setInvite(v.code);
-                  setInviteId(v.id);
+                  setInvitation({
+                    id: v.id,
+                    code: v.code,
+                    visible: true,
+                    target: inviteTarget,
+                    permission: invitePermission,
+                  });
                 },
                 "邀请码已生成",
                 false,
@@ -1608,19 +1902,16 @@ function Requests({
             }}
           >
             <label>
-              我的目标设备
+              允许对方连接哪台电脑
               <select
+                aria-label="允许对方连接哪台电脑"
                 value={inviteTarget}
                 onChange={(e) => setInviteTarget(e.target.value)}
                 required
               >
                 <option value="">选择设备</option>
                 {devices
-                  .filter(
-                    (x) =>
-                      (permission === "files" ? x.can_files : x.can_host) &&
-                      x.enabled,
-                  )
+                  .filter((x) => x.can_host && x.enabled && x.online)
                   .map((d) => (
                     <option key={d.id} value={d.id}>
                       {d.name}
@@ -1628,186 +1919,302 @@ function Requests({
                   ))}
               </select>
             </label>
-            <button disabled={busy} className="secondary">
+            <label>
+              允许对方做什么
+              <select
+                aria-label="允许对方做什么"
+                value={invitePermission}
+                onChange={(e) =>
+                  setInvitePermission(e.target.value as "view" | "control")
+                }
+              >
+                <option value="view">仅查看屏幕</option>
+                <option value="control">查看屏幕并操作鼠标键盘</option>
+              </select>
+            </label>
+            <button
+              disabled={
+                busy ||
+                !!invite ||
+                !devices.some(
+                  (d) =>
+                    d.id === inviteTarget &&
+                    d.online &&
+                    d.enabled &&
+                    d.can_host,
+                )
+              }
+              className="secondary"
+            >
               生成邀请码
             </button>
           </form>
-          {invite && (
-            <div className="invite-code">
-              <span>一次性邀请码</span>
-              <code>{invite}</code>
-              <button onClick={() => setInvite("")}>隐藏</button>
-              <button
-                className="danger-text"
-                disabled={busy}
-                onClick={() =>
-                  void act(async () => {
-                    await api("revoke_invite", { id: inviteId });
-                    setInvite("");
-                    setInviteId("");
-                  }, "邀请已撤销")
-                }
-              >
-                撤销邀请
-              </button>
-            </div>
+          {!devices.some((d) => d.online && d.enabled && d.can_host) && (
+            <p className="hint">
+              还没有开启共享的在线电脑。请先在那台电脑开启本机共享。
+            </p>
           )}
-        </div>
-      </div>
-      <div className="card">
-        <div className="section-heading">
-          <div>
-            <div className="eyebrow">INBOX</div>
-            <h2>等待本机批准</h2>
-          </div>
-          <span className="count">{pending.length}</span>
-        </div>
-        {pending.length ? (
-          pending.map((p) => (
-            <div className="list-row" key={p.id}>
-              <div>
-                <strong>
-                  {p.permission === "control" ? "控制" : "仅查看"} ·{" "}
-                  {p.source_device_name} ({short(p.source_device_id)})
-                </strong>
-                <small>
-                  申请人 {p.requester_email} · {short(p.id)}
-                </small>
-              </div>
+          {invite && (
+            <p className="muted">
+              如需更换设备或权限，请先取消当前邀请，再生成新的邀请码。
+            </p>
+          )}
+          {invite && generatedInvite && (
+            <div className="invite-code">
+              <span>
+                {deviceLabel(generatedInvite.target, devices, state.deviceId)} ·
+                将设备 ID 和邀请码一起发给对方
+              </span>
+              <code>{generatedInvite.target}</code>
+              <span>允许：{permissionLabel(generatedInvite.permission)}</span>
+              <span>一次性邀请码</span>
+              <code>
+                {inviteVisible ? invite : "邀请码已收起，收起不会取消邀请"}
+              </code>
               <div className="row-actions">
                 <button
                   disabled={busy}
-                  className="secondary"
                   onClick={() =>
                     void act(
-                      () => api("decide", { id: p.id, approve: false }),
-                      "已拒绝请求",
+                      () =>
+                        copyText(
+                          `设备 ID：${generatedInvite.target}\n允许：${permissionLabel(generatedInvite.permission)}\n一次性邀请码：${invite}`,
+                        ),
+                      "设备 ID 和邀请码已复制，请发给需要连接的人",
+                      false,
                     )
                   }
                 >
-                  拒绝
+                  复制连接信息
                 </button>
                 <button
-                  disabled={busy}
-                  className="primary"
-                  onClick={() => {
-                    if (
-                      window.confirm(
-                        `批准 ${p.requester_email} 的${p.permission === "control" ? "控制" : "查看"}请求？批准后对方可接收实时画面${p.permission === "control" ? "并操作鼠标键盘" : ""}。`,
-                      )
+                  onClick={() =>
+                    setInvitation((previous) =>
+                      previous
+                        ? { ...previous, visible: !previous.visible }
+                        : null,
                     )
-                      void act(
-                        () => api("decide", { id: p.id, approve: true }),
-                        "已批准授权；连接后将提供 JPEG 画面",
-                      );
-                  }}
+                  }
                 >
-                  批准
+                  {inviteVisible ? "收起邀请码" : "显示邀请码"}
+                </button>
+                <button
+                  className="danger-text"
+                  disabled={busy}
+                  onClick={() =>
+                    void act(async () => {
+                      await api("revoke_invite", { id: inviteId });
+                      setInvitation(null);
+                    }, "邀请已取消，此邀请码和由它建立的连接均不能继续使用")
+                  }
+                >
+                  取消邀请
                 </button>
               </div>
+              <span>取消邀请也会结束通过此邀请建立的连接。</span>
             </div>
-          ))
-        ) : (
-          <Empty text="目前没有等待本机处理的请求。" />
-        )}
-      </div>
-      <div className="card">
-        <div className="eyebrow">HISTORY</div>
-        <h2>授权会话</h2>
-        {requests.length ? (
-          requests.map((r) => (
-            <div className="list-row" key={r.id}>
-              <div>
-                <strong>
-                  {r.permission} · {r.state}
-                </strong>
-                <small>
-                  {short(r.source_device_id)} → {short(r.target_device_id)} ·{" "}
-                  {short(r.id)}
-                </small>
-                {r.state === "approved" && (
-                  <small>
-                    链路：{paths[r.id]?.state ?? "未连接"}
-                    {paths[r.id]?.rtt_ms != null
-                      ? ` · RTT ${paths[r.id].rtt_ms} ms`
-                      : ""}
-                  </small>
-                )}
-                {paths[r.id]?.verification_code && (
-                  <small>双方校验码：{paths[r.id].verification_code}</small>
-                )}
-                {paths[r.id]?.error && paths[r.id]?.state === "closed" && (
-                  <small>结束原因：{paths[r.id].error}</small>
-                )}
-              </div>
-              <div className="row-actions">
-                {r.state === "approved" &&
-                  r.source_device_id === state.deviceId &&
-                  r.permission !== "files" && (
+          )}
+        </div>
+        <div
+          className="card connection-list-pane"
+          hidden={section !== "incoming"}
+        >
+          <div className="section-heading">
+            <div>
+              <div className="eyebrow">INBOX</div>
+              <h2>谁想连接这台电脑</h2>
+            </div>
+            <span className="count">{pending.length}</span>
+          </div>
+          <p className="muted">
+            只批准你认识的连接。允许控制后，对方能看到屏幕并操作鼠标键盘。
+          </p>
+          {!state.sharing && pending.length > 0 && (
+            <p className="hint">
+              本机共享尚未开启。
+              <button
+                className="text-button"
+                onClick={() => onNavigate("settings")}
+              >
+                去开启共享
+              </button>
+            </p>
+          )}
+          <div className="connection-list" tabIndex={0} aria-label="待批准列表">
+            {pending.length ? (
+              pending.map((p) => (
+                <div className="list-row" key={p.id}>
+                  <div>
+                    <strong>
+                      {p.source_device_name} · {permissionLabel(p.permission)}
+                    </strong>
+                    <small>申请人 {p.requester_email}</small>
+                  </div>
+                  <div className="row-actions">
                     <button
-                      className="secondary"
-                      disabled={busy || !transportReady}
-                      onClick={() =>
-                        void act(
-                          async () => {
-                            await invoke("transport_connect", {
-                              id: r.id,
-                              permission: r.permission,
-                            });
-                            onView(r.id);
-                          },
-                          "已打开独立远程窗口",
-                          false,
-                        )
-                      }
-                    >
-                      连接并查看
-                    </button>
-                  )}
-                {r.source_device_id === state.deviceId &&
-                  paths[r.id]?.state !== "closed" &&
-                  paths[r.id]?.state != null && (
-                    <button className="secondary" onClick={() => onView(r.id)}>
-                      查看画面
-                    </button>
-                  )}
-                {r.state === "approved" &&
-                  paths[r.id]?.state !== "closed" &&
-                  paths[r.id]?.state != null && (
-                    <button
-                      className="secondary"
                       disabled={busy}
+                      className="secondary"
                       onClick={() =>
                         void act(
-                          () => invoke("transport_close", { id: r.id }),
-                          "本机会话已关闭",
-                          false,
+                          () => api("decide", { id: p.id, approve: false }),
+                          "已拒绝请求",
                         )
                       }
                     >
-                      断开本机
+                      拒绝
                     </button>
-                  )}
-                {["pending", "approved"].includes(r.state) && (
-                  <button
-                    className="danger-text"
-                    disabled={busy}
-                    onClick={() =>
-                      void act(
-                        () => api("revoke_remote", { id: r.id }),
-                        "请求已撤销",
-                      )
-                    }
-                  >
-                    取消 / 撤销
-                  </button>
-                )}
-              </div>
-            </div>
-          ))
-        ) : (
-          <Empty text="尚无授权会话。" />
-        )}
+                    <button
+                      disabled={busy || !state.sharing}
+                      className="primary"
+                      onClick={() =>
+                        void act(
+                          () => api("decide", { id: p.id, approve: true }),
+                          "已允许连接，对方现在可以连接这台电脑",
+                        )
+                      }
+                    >
+                      {p.permission === "control"
+                        ? "允许查看和控制"
+                        : "允许查看"}
+                    </button>
+                  </div>
+                </div>
+              ))
+            ) : (
+              <Empty text="目前没有等待本机处理的请求。" />
+            )}
+          </div>
+        </div>
+        <div
+          className="card connection-list-pane"
+          hidden={!["active", "history"].includes(section)}
+        >
+          <div className="eyebrow">HISTORY</div>
+          <h2>{section === "history" ? "过去的连接" : "当前连接"}</h2>
+          <p className="muted">
+            {section === "history"
+              ? "查看已取消、被拒绝或已过期的连接请求。"
+              : "已批准表示对方已允许访问；点击连接按钮后才会打开画面。结束本次连接后，需要重新申请并获得批准。"}
+          </p>
+          <div
+            className="connection-list"
+            tabIndex={0}
+            aria-label="远程连接列表"
+          >
+            {shownRequests.length ? (
+              shownRequests.map((r) => (
+                <div className="list-row" key={r.id}>
+                  <div className="connection-description">
+                    <strong>
+                      {deviceLabel(r.source_device_id, devices, state.deviceId)}{" "}
+                      →{" "}
+                      {deviceLabel(r.target_device_id, devices, state.deviceId)}
+                    </strong>
+                    <small>
+                      {permissionLabel(r.permission)} · {requestLabel(r.state)}
+                    </small>
+                    {r.state === "approved" && (
+                      <small>
+                        连接状态：{pathLabel(paths[r.id]?.state)}
+                        {paths[r.id]?.rtt_ms != null
+                          ? ` · 网络往返 ${paths[r.id].rtt_ms} 毫秒`
+                          : ""}
+                      </small>
+                    )}
+                    {paths[r.id]?.verification_code && (
+                      <small>双方校验码：{paths[r.id].verification_code}</small>
+                    )}
+                    {paths[r.id]?.error && paths[r.id]?.state === "closed" && (
+                      <small>结束原因：{paths[r.id].error}</small>
+                    )}
+                    <details className="connection-details">
+                      <summary>连接详情</summary>
+                      <small>连接编号：{r.id}</small>
+                      <small>发起设备 ID：{r.source_device_id}</small>
+                      <small>接收设备 ID：{r.target_device_id}</small>
+                    </details>
+                  </div>
+                  <div className="row-actions">
+                    {r.state === "approved" &&
+                      r.source_device_id === state.deviceId &&
+                      r.permission !== "files" &&
+                      !["connected", "direct", "relay"].includes(
+                        paths[r.id]?.state,
+                      ) && (
+                        <button
+                          className="secondary"
+                          disabled={busy}
+                          onClick={() =>
+                            void act(
+                              async () => {
+                                await prepareTransport();
+                                await invoke("transport_connect", {
+                                  id: r.id,
+                                  permission: r.permission,
+                                });
+                                await onView(r.id);
+                              },
+                              "已打开独立远程窗口",
+                              false,
+                            )
+                          }
+                        >
+                          {r.permission === "control"
+                            ? "连接并控制"
+                            : "连接并查看"}
+                        </button>
+                      )}
+                    {r.source_device_id === state.deviceId &&
+                      r.state === "approved" &&
+                      r.permission !== "files" &&
+                      ["connected", "direct", "relay"].includes(
+                        paths[r.id]?.state,
+                      ) && (
+                        <button
+                          className="secondary"
+                          onClick={() =>
+                            void act(
+                              () => onView(r.id),
+                              "已打开独立远程窗口",
+                              false,
+                            )
+                          }
+                        >
+                          返回画面
+                        </button>
+                      )}
+                    {["pending", "approved"].includes(r.state) && (
+                      <button
+                        className="danger-text"
+                        disabled={busy}
+                        onClick={() =>
+                          void act(
+                            async () => {
+                              await api("revoke_remote", { id: r.id });
+                            },
+                            r.state === "pending"
+                              ? "连接请求已取消"
+                              : "本次连接已结束，再次连接需要重新申请并获得批准",
+                          )
+                        }
+                      >
+                        {r.state === "pending" ? "取消请求" : "结束本次连接"}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))
+            ) : (
+              <Empty
+                text={
+                  section === "history"
+                    ? "还没有过去的连接记录。"
+                    : "目前没有连接。点击“从我的设备连接”开始。"
+                }
+              />
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -1823,13 +2230,13 @@ type RemoteDisplay = {
   rotation: number;
 };
 type RemoteStatus = {
+  retryable?: boolean;
   state: string;
   rtt_ms: number | null;
   permission: "view" | "control";
   verification_code: string | null;
   displays: RemoteDisplay[];
   error: string | null;
-  retryable?: boolean;
 };
 type Picture = {
   url: string;
@@ -2086,7 +2493,7 @@ function Viewer({
                   : ended
                     ? "已断开"
                     : "协商路径中"}{" "}
-              · 网络 RTT {status?.rtt_ms ?? "—"} ms · 实际接收 {fps} FPS
+              · 网络往返 {status?.rtt_ms ?? "—"} 毫秒 · 每秒 {fps} 帧
             </p>
             <details>
               <summary>连接详情</summary>
@@ -2124,15 +2531,24 @@ function Viewer({
             </button>
           </div>
         </div>
-        {problem && <div className="alert error">{problem}</div>}
-        {status?.error && <div className="alert error">{status.error}</div>}
+        {problem && (
+          <div className="alert error">
+            <ErrorMessage error={problem} />
+          </div>
+        )}
+        {status?.error && (
+          <div className="alert error">
+            <ErrorMessage error={status.error} />
+          </div>
+        )}
         <label>
-          远端显示器{" "}
+          对方的显示器{" "}
           {reconnecting && (
             <span role="status">正在重连（最多 3 次）；等待新的授权批准…</span>
           )}
           <select
-            disabled={ended}
+            aria-label="对方的显示器"
+            disabled={ended || !status?.displays.length}
             value={picture?.display ?? 1}
             onChange={(e) =>
               void invoke("media_select", {
@@ -2266,7 +2682,7 @@ function Viewer({
               className="secondary"
               onClick={() => send(null)}
             >
-              释放按键
+              松开所有按键
             </button>
           </form>
         )}
@@ -2284,11 +2700,13 @@ function Security({
   busy,
   act,
   signOut,
+  onConnectionReset,
 }: {
   me: Me;
   busy: boolean;
   act: Action;
   signOut: () => Promise<void>;
+  onConnectionReset: () => void;
 }) {
   const [oldPassword, setOld] = useState(""),
     [newPassword, setNew] = useState(""),
@@ -2310,7 +2728,7 @@ function Security({
     <div className="stack">
       {loadError && (
         <div className="alert error" role="alert">
-          加载登录会话失败：{loadError}
+          <ErrorMessage error={loadError} />
         </div>
       )}
       <div className="two-col">
@@ -2318,13 +2736,14 @@ function Security({
           <div className="eyebrow">PASSWORD</div>
           <h2>修改密码</h2>
           <p className="muted">
-            更新后所有登录与设备凭据都将失效，请重新登录并绑定本机。
+            修改后，所有客户端都会退出登录，当前连接和共享也会停止。请使用新密码登录，并重新添加本机。
           </p>
           <form
             className="form"
             onSubmit={(e) => {
               e.preventDefault();
               void act(async () => {
+                onConnectionReset();
                 await api("password", {
                   old_password: oldPassword,
                   new_password: newPassword,
@@ -2352,9 +2771,10 @@ function Security({
                 value={newPassword}
                 onChange={(e) => setNew(e.target.value)}
               />
+              <small className="muted">至少 12 个字符</small>
             </label>
             <button className="primary" disabled={busy}>
-              更新密码
+              修改密码并退出所有登录
             </button>
           </form>
         </div>
@@ -2362,7 +2782,9 @@ function Security({
           <div className="eyebrow">ACCOUNT</div>
           <h2>登录状态</h2>
           <p className="muted">{me.email}</p>
-          <p className="muted">当前会话 {short(me.session_id)}</p>
+          <p className="muted">
+            退出会停止本机共享和当前连接。下次使用时需要重新登录。
+          </p>
           <button
             className="secondary"
             disabled={busy}
@@ -2376,71 +2798,149 @@ function Security({
         <div className="section-heading">
           <div>
             <div className="eyebrow">SESSIONS</div>
-            <h2>我的登录会话</h2>
+            <h2>账号登录记录</h2>
           </div>
           <button
             className="text-button"
             onClick={() =>
-              void api<typeof sessions>("sessions").then(setSessions)
+              void api<typeof sessions>("sessions")
+                .then((rows) => {
+                  setSessions(rows);
+                  setLoadError("");
+                })
+                .catch((e) => setLoadError(errorText(e)))
             }
           >
             刷新
           </button>
         </div>
-        {sessions.length ? (
-          sessions.map((x) => (
-            <div className="list-row" key={x.id}>
-              <div>
-                <strong>
-                  {x.id === me.session_id ? "当前会话" : "其他会话"} ·{" "}
-                  {short(x.id)}
-                </strong>
-                <small>
-                  创建于 {x.created_at} · 最近使用 {x.last_used_at}
-                </small>
+        <p className="muted">
+          这里显示仍可使用此账号的客户端。发现不认识的登录时，可以将其退出；对方需要重新登录才能继续使用。
+        </p>
+        <div
+          className="login-records"
+          tabIndex={0}
+          aria-label="账号登录记录列表"
+        >
+          {sessions.length ? (
+            sessions.map((x) => (
+              <div className="list-row" key={x.id}>
+                <div>
+                  <strong>
+                    {x.id === me.session_id
+                      ? "当前客户端（正在使用）"
+                      : "其他客户端登录"}
+                  </strong>
+                  <small>
+                    登录时间：{dateLabel(x.created_at)}
+                    <br />
+                    最近使用：{dateLabel(x.last_used_at)}
+                  </small>
+                  <details className="connection-details">
+                    <summary>登录详情</summary>
+                    <small>登录编号：{x.id}</small>
+                  </details>
+                </div>
+                {x.id !== me.session_id && (
+                  <button
+                    className="danger-text"
+                    disabled={busy}
+                    onClick={() =>
+                      void act(async () => {
+                        await api("revoke_session", { id: x.id });
+                        setSessions(await api("sessions"));
+                      }, "已退出该客户端的登录")
+                    }
+                  >
+                    退出此登录
+                  </button>
+                )}
               </div>
-              {x.id !== me.session_id && (
-                <button
-                  className="danger-text"
-                  disabled={busy}
-                  onClick={() =>
-                    void act(async () => {
-                      await api("revoke_session", { id: x.id });
-                      setSessions(await api("sessions"));
-                    }, "会话已撤销")
-                  }
-                >
-                  撤销
-                </button>
-              )}
-            </div>
-          ))
-        ) : (
-          <Empty text="没有可显示的登录会话。" />
-        )}
+            ))
+          ) : (
+            <Empty text="没有可显示的登录记录。" />
+          )}
+        </div>
       </div>
     </div>
   );
 }
-function Admin({ busy, act }: { busy: boolean; act: Action }) {
+function Admin({
+  busy,
+  act,
+  invitation,
+  setInvitation,
+}: {
+  busy: boolean;
+  act: Action;
+  invitation: SignupInvitation | null;
+  setInvitation: React.Dispatch<React.SetStateAction<SignupInvitation | null>>;
+}) {
   const [users, setUsers] = useState<User[]>([]),
     [after, setAfter] = useState(""),
     [registration, setRegistration] = useState("open"),
-    [email, setEmail] = useState(""),
-    [invite, setInvite] = useState(""),
-    [inviteId, setInviteId] = useState(""),
+    [email, setEmail] = useState(invitation?.email ?? ""),
     [loadError, setLoadError] = useState(""),
     [deviceId, setDeviceId] = useState(""),
-    [sessions, setSessions] = useState<unknown[]>([]),
-    [audit, setAudit] = useState<unknown[]>([]);
+    [sessions, setSessions] = useState<
+      { id: string; user_id: string; created_at: string; revoked: boolean }[]
+    >([]),
+    [audit, setAudit] = useState<
+      {
+        id: number;
+        actor_id: string | null;
+        action: string;
+        object_id: string | null;
+        result: string;
+        created_at: string;
+      }[]
+    >([]);
+  const [hasMore, setHasMore] = useState(false);
+  const invite = invitation?.code ?? "";
+  const inviteId = invitation?.id ?? "";
+  const inviteVisible = invitation?.visible ?? true;
+  const invitedEmail = invitation?.email ?? "";
+  const auditLabels: Record<string, string> = {
+    register: "创建账号",
+    verify_email: "验证邮箱",
+    login: "登录账号",
+    logout: "退出账号",
+    change_password: "修改密码",
+    recover_password: "找回密码",
+    revoke_session: "退出客户端登录",
+    bind_device: "添加设备",
+    unbind_device: "移除设备",
+    request_remote: "申请远程连接",
+    decide_remote: "处理连接申请",
+    create_invitation: "创建连接邀请",
+    set_user_enabled: "调整账号状态",
+    admin_revoke_device: "停用设备",
+    admin_enable_device: "恢复设备",
+    registration_policy: "修改注册方式",
+    create_signup_invitation: "创建注册邀请",
+    revoke_signup_invitation: "取消注册邀请",
+  };
+  const resultLabel = (value: string) =>
+    ({
+      ok: "已完成",
+      pending: "等待批准",
+      approved: "已允许",
+      denied: "已拒绝",
+      true: "已启用",
+      false: "已停用",
+      open: "开放注册",
+      invite_only: "仅限邀请",
+      closed: "关闭注册",
+    })[value] ?? "详见记录详情";
   const load = async () => {
     const [u, r, s, a] = await Promise.all([
       api<User[]>("admin_users"),
       api<{ value: string }>("admin_registration"),
-      api<unknown[]>("admin_sessions"),
-      api<unknown[]>("admin_audit"),
+      api<typeof sessions>("admin_sessions"),
+      api<typeof audit>("admin_audit"),
     ]);
     setUsers(u);
+    setHasMore(u.length === 100);
     setAfter(u.at(-1)?.id ?? "");
     setRegistration(r.value);
     setSessions(s);
@@ -2450,24 +2950,30 @@ function Admin({ busy, act }: { busy: boolean; act: Action }) {
     void load().catch((e) => setLoadError(errorText(e)));
   }, []);
   const loadMore = () =>
-    void api<User[]>("admin_users", { after }).then((u) => {
-      setUsers((x) => [...x, ...u]);
-      setAfter(u.at(-1)?.id ?? "");
-    });
+    void act(
+      async () => {
+        const u = await api<User[]>("admin_users", { after });
+        setUsers((x) => [...x, ...u]);
+        setAfter(u.at(-1)?.id ?? "");
+        setHasMore(u.length === 100);
+      },
+      "已加载更多用户",
+      false,
+    );
   return (
     <div className="stack">
       {loadError && (
         <div className="alert error" role="alert">
-          加载管理数据失败：{loadError}
+          <ErrorMessage error={loadError} />
         </div>
       )}
       <div className="notice-strip">
-        管理员操作由服务端再次鉴权。管理员身份不能代替目标设备批准远控。
+        管理账号、设备和注册方式。即使是管理员，连接他人电脑也需要对方批准。
       </div>
       <div className="two-col">
         <div className="card">
           <div className="eyebrow">REGISTRATION</div>
-          <h2>注册策略</h2>
+          <h2>允许谁注册账号</h2>
           <form
             className="inline-form"
             onSubmit={(e) => {
@@ -2479,6 +2985,7 @@ function Admin({ busy, act }: { busy: boolean; act: Action }) {
             }}
           >
             <select
+              aria-label="账号注册方式"
               value={registration}
               onChange={(e) => setRegistration(e.target.value)}
             >
@@ -2487,7 +2994,7 @@ function Admin({ busy, act }: { busy: boolean; act: Action }) {
               <option value="closed">关闭注册</option>
             </select>
             <button className="primary" disabled={busy}>
-              保存
+              保存注册方式
             </button>
           </form>
         </div>
@@ -2506,10 +3013,14 @@ function Admin({ busy, act }: { busy: boolean; act: Action }) {
                       email,
                     },
                   );
-                  setInvite(v.code);
-                  setInviteId(v.id);
+                  setInvitation({
+                    id: v.id,
+                    code: v.code,
+                    email,
+                    visible: true,
+                  });
                 },
-                "邀请已创建",
+                "注册邀请码已生成，请复制后发给受邀人；不会自动发送邮件",
                 false,
               );
             }}
@@ -2522,27 +3033,56 @@ function Admin({ busy, act }: { busy: boolean; act: Action }) {
               value={email}
               onChange={(e) => setEmail(e.target.value)}
             />
-            <button className="primary" disabled={busy}>
-              创建
+            <button className="primary" disabled={busy || !!invite}>
+              生成注册邀请码
             </button>
           </form>
           {invite && (
             <div className="invite-code">
-              <span>仅显示一次</span>
-              <code>{invite}</code>
-              <button onClick={() => setInvite("")}>隐藏</button>
+              <span>
+                受邀邮箱：{invitedEmail} ·
+                邀请信息仅保留到退出登录或关闭应用，请先复制。
+              </span>
+              <code>
+                {inviteVisible ? invite : "邀请码已收起，收起不会取消邀请"}
+              </code>
+              <button
+                disabled={busy}
+                onClick={() =>
+                  void act(
+                    () =>
+                      copyText(
+                        `注册邮箱：${invitedEmail}\n注册邀请码：${invite}`,
+                      ),
+                    "注册邀请已复制",
+                    false,
+                  )
+                }
+              >
+                复制注册邀请
+              </button>
+              <button
+                onClick={() =>
+                  setInvitation((previous) =>
+                    previous
+                      ? { ...previous, visible: !previous.visible }
+                      : null,
+                  )
+                }
+              >
+                {inviteVisible ? "收起邀请码" : "显示邀请码"}
+              </button>
               <button
                 className="danger-text"
                 disabled={busy}
                 onClick={() =>
                   void act(async () => {
                     await api("admin_invite_revoke", { id: inviteId });
-                    setInvite("");
-                    setInviteId("");
+                    setInvitation(null);
                   }, "注册邀请已撤销")
                 }
               >
-                撤销邀请
+                取消注册邀请
               </button>
             </div>
           )}
@@ -2550,10 +3090,13 @@ function Admin({ busy, act }: { busy: boolean; act: Action }) {
       </div>
       <div className="card">
         <div className="eyebrow">DEVICE POLICY</div>
-        <h2>设备禁用与恢复</h2>
+        <h2>停用或恢复设备</h2>
+        <p className="muted">
+          停用会结束此设备的连接并阻止再次连接；恢复后，设备所有者需要在该电脑重新添加设备。
+        </p>
         <div className="inline-form">
           <input
-            placeholder="设备 UUID"
+            placeholder="粘贴要管理的完整设备 ID"
             aria-label="管理员设备 ID"
             value={deviceId}
             onChange={(e) => setDeviceId(e.target.value)}
@@ -2568,7 +3111,7 @@ function Admin({ busy, act }: { busy: boolean; act: Action }) {
               )
             }
           >
-            禁用
+            停用此设备
           </button>
           <button
             className="secondary"
@@ -2576,11 +3119,11 @@ function Admin({ busy, act }: { busy: boolean; act: Action }) {
             onClick={() =>
               void act(
                 () => api("admin_device_enabled", { id: deviceId }),
-                "设备已恢复；设备所有者须重新签名绑定",
+                "设备已恢复，请让设备所有者在该电脑重新添加设备",
               )
             }
           >
-            恢复
+            恢复此设备
           </button>
         </div>
       </div>
@@ -2590,16 +3133,33 @@ function Admin({ busy, act }: { busy: boolean; act: Action }) {
             <div className="eyebrow">USERS</div>
             <h2>用户管理</h2>
           </div>
-          <button className="text-button" onClick={() => void load()}>
-            刷新
+          <button
+            className="text-button"
+            disabled={busy}
+            onClick={() =>
+              void act(
+                async () => {
+                  await load();
+                  setLoadError("");
+                },
+                "管理数据已刷新",
+                false,
+              )
+            }
+          >
+            刷新管理数据
           </button>
         </div>
+        <p className="muted">
+          停用账号会结束其登录和远程连接，恢复账号后用户可重新登录。
+        </p>
         {users.map((u) => (
           <div className="list-row" key={u.id}>
             <div>
               <strong>{u.email}</strong>
               <small>
-                {u.role} · {u.verified ? "已验证" : "未验证"} ·{" "}
+                {u.role === "admin" ? "管理员" : "普通用户"} ·{" "}
+                {u.verified ? "邮箱已验证" : "邮箱未验证"} ·{" "}
                 {u.enabled ? "启用" : "停用"} · {short(u.id)}
               </small>
             </div>
@@ -2619,12 +3179,12 @@ function Admin({ busy, act }: { busy: boolean; act: Action }) {
                 )
               }
             >
-              {u.enabled ? "停用" : "启用"}
+              {u.enabled ? "停用账号" : "恢复账号"}
             </button>
           </div>
         ))}
-        {users.length === 100 && (
-          <button className="text-button" onClick={loadMore}>
+        {hasMore && (
+          <button className="text-button" disabled={busy} onClick={loadMore}>
             加载更多
           </button>
         )}
@@ -2632,25 +3192,53 @@ function Admin({ busy, act }: { busy: boolean; act: Action }) {
       <div className="two-col">
         <div className="card">
           <div className="eyebrow">SESSIONS</div>
-          <h2>登录会话</h2>
+          <h2>账号登录记录</h2>
           {sessions.length ? (
-            sessions.map((s, i) => (
-              <pre className="meta-row" key={i}>
-                {JSON.stringify(s)}
-              </pre>
+            sessions.map((s) => (
+              <div className="list-row" key={s.id}>
+                <div>
+                  <strong>
+                    {users.find((u) => u.id === s.user_id)?.email ??
+                      `账号 ${short(s.user_id)}`}
+                  </strong>
+                  <small>
+                    {s.revoked ? "已退出" : "尚未退出（可能已过期）"} ·{" "}
+                    {dateLabel(s.created_at)}
+                  </small>
+                  <details className="connection-details">
+                    <summary>记录详情</summary>
+                    <small>登录编号：{s.id}</small>
+                    <small>账号编号：{s.user_id}</small>
+                  </details>
+                </div>
+              </div>
             ))
           ) : (
-            <Empty text="暂无会话元数据" />
+            <Empty text="暂无登录记录" />
           )}
         </div>
         <div className="card">
           <div className="eyebrow">AUDIT</div>
-          <h2>审计事件</h2>
+          <h2>管理与安全操作记录</h2>
           {audit.length ? (
-            audit.map((a, i) => (
-              <pre className="meta-row" key={i}>
-                {JSON.stringify(a)}
-              </pre>
+            audit.map((a) => (
+              <div className="list-row" key={a.id}>
+                <div>
+                  <strong>
+                    {auditLabels[a.action] ?? "其他操作"} ·{" "}
+                    {resultLabel(a.result)}
+                  </strong>
+                  <small>{dateLabel(a.created_at)}</small>
+                  <details className="connection-details">
+                    <summary>记录详情</summary>
+                    <small>
+                      操作：{a.action} · 结果：{a.result}
+                    </small>
+                    <small>操作账号：{a.actor_id ?? "系统或设备"}</small>
+                    <small>关联编号：{a.object_id ?? "无"}</small>
+                  </details>
+                </div>
+              </div>
             ))
           ) : (
             <Empty text="暂无审计记录" />

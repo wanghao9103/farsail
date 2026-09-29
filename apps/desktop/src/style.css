@@ -620,6 +620,16 @@ select:focus {
   }
 }
 @media (max-width: 580px) {
+  .connection-intro > p,
+  .connection-list-pane > p {
+    display: none;
+  }
+  .connection-list-pane {
+    padding: 12px;
+  }
+  .connection-list .list-row:first-of-type {
+    margin-top: 0;
+  }
   .app {
     display: block;
   }
@@ -740,7 +750,7 @@ select:focus {
   cursor: crosshair;
 }
 
-/* Desktop shell: navigation stays visible while the workspace scrolls. */
+/* Desktop shell: the header stays fixed; individual work areas own scrolling. */
 @media (min-width: 581px) {
   .app {
     height: 100dvh;
@@ -758,9 +768,10 @@ select:focus {
   }
   main {
     height: 100%;
-    overflow-y: auto;
-    scrollbar-gutter: stable;
-    padding: 24px 28px 32px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    padding: 20px 24px;
   }
   .topbar {
     margin-bottom: 20px;
@@ -1308,7 +1319,7 @@ main {
   padding: 14px;
   margin-bottom: 12px;
 }
-@media (max-width: 1000px) {
+@media (max-width: 580px) {
   .device-workspace {
     grid-template-columns: 1fr;
   }
@@ -1320,17 +1331,569 @@ main {
     max-height: 220px;
   }
 }
+
+/* Keep the shell stable. min-height: 0 lets long lists shrink inside it. */
+[hidden] {
+  display: none !important;
+}
+.workspace-content {
+  min-width: 0;
+}
+.topbar,
+main > .alert {
+  flex: none;
+}
+.alert span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.section-switcher {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 5px;
+  background: #101b2b;
+  border: 1px solid #28384e;
+  border-radius: 8px;
+}
+.section-switcher button {
+  background: transparent;
+  border: 0;
+  color: #a5b9cf;
+  padding: 9px 12px;
+  border-radius: 5px;
+  font-size: 12px;
+}
+.section-switcher button.active {
+  background: #23455e;
+  color: #effbff;
+}
+.connections-workspace {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.connection-intro p {
+  margin: 0;
+}
+.connection-content {
+  min-height: 0;
+}
+.connection-list-pane {
+  display: flex;
+  flex-direction: column;
+}
+.connection-list-pane > h2,
+.connection-list-pane > p,
+.connection-list-pane > .section-heading {
+  flex: none;
+}
+.connection-list-pane > .section-heading {
+  margin-bottom: 12px;
+}
+.connection-description,
+.list-row > div:first-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.connection-list .row-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  flex: 0 0 auto;
+  max-width: 240px;
+}
+.connection-details {
+  margin-top: 8px;
+  font-size: 11px;
+  color: #a5b9cf;
+}
+.connection-details summary {
+  cursor: pointer;
+  width: fit-content;
+}
+.connection-details small {
+  overflow-wrap: anywhere;
+}
+.device-management {
+  margin-top: 16px;
+}
+.error-message {
+  min-width: 0;
+}
+.error-message details {
+  margin-top: 6px;
+  font-size: 11px;
+}
+.error-message summary {
+  cursor: pointer;
+}
+.error-message code {
+  display: block;
+  margin-top: 6px;
+  overflow-wrap: anywhere;
+}
+.connection-settings {
+  margin-top: 20px;
+}
+.connection-intro .row-actions {
+  flex-direction: row;
+  flex-wrap: wrap;
+}
+.connection-settings > p {
+  margin: 12px 0 0;
+}
+.invite-code .row-actions {
+  flex-wrap: wrap;
+}
+.invite-code button {
+  text-align: left;
+  width: fit-content;
+}
+.page-settings .row-actions {
+  align-items: center;
+}
+.page-settings .hint {
+  line-height: 1.6;
+}
+.device-management .device-facts {
+  margin: 14px 0;
+}
+.connection-form-pane .form {
+  max-width: 640px;
+}
+.connection-form-pane > p {
+  max-width: 700px;
+}
+.device-list {
+  align-content: start;
+}
+.device-list-item {
+  flex: none;
+}
+.device-detail-pane .hint {
+  line-height: 1.6;
+}
+
+@media (min-width: 581px) {
+  .workspace-content {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    overscroll-behavior: contain;
+  }
+  .page-devices,
+  .page-requests,
+  .page-viewer {
+    overflow: hidden;
+  }
+  .device-workspace {
+    height: 100%;
+    grid-template-columns: minmax(210px, 0.85fr) minmax(0, 1.2fr);
+  }
+  .device-list-pane {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    padding: 16px;
+  }
+  .device-list-pane > .section-heading,
+  .device-list-pane > .filters {
+    flex: none;
+  }
+  .device-list {
+    flex: 1;
+    min-height: 0;
+    max-height: none;
+  }
+  .device-detail-pane {
+    min-height: 0;
+    overflow: auto;
+    padding: 20px;
+  }
+  .device-detail-title {
+    margin-top: 10px;
+    font-size: 21px;
+  }
+  .remote-primary {
+    min-height: 98px;
+  }
+  .sharing-panel {
+    padding: 14px;
+  }
+  .connections-workspace,
+  .connection-list-pane {
+    height: 100%;
+    min-height: 0;
+  }
+  .connection-intro,
+  .section-switcher {
+    flex: none;
+  }
+  .connection-content {
+    flex: 1;
+    overflow: hidden;
+  }
+  .connection-form-pane {
+    height: 100%;
+    overflow: auto;
+  }
+  .connection-form-pane .form {
+    grid-template-columns: 1fr 1fr;
+    align-items: end;
+  }
+  .connection-form-pane .form > input {
+    align-self: end;
+  }
+  .connection-form-pane .form > button {
+    justify-self: start;
+  }
+  .connection-list {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding-right: 8px;
+  }
+  .page-viewer > .stack,
+  .page-viewer > .stack > .card {
+    height: 100%;
+    min-height: 0;
+  }
+  .page-viewer > .stack > .card {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    overflow: auto;
+  }
+  .page-viewer .remote-screen {
+    flex: 1;
+    min-height: 120px;
+    height: auto;
+  }
+  .page-viewer .section-heading,
+  .page-viewer label,
+  .page-viewer form,
+  .page-viewer .hint {
+    flex: none;
+  }
+  .page-viewer p {
+    margin-bottom: 0;
+  }
+  .page-viewer .section-heading p {
+    margin-top: 8px;
+  }
+  .page-overview > .stack {
+    height: 100%;
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: auto auto minmax(0, 1fr);
+    align-content: start;
+  }
+  .page-overview > .stack > .card {
+    min-height: 0;
+    overflow: auto;
+  }
+  .page-overview .overview-history {
+    display: flex;
+    flex-direction: column;
+  }
+  .overview-history > .section-heading {
+    flex: none;
+  }
+  .overview-records {
+    min-height: 0;
+    overflow: auto;
+  }
+  .page-overview .local-device .eyebrow {
+    display: none;
+  }
+  .page-overview .hero,
+  .page-overview .metrics {
+    grid-column: 1 / -1;
+  }
+  .page-overview .local-device {
+    display: block;
+  }
+  .page-overview .local-device .stack {
+    justify-items: start;
+    gap: 10px;
+  }
+  .page-overview .attention {
+    display: block;
+  }
+  .page-overview .attention form {
+    margin-top: 16px;
+  }
+  .page-security > .stack {
+    height: 100%;
+    grid-template-columns: minmax(240px, 0.85fr) minmax(0, 1.2fr);
+    grid-template-rows: minmax(0, 1fr);
+  }
+  .page-security > .stack > .alert {
+    grid-column: 1 / -1;
+  }
+  .page-security > .stack:has(> .alert) {
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+  .page-security .two-col {
+    display: flex;
+    flex-direction: column-reverse;
+    justify-content: flex-end;
+    gap: 14px;
+    overflow: auto;
+    min-height: 0;
+  }
+  .page-security > .stack > .card {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+  .login-records {
+    min-height: 0;
+    overflow: auto;
+  }
+  .page-settings > .stack {
+    grid-template-columns: minmax(220px, 0.8fr) minmax(0, 1.2fr);
+    align-content: start;
+  }
+  .page-settings > .stack > .card:last-child {
+    grid-column: 2;
+    grid-row: 1 / 3;
+  }
+  .page-settings .form {
+    gap: 10px;
+    margin-top: 14px;
+  }
+  .page-settings .setup-guide {
+    margin-bottom: 10px;
+  }
+  .page-settings .row-actions {
+    flex-wrap: wrap;
+    align-items: center;
+    font-size: 12px;
+  }
+  .page-settings .card,
+  .page-security .card {
+    padding: 16px;
+  }
+}
+
+@media (min-width: 581px) and (max-width: 1050px) {
+  .sidebar {
+    width: 72px;
+    padding: 20px 10px;
+  }
+  .brand {
+    padding: 0 6px 26px;
+  }
+  .brand div,
+  .side-label,
+  .sidebar-foot {
+    display: none;
+  }
+  .sidebar nav button,
+  .sidebar nav button:not(.active) {
+    font-size: 0;
+    padding: 12px;
+    justify-content: center;
+  }
+  .sidebar nav button span {
+    font-size: 18px;
+  }
+  main {
+    padding: 16px;
+  }
+  .device-detail-pane,
+  .device-list-pane {
+    padding: 14px;
+  }
+  .device-list-item {
+    padding: 12px 8px;
+    gap: 8px;
+  }
+  .device-list-pane .filters {
+    flex-wrap: wrap;
+  }
+  .device-list-pane .filters select {
+    width: 100%;
+  }
+  .connection-intro {
+    align-items: flex-start;
+  }
+  .connection-list .list-row {
+    flex-wrap: wrap;
+  }
+  .connection-list .row-actions {
+    justify-content: flex-start;
+    max-width: none;
+  }
+  .connection-form-pane .form {
+    grid-template-columns: 1fr;
+  }
+}
+@media (max-width: 580px) {
+  .app {
+    height: 100dvh;
+    min-height: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  .sidebar {
+    flex: none;
+    position: static;
+  }
+  main {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    padding: 14px;
+  }
+  .topbar {
+    margin-bottom: 14px;
+  }
+  .workspace-content {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+  }
+  .page-requests,
+  .page-devices {
+    overflow: hidden;
+  }
+  .device-workspace {
+    height: 100%;
+    grid-template-rows: minmax(140px, 0.7fr) minmax(0, 1fr);
+  }
+  .device-list-pane {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    padding: 12px;
+  }
+  .device-list-pane .filters {
+    flex: none;
+    margin: 8px 0;
+    flex-wrap: nowrap;
+  }
+  .device-list-pane .filters select {
+    width: auto;
+  }
+  .device-list {
+    flex: 1;
+    min-height: 0;
+    max-height: none;
+  }
+  .device-detail-pane {
+    min-height: 0;
+    overflow: auto;
+    padding: 14px;
+  }
+  .connections-workspace {
+    height: 100%;
+    min-height: 0;
+  }
+  .connection-intro,
+  .section-switcher {
+    flex: none;
+  }
+  .connection-content {
+    flex: 1;
+    overflow: hidden;
+  }
+  .connection-list-pane,
+  .connection-form-pane {
+    height: 100%;
+    min-height: 0;
+  }
+  .connection-form-pane {
+    overflow: auto;
+  }
+  .connection-list {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+  }
+  .section-switcher button {
+    padding: 7px 8px;
+  }
+  .connections-workspace {
+    gap: 10px;
+  }
+  .connection-intro {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .connection-list .list-row {
+    flex-direction: column;
+  }
+  .connection-list .row-actions {
+    flex-direction: row;
+    max-width: none;
+  }
+}
+
 /* Native viewer owns the full client area; connection details stay collapsed. */
-.viewer-window { height: 100vh; padding: 12px; background: #101719; color: #e5efec; }
-.viewer-body { height: 100%; display: flex; flex-direction: column; gap: 10px; }
-.viewer-toolbar { display: flex; justify-content: space-between; align-items: start; gap: 12px; }
-.viewer-toolbar p { margin: 4px 0; font-size: 12px; }
-.viewer-toolbar .row-actions { flex-wrap: wrap; }
-.viewer-toolbar button { border: 1px solid #344b5c; border-radius: 7px; background: #1c3040; color: #d7e8ee; padding: 7px 10px; font-size: 12px; }
-.viewer-toolbar button.danger-text { color: #ffacac; background: transparent; }
-.viewer-window .remote-screen { flex: 1; min-height: 100px; max-height: none; margin: 0; overflow: hidden; }
-.viewer-window .remote-screen img { width: 100%; height: 100%; object-fit: contain; }
-.viewer-window .remote-screen:focus { outline: 2px solid #69d8b3; outline-offset: -2px; }
-.viewer-window .inline-form { margin: 0; }
-.viewer-window .hint { margin: 0; font-size: 11px; }
-.viewer-window select { max-width: 400px; }
+.viewer-window {
+  height: 100vh;
+  padding: 12px;
+  background: #101719;
+  color: #e5efec;
+}
+.viewer-body {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.viewer-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  gap: 12px;
+}
+.viewer-toolbar p {
+  margin: 4px 0;
+  font-size: 12px;
+}
+.viewer-toolbar .row-actions {
+  flex-wrap: wrap;
+}
+.viewer-toolbar button {
+  border: 1px solid #344b5c;
+  border-radius: 7px;
+  background: #1c3040;
+  color: #d7e8ee;
+  padding: 7px 10px;
+  font-size: 12px;
+}
+.viewer-toolbar button.danger-text {
+  color: #ffacac;
+  background: transparent;
+}
+.viewer-window .remote-screen {
+  flex: 1;
+  min-height: 100px;
+  max-height: none;
+  margin: 0;
+  overflow: hidden;
+}
+.viewer-window .remote-screen img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.viewer-window .remote-screen:focus {
+  outline: 2px solid #69d8b3;
+  outline-offset: -2px;
+}
+.viewer-window .inline-form {
+  margin: 0;
+}
+.viewer-window .hint {
+  margin: 0;
+  font-size: 11px;
+}
+.viewer-window select {
+  max-width: 400px;
+}
