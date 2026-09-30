@@ -2235,6 +2235,7 @@ type RemoteDisplay = {
   rotation: number;
 };
 type RemoteStatus = {
+  input?: { generation: number; blocked: boolean; message: string | null };
   retryable?: boolean;
   state: string;
   rtt_ms: number | null;
@@ -2285,10 +2286,17 @@ function Viewer({
   const lastMove = useRef(0);
   const [ended, setEnded] = useState(false);
   const [reconnecting, setReconnecting] = useState(false);
+  const [retryingInput, setRetryingInput] = useState(false);
+  const inputBlocked = status?.input?.blocked ?? false;
+  const inputBlockedRef = useRef(false);
+  const inputGeneration = useRef(0);
   const screen = useRef<HTMLDivElement>(null);
   const generation = useRef(0);
   const control =
-    !ended && status?.state !== "closed" && status?.permission === "control";
+    !ended &&
+    !inputBlocked &&
+    status?.state !== "closed" &&
+    status?.permission === "control";
   const controlRef = useRef(control);
   controlRef.current = control;
   const send = (input: Record<string, unknown> | null) => {
@@ -2382,6 +2390,19 @@ function Viewer({
       void invoke<RemoteStatus>("remote_status", { id })
         .then((s) => {
           if (live) {
+            if (
+              s.state !== "closed" &&
+              s.input &&
+              s.input.generation < inputGeneration.current
+            )
+              return;
+            if (s.input) inputGeneration.current = s.input.generation;
+            if (s.input?.blocked && !inputBlockedRef.current) {
+              generation.current++;
+              controlRef.current = false;
+              setText("");
+            }
+            inputBlockedRef.current = s.input?.blocked ?? false;
             setStatus(s);
             if (s.state === "closed") finish(s);
           }
@@ -2485,9 +2506,11 @@ function Viewer({
             <strong>
               {ended
                 ? "会话已结束"
-                : status?.permission === "control"
-                  ? "远程控制"
-                  : "仅查看"}
+                : inputBlocked
+                  ? "控制已暂停"
+                  : status?.permission === "control"
+                    ? "远程控制"
+                    : "仅查看"}
             </strong>
             <p className="muted">
               连接 {short(id)} ·{" "}
@@ -2544,6 +2567,29 @@ function Viewer({
         {status?.error && (
           <div className="alert error">
             <ErrorMessage error={status.error} />
+          </div>
+        )}
+        {inputBlocked && !ended && (
+          <div className="notice-strip" role="alert">
+            <p>
+              {status?.input?.message ?? "鼠标键盘控制已暂停，画面连接仍保留。"}
+            </p>
+            <button
+              className="secondary"
+              disabled={retryingInput}
+              onClick={() => {
+                setRetryingInput(true);
+                generation.current++;
+                void invoke("remote_input", {
+                  id,
+                  input: { kind: "resume_control" },
+                })
+                  .catch((e) => setProblem(errorText(e)))
+                  .finally(() => setRetryingInput(false));
+              }}
+            >
+              {retryingInput ? "正在请求重试…" : "重试控制"}
+            </button>
           </div>
         )}
         <label>

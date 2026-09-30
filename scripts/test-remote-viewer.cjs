@@ -17,6 +17,9 @@ const fs = require("node:fs");
       closed: false,
       retryable: false,
       permission: "control",
+      inputBlocked: false,
+      inputGeneration: 0,
+      staleInput: null,
       calls: [],
       delay: false,
       release: null,
@@ -47,10 +50,19 @@ const fs = require("node:fs");
       metadata: { currentWindow: { label: "viewer-test" } },
       invoke: async (cmd, args = {}) => {
         f.calls.push({ cmd, args });
-        if (cmd === "remote_status")
+        if (cmd === "remote_status") {
+          const reportedInput = f.staleInput ?? {
+            generation: f.inputGeneration,
+            blocked: f.inputBlocked,
+            message: f.inputBlocked
+              ? "Windows 拒绝输入，控制已暂停；画面连接仍保留。"
+              : null,
+          };
+          f.staleInput = null;
           return {
             state: f.closed ? "closed" : "direct",
             permission: f.permission,
+            input: reportedInput,
             rtt_ms: 23,
             displays: [
               { id: 1, name: "Display", width: 800, height: 450, dpi: 96 },
@@ -58,6 +70,7 @@ const fs = require("node:fs");
             error: f.closed ? "会话已结束，画面与输入已停止" : null,
             retryable: f.retryable,
           };
+        }
         if (cmd === "media_next") {
           if (args.after === 0 && !f.closed) return packet.buffer;
           await new Promise((r) => setTimeout(r, 150));
@@ -69,6 +82,11 @@ const fs = require("node:fs");
           await new Promise((r) => {
             f.release = r;
           });
+        }
+        if (cmd === "remote_input" && args.input?.kind === "resume_control") {
+          f.inputBlocked = false;
+          f.inputGeneration++;
+          return {};
         }
         if (cmd === "viewer_reconnect") return new Promise(() => {});
         return {};
@@ -98,6 +116,46 @@ const fs = require("node:fs");
   );
   fs.mkdirSync(".local/ui-verification", { recursive: true });
   await page.screenshot({ path: ".local/ui-verification/viewer.png" });
+  await page.evaluate(() => {
+    window.fixture.inputBlocked = true;
+    window.fixture.inputGeneration++;
+  });
+  await page.getByText("控制已暂停", { exact: true }).waitFor();
+  assert(await page.getByAltText("远端桌面").isVisible());
+  assert.equal(await page.getByText("会话已结束，远端画面已清除").count(), 0);
+  const blockedBefore = await page.evaluate(
+    () => window.fixture.calls.filter((c) => c.cmd === "remote_input").length,
+  );
+  await page.getByAltText("远端桌面").click();
+  await page.keyboard.press("Z");
+  assert.equal(
+    await page.evaluate(
+      () => window.fixture.calls.filter((c) => c.cmd === "remote_input").length,
+    ),
+    blockedBefore,
+  );
+  await page.screenshot({ path: ".local/ui-verification/input-paused.png" });
+  await page.getByRole("button", { name: "重试控制", exact: true }).click();
+  await page
+    .getByText("控制已暂停", { exact: true })
+    .waitFor({ state: "hidden" });
+  assert(await page.getByAltText("远端桌面").isVisible());
+  await page.getByAltText("远端桌面").click();
+  await page.keyboard.press("Z");
+  await page.waitForFunction(() =>
+    window.fixture.calls.some(
+      (c) => c.cmd === "remote_input" && c.args.input?.vk === 90,
+    ),
+  );
+  await page.evaluate(() => {
+    window.fixture.staleInput = {
+      generation: 1,
+      blocked: true,
+      message: "late pause",
+    };
+  });
+  await page.waitForFunction(() => window.fixture.staleInput === null);
+  assert.equal(await page.getByText("控制已暂停", { exact: true }).count(), 0);
   await page.evaluate(() => (window.fixture.delay = true));
   await page.keyboard.down("B");
   await page.keyboard.down("C");
@@ -161,7 +219,7 @@ const fs = require("node:fs");
   assert.deepEqual(errors, []);
   await browser.close();
   console.log(
-    "PASS focus/button/keyboard; closed frame cleared; queued input cancelled; terminal never retries; network retries once; cancel; read-only input blocked. Synthetic IPC only.",
+    "PASS focus/button/keyboard; input rejection retains frame; paused input suppressed; explicit retry resumes; terminal frame/queue cleared; terminal never retries; network retries once; cancel; read-only input blocked. Synthetic IPC only.",
   );
 })().catch((e) => {
   console.error(e);

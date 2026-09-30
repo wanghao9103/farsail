@@ -7,7 +7,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use windows::Win32::{
-    Foundation::RECT,
+    Foundation::{GetLastError, RECT, SetLastError, WIN32_ERROR},
     Graphics::Gdi::{GetMonitorInfoW, HMONITOR, MONITORINFO},
     UI::{
         HiDpi::{
@@ -17,11 +17,15 @@ use windows::Win32::{
         },
         Input::KeyboardAndMouse::{
             INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY,
-            KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN,
-            MOUSEEVENTF_LEFTUP, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL,
-            MOUSEINPUT, SendInput, VIRTUAL_KEY,
+            KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_HWHEEL,
+            MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN,
+            MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL, MOUSEINPUT, SendInput,
+            VIRTUAL_KEY,
         },
-        WindowsAndMessaging::SetCursorPos,
+        WindowsAndMessaging::{
+            GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
+            SM_YVIRTUALSCREEN,
+        },
     },
 };
 use windows_capture::monitor::Monitor;
@@ -229,10 +233,31 @@ fn mouse(
     }
 }
 fn send(inputs: &[INPUT]) -> Result<()> {
-    if unsafe { SendInput(inputs, size_of::<INPUT>() as i32) } != inputs.len() as u32 {
-        return Err(Error::InputDenied);
+    let (inserted, code) = send_raw(inputs);
+    let expected = inputs.len() as u32;
+    if inserted != expected {
+        return Err(Error::Injection {
+            inserted,
+            expected,
+            code,
+        });
     }
     Ok(())
+}
+fn send_raw(inputs: &[INPUT]) -> (u32, u32) {
+    unsafe {
+        SetLastError(WIN32_ERROR(0));
+        let inserted = SendInput(inputs, size_of::<INPUT>() as i32);
+        (inserted, GetLastError().0)
+    }
+}
+fn absolute_axis(pixel: i32, origin: i32, extent: i32) -> Result<i32> {
+    let offset = i64::from(pixel) - i64::from(origin);
+    if extent <= 0 || offset < 0 || offset >= i64::from(extent) {
+        return Err(Error::Geometry);
+    }
+    // Target the pixel centre. Windows maps absolute 16-bit coordinates over the virtual desktop.
+    Ok(((offset * 2 + 1) * 65536 / (i64::from(extent) * 2)).min(65535) as i32)
 }
 fn rotated_point(x: usize, y: usize, width: usize, height: usize, rotation: u32) -> (usize, usize) {
     match rotation {
@@ -281,7 +306,7 @@ fn convert_bgra(
     Ok(rgb)
 }
 fn allowed_key(vk: u16) -> bool {
-    matches!(vk, 0x08..=0x0d | 0x1b | 0x20..=0x28 | 0x2d..=0x2e | 0x30..=0x5a | 0x60..=0x6f | 0x70..=0x7b | 0xa0..=0xa5 | 0xba..=0xc0 | 0xdb..=0xde)
+    matches!(vk, 0x08..=0x0d | 0x10..=0x14 | 0x1b | 0x20..=0x28 | 0x2c..=0x2e | 0x30..=0x5d | 0x60..=0x87 | 0x90..=0x91 | 0xa0..=0xb7 | 0xba..=0xc0 | 0xdb..=0xde | 0xe2)
 }
 impl InputSink {
     pub fn apply(&mut self, input: Input, display: Option<&Display>, layout: u64) -> Result<()> {
@@ -321,7 +346,7 @@ impl InputSink {
                 horizontal,
             } => {
                 if vertical.unsigned_abs() > 1200 || horizontal.unsigned_abs() > 1200 {
-                    return Err(Error::InputDenied);
+                    return Err(Error::UnsupportedInput);
                 }
                 move_to(display, layout, id, expected, x, y)?;
                 if vertical != 0 {
@@ -334,7 +359,7 @@ impl InputSink {
             }
             Input::Key { vk, down, repeat } => {
                 if !allowed_key(vk) {
-                    return Err(Error::InputDenied);
+                    return Err(Error::UnsupportedInput);
                 }
                 if self.pressed.contains(&vk) == down && !(down && repeat) {
                     return Ok(());
@@ -349,11 +374,11 @@ impl InputSink {
             }
             Input::Text { text } => {
                 if text.chars().count() > 64 || text.chars().any(|c| c.is_control()) {
-                    return Err(Error::InputDenied);
+                    return Err(Error::UnsupportedInput);
                 }
                 for unit in text.encode_utf16() {
                     let pair = [unicode(unit, true), unicode(unit, false)];
-                    let count = unsafe { SendInput(&pair, size_of::<INPUT>() as i32) };
+                    let (count, code) = send_raw(&pair);
                     if count != 2 {
                         if count == 1 {
                             self.pending_unicode = Some(unit);
@@ -361,7 +386,11 @@ impl InputSink {
                                 self.pending_unicode = None;
                             }
                         }
-                        return Err(Error::InputDenied);
+                        return Err(Error::Injection {
+                            inserted: count,
+                            expected: 2,
+                            code,
+                        });
                     }
                 }
                 Ok(())
@@ -433,12 +462,63 @@ fn move_to(
         .filter(|d| d.id == id && layout == expected)
         .ok_or(Error::Geometry)?;
     let (px, py) = map_point(d, x, y)?;
-    unsafe { SetCursorPos(px, py) }.map_err(|_| Error::InputDenied)
+    let mut event = mouse(
+        MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
+        0,
+    );
+    unsafe {
+        event.Anonymous.mi.dx = absolute_axis(
+            px,
+            GetSystemMetrics(SM_XVIRTUALSCREEN),
+            GetSystemMetrics(SM_CXVIRTUALSCREEN),
+        )?;
+        event.Anonymous.mi.dy = absolute_axis(
+            py,
+            GetSystemMetrics(SM_YVIRTUALSCREEN),
+            GetSystemMetrics(SM_CYVIRTUALSCREEN),
+        )?;
+    }
+    send(&[event])
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn absolute_mouse_coordinates_cover_negative_monitor_and_pixel_centres() {
+        for (origin, extent) in [(-1920, 3840), (0, 1920), (-1080, 2160), (0, 1)] {
+            for offset in [0, extent / 2, extent - 1] {
+                let unit = absolute_axis(origin + offset, origin, extent).unwrap();
+                assert_eq!(
+                    i64::from(unit) * i64::from(extent) / 65536,
+                    i64::from(offset)
+                );
+            }
+        }
+        assert!(absolute_axis(-1, 0, 1920).is_err());
+        assert!(absolute_axis(1920, 0, 1920).is_err());
+        assert!(absolute_axis(0, 0, 0).is_err());
+    }
+    #[test]
+    fn ordinary_system_keys_are_supported_and_unknown_input_is_nonfatal() {
+        for key in [0x14, 0x5b, 0x5c, 0x5d, 0x90, 0x91, 0x2c, 0x7c, 0x87] {
+            assert!(allowed_key(key));
+        }
+        let mut sink = InputSink::default();
+        assert!(matches!(
+            sink.apply(
+                Input::Key {
+                    vk: 0,
+                    down: true,
+                    repeat: false
+                },
+                None,
+                0
+            ),
+            Err(Error::UnsupportedInput)
+        ));
+        assert!(sink.pressed.is_empty());
+    }
     #[test]
     fn rotated_rectangular_corners_and_stride() {
         let w = 3;
@@ -570,6 +650,7 @@ mod tests {
     #[test]
     #[ignore = "injects harmless text only into a verified foreground window created by this test"]
     fn real_input_into_own_foreground_window() {
+        ensure_dpi_awareness().unwrap();
         use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
         use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, SetFocus};
         use windows::Win32::UI::WindowsAndMessaging::{
@@ -733,6 +814,41 @@ mod tests {
         );
         let x = (150.0 / display.width as f64).min(0.99);
         let y = (150.0 / display.height as f64).min(0.99);
+        // Move only inside the verified test window, on a production-shaped GUI-less worker.
+        let worker_display = display.clone();
+        let worker_point = map_point(&display, x, y).unwrap();
+        std::thread::spawn(move || {
+            use windows::Win32::UI::WindowsAndMessaging::{
+                GetCursorPos, GetForegroundWindow, GetWindowThreadProcessId,
+            };
+            let mut owner = 0;
+            unsafe { GetWindowThreadProcessId(GetForegroundWindow(), Some(&mut owner)) };
+            assert_eq!(
+                owner,
+                std::process::id(),
+                "foreground changed; no worker input injected"
+            );
+            let mut worker = InputSink::default();
+            worker
+                .apply(
+                    Input::Move {
+                        display: worker_display.id,
+                        layout: 7,
+                        x,
+                        y,
+                    },
+                    Some(&worker_display),
+                    7,
+                )
+                .unwrap();
+            let mut actual = windows::Win32::Foundation::POINT::default();
+            unsafe { GetCursorPos(&mut actual) }.unwrap();
+            assert!(
+                (actual.x - worker_point.0).abs() <= 1 && (actual.y - worker_point.1).abs() <= 1
+            );
+        })
+        .join()
+        .unwrap();
         sink.apply(
             Input::Button {
                 display: display.id,

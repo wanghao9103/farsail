@@ -3,6 +3,7 @@ use farsail_core::RemotePermission;
 use farsail_media::{BASELINE_PAYLOAD_BPS, ByteBudget, JpegFrame, wait_for_ack};
 use farsail_transport::{Channel, Frame, Session};
 use farsail_windows::{Capture, Display, Input, InputSink, displays};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, HashMap},
@@ -13,6 +14,44 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::{Mutex, Semaphore, watch};
+
+#[derive(Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct InputState {
+    generation: u64,
+    blocked: bool,
+    message: Option<String>,
+}
+impl InputState {
+    fn update(&mut self, error: Option<&farsail_windows::Error>) {
+        self.generation = self.generation.saturating_add(1);
+        self.blocked = error.is_some();
+        self.message = error.map(|e| match e {
+            farsail_windows::Error::Injection { inserted, expected, code } => format!("被控端暂停鼠标键盘控制：Windows 已执行 {inserted}/{expected} 个输入，错误码 {code}。请让对方返回普通桌面或应用后，点击“重试控制”。画面连接仍保留。"),
+            _ => "被控端暂停鼠标键盘控制，尚未能松开全部按键。请让对方返回普通桌面或应用后，点击“重试控制”。画面连接仍保留。".into(),
+        });
+    }
+    fn packet(&self) -> Vec<u8> {
+        let mut bytes = b"FSB1".to_vec();
+        bytes.extend(serde_json::to_vec(self).unwrap());
+        bytes
+    }
+    fn accept(&mut self, bytes: &[u8]) {
+        if bytes.len() > 768 || !bytes.starts_with(b"FSB1") {
+            return;
+        }
+        if let Ok(next) = serde_json::from_slice::<Self>(&bytes[4..])
+            && next.generation > self.generation
+            && next.blocked == next.message.is_some()
+            && next
+                .message
+                .as_ref()
+                .is_none_or(|message| message.len() <= 640)
+        {
+            *self = next;
+        }
+    }
+}
 
 fn ended_message(reason: &str) -> &'static str {
     match reason {
@@ -65,6 +104,7 @@ struct Live {
     layout: Arc<AtomicU64>,
     current: Arc<StdMutex<Option<(Display, u64)>>>,
     input: Arc<StdMutex<InputSink>>,
+    input_state: Arc<StdMutex<InputState>>,
     displays: Arc<StdMutex<Vec<Display>>>,
     error: Arc<StdMutex<Option<String>>>,
     frame: watch::Receiver<Option<Vec<u8>>>,
@@ -129,6 +169,7 @@ impl RemoteRuntime {
             layout: Arc::new(AtomicU64::new(layout)),
             current: Arc::new(StdMutex::new(None)),
             input: Arc::new(StdMutex::new(InputSink::default())),
+            input_state: Arc::new(StdMutex::new(InputState::default())),
             displays: Arc::new(StdMutex::new(Vec::new())),
             error: Arc::new(StdMutex::new(None)),
             frame: rx,
@@ -392,39 +433,73 @@ impl RemoteRuntime {
                                 Some("input rate exceeded; session stopped safely".into());
                             break;
                         }
-                        let mut sink = live.input.lock().unwrap();
                         if !live.alive.load(Ordering::SeqCst)
                             || !self.client.hosting_enabled()
                             || !live.session.is_open_now()
                         {
                             break;
                         }
-                        if &payload == b"FSR1" {
-                            if let Err(e) = sink.release_all() {
-                                *live.error.lock().unwrap() =
-                                    Some(format!("input cleanup incomplete: {e}"));
+                        let mut notice = None;
+                        {
+                            let mut sink = live.input.lock().unwrap();
+                            if !live.alive.load(Ordering::SeqCst)
+                                || !self.client.hosting_enabled()
+                                || !live.session.is_open_now()
+                            {
+                                break;
                             }
-                        } else if let Ok(input) = serde_json::from_slice::<Input>(&payload) {
-                            if matches!(&input, Input::Move { .. }) {
-                                move_count += 1;
-                                if move_count > 120 {
+                            if &payload == b"FSR2" {
+                                let result = sink.release_all();
+                                let mut state = live.input_state.lock().unwrap();
+                                state.update(result.as_ref().err());
+                                notice = Some(state.packet());
+                            } else if &payload == b"FSR1" {
+                                if let Err(e) = sink.release_all() {
+                                    let mut state = live.input_state.lock().unwrap();
+                                    state.update(Some(&e));
+                                    notice = Some(state.packet());
+                                }
+                            } else if let Ok(input) = serde_json::from_slice::<Input>(&payload) {
+                                if live.input_state.lock().unwrap().blocked {
                                     continue;
                                 }
-                            }
-                            let current = live.current.lock().unwrap().clone();
-                            if let Err(e) = sink.apply(
-                                input,
-                                current.as_ref().map(|x| &x.0),
-                                current.as_ref().map_or(0, |x| x.1),
-                            ) {
-                                if matches!(e, farsail_windows::Error::Geometry) {
-                                    continue;
+                                if matches!(&input, Input::Move { .. }) {
+                                    move_count += 1;
+                                    if move_count > 120 {
+                                        continue;
+                                    }
                                 }
-                                *live.error.lock().unwrap() = Some(format!(
-                                    "系统输入失败：{e}；请检查被控窗口权限和桌面状态"
-                                ));
-                                live.session.close_with_reason("input_failed");
+                                let current = live.current.lock().unwrap().clone();
+                                if let Err(e) = sink.apply(
+                                    input,
+                                    current.as_ref().map(|x| &x.0),
+                                    current.as_ref().map_or(0, |x| x.1),
+                                ) {
+                                    if matches!(
+                                        e,
+                                        farsail_windows::Error::Geometry
+                                            | farsail_windows::Error::UnsupportedInput
+                                    ) {
+                                        continue;
+                                    }
+                                    let _ = sink.release_all();
+                                    let mut state = live.input_state.lock().unwrap();
+                                    state.update(Some(&e));
+                                    notice = Some(state.packet());
+                                }
                             }
+                        }
+                        if let Some(bytes) = notice
+                            && live
+                                .session
+                                .send(Frame {
+                                    channel: Channel::Control,
+                                    bytes,
+                                })
+                                .await
+                                .is_err()
+                        {
+                            break;
                         }
                     }
                 }
@@ -449,6 +524,12 @@ impl RemoteRuntime {
                 Err(farsail_transport::Error::Timeout) => continue,
                 Err(_) => break,
             };
+            if frame.channel == Channel::Control
+                && live.session.permission() == RemotePermission::Control
+            {
+                live.input_state.lock().unwrap().accept(&frame.bytes);
+                continue;
+            }
             if frame.channel != Channel::Media {
                 continue;
             }
@@ -504,7 +585,7 @@ impl RemoteRuntime {
         }
         let (path, rtt) = live.session.path();
         Ok(
-            json!({"id":id,"state":path,"rtt_ms":rtt,"permission":live.session.permission(),"sharing":live.host,"verification_code":live.session.verification_code().map_err(|e|e.to_string())?,"displays":*live.displays.lock().unwrap(),"error":*live.error.lock().unwrap()}),
+            json!({"id":id,"state":path,"rtt_ms":rtt,"permission":live.session.permission(),"sharing":live.host,"verification_code":live.session.verification_code().map_err(|e|e.to_string())?,"displays":*live.displays.lock().unwrap(),"error":*live.error.lock().unwrap(),"input":*live.input_state.lock().unwrap()}),
         )
     }
     pub async fn next_frame(&self, id: &str, after: u64) -> Result<Vec<u8>, String> {
@@ -579,7 +660,12 @@ impl RemoteRuntime {
         let is_move = value
             .as_ref()
             .is_some_and(|v| v.get("kind").and_then(Value::as_str) == Some("move"));
-        let payload = if let Some(value) = value {
+        let resume = value.as_ref().and_then(Value::as_object).is_some_and(|v| {
+            v.len() == 1 && v.get("kind").and_then(Value::as_str) == Some("resume_control")
+        });
+        let payload = if resume {
+            b"FSR2".to_vec()
+        } else if let Some(value) = value {
             let input: Input = serde_json::from_value(value).map_err(|_| "invalid input")?;
             serde_json::to_vec(&input).unwrap()
         } else {
@@ -605,6 +691,9 @@ impl RemoteRuntime {
         };
         if !live.alive.load(Ordering::SeqCst) || !live.session.is_open().await {
             return Err("会话已结束，输入已停止".into());
+        }
+        if live.input_state.lock().unwrap().blocked && payload != b"FSR1" && payload != b"FSR2" {
+            return Ok(());
         }
         let mut bytes = b"FSI1".to_vec();
         bytes.extend_from_slice(
@@ -662,6 +751,140 @@ impl RemoteRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    struct InputAuthority {
+        source: iroh::EndpointId,
+        target: iroh::EndpointId,
+    }
+    impl farsail_transport::Authority for InputAuthority {
+        async fn inspect(
+            &self,
+            id: &str,
+            _token: &str,
+        ) -> farsail_transport::Result<farsail_transport::Claims> {
+            let encode = |key: iroh::EndpointId| {
+                key.as_bytes()
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect()
+            };
+            Ok(farsail_transport::Claims {
+                session_id: id.into(),
+                permission: RemotePermission::Control,
+                source_public_key: encode(self.source),
+                target_public_key: encode(self.target),
+                nonce: "ab".repeat(32),
+                expires_in: 20,
+                checked_at: std::time::Instant::now(),
+            })
+        }
+        async fn issue(&self, _id: &str, _renew: bool) -> farsail_transport::Result<String> {
+            Ok("synthetic-input-grant".into())
+        }
+    }
+    #[tokio::test]
+    async fn authenticated_input_pause_keeps_media_and_explicit_resume_available() {
+        use farsail_transport::{Config, Transport};
+        let viewer = Transport::bind([41; 32], Config::default()).await.unwrap();
+        let host = Transport::bind([42; 32], Config::default()).await.unwrap();
+        let authority = Arc::new(InputAuthority {
+            source: viewer.id(),
+            target: host.id(),
+        });
+        let accepting = tokio::spawn({
+            let host = host.clone();
+            let authority = authority.clone();
+            async move { host.accept(authority).await.unwrap() }
+        });
+        let source = viewer
+            .connect(
+                host.addr(),
+                "input-pause-test",
+                RemotePermission::Control,
+                authority,
+            )
+            .await
+            .unwrap();
+        let target = accepting.await.unwrap();
+        let mut input = InputState::default();
+        let mut received = InputState::default();
+        input.update(Some(&farsail_windows::Error::Injection {
+            inserted: 0,
+            expected: 1,
+            code: 0,
+        }));
+        target
+            .send(Frame {
+                channel: Channel::Control,
+                bytes: input.packet(),
+            })
+            .await
+            .unwrap();
+        let report = source.receive().await.unwrap();
+        received.accept(&report.bytes);
+        assert!(received.blocked);
+        assert!(source.is_open_now() && target.is_open_now());
+        target
+            .send(Frame {
+                channel: Channel::Media,
+                bytes: b"synthetic-screen-after-input-rejection".to_vec(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            source.receive().await.unwrap().bytes,
+            b"synthetic-screen-after-input-rejection"
+        );
+        source
+            .send(Frame {
+                channel: Channel::Control,
+                bytes: b"FSR2".to_vec(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(target.receive().await.unwrap().bytes, b"FSR2");
+        input.update(None);
+        target
+            .send(Frame {
+                channel: Channel::Control,
+                bytes: input.packet(),
+            })
+            .await
+            .unwrap();
+        received.accept(&source.receive().await.unwrap().bytes);
+        assert!(!received.blocked);
+        source.close_with_reason("stopped");
+        assert!(!source.is_open_now());
+        target.close();
+        viewer.close().await;
+        host.close().await;
+    }
+    #[test]
+    fn input_pause_and_explicit_resume_keep_diagnostics_bounded_and_ordered() {
+        let mut host = InputState::default();
+        let mut viewer = InputState::default();
+        host.update(Some(&farsail_windows::Error::Injection {
+            inserted: 0,
+            expected: 1,
+            code: 5,
+        }));
+        let blocked_packet = host.packet();
+        assert!(blocked_packet.len() < 768);
+        viewer.accept(&blocked_packet);
+        assert!(viewer.blocked);
+        assert!(viewer.message.as_ref().unwrap().contains("错误码 5"));
+        host.update(None);
+        viewer.accept(&host.packet());
+        assert!(!viewer.blocked);
+        viewer.accept(&blocked_packet);
+        assert!(
+            !viewer.blocked,
+            "late pause must not overwrite explicit resume"
+        );
+        let generation = viewer.generation;
+        viewer.accept(&[0; 769]);
+        viewer.accept(b"FSB1{\"generation\":999,\"blocked\":false,\"message\":null,\"extra\":1}");
+        assert_eq!(viewer.generation, generation);
+    }
     #[test]
     fn reordered_input_is_applied_once_in_order_and_bounded() {
         let mut order = InputOrder::default();

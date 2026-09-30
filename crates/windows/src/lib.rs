@@ -10,6 +10,14 @@ pub enum Error {
     Geometry,
     #[error("input denied or desktop changed")]
     InputDenied,
+    #[error("unsupported keyboard, wheel or text input")]
+    UnsupportedInput,
+    #[error("Windows input rejected: inserted {inserted}/{expected}, code {code}")]
+    Injection {
+        inserted: u32,
+        expected: u32,
+        code: u32,
+    },
     #[error("image: {0}")]
     Image(#[from] farsail_media::Error),
 }
