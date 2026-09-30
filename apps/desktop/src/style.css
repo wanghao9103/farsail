@@ -747,7 +747,7 @@ select:focus {
   height: 100%;
   object-fit: contain;
   user-select: none;
-  cursor: crosshair;
+  cursor: default;
 }
 
 /* Desktop shell: the header stays fixed; individual work areas own scrolling. */

@@ -2769,6 +2769,14 @@ function Viewer({
               ref={image}
               src={picture.url}
               alt="远端桌面"
+              style={{ cursor: inputBlocked ? "not-allowed" : "default" }}
+              title={
+                control
+                  ? "远程控制：点击画面后可使用鼠标键盘"
+                  : inputBlocked
+                    ? "控制已暂停，请点击重试控制"
+                    : "仅查看画面"
+              }
               draggable={false}
               onMouseMove={(e) => {
                 const p = point(e);
