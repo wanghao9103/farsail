@@ -37,6 +37,15 @@ const fs = require("node:fs");
     ctx.fillStyle = "white";
     ctx.font = "26px sans-serif";
     ctx.fillText("Synthetic remote desktop", 40, 80);
+    for (const [x, y, color] of [
+      [0, 0, "#c84943"],
+      [736, 0, "#418de0"],
+      [0, 386, "#e3b94f"],
+      [736, 386, "#a05fd3"],
+    ]) {
+      ctx.fillStyle = color;
+      ctx.fillRect(x, y, 64, 64);
+    }
     const jpeg = Uint8Array.from(
       atob(canvas.toDataURL("image/jpeg").split(",")[1]),
       (c) => c.charCodeAt(0),
@@ -195,6 +204,53 @@ const fs = require("node:fs");
   );
   assert(await page.getByAltText("远端桌面").isVisible());
   await page.evaluate(() => (window.fixture.heartbeat = true));
+  const verifyFillPixels = async () => {
+    await page.mouse.move(400, 300);
+    await page.locator(".viewer-toolbar").waitFor({ state: "hidden" });
+    await page.getByAltText("远端桌面").evaluate((img) => img.decode());
+    const area = await page.locator(".remote-screen").boundingBox();
+    const points = [
+      [0.03, 0.03],
+      [0.97, 0.03],
+      [0.03, 0.97],
+      [0.97, 0.97],
+    ].map(([x, y]) => [
+      Math.round(area.x + area.width * x),
+      Math.round(area.y + area.height * y),
+    ]);
+    const png = (await page.screenshot()).toString("base64");
+    const pixels = await page.evaluate(
+      async ({ png, points }) => {
+        const bytes = Uint8Array.from(atob(png), (c) => c.charCodeAt(0));
+        const bitmap = await createImageBitmap(
+          new Blob([bytes], { type: "image/png" }),
+        );
+        const canvas = document.createElement("canvas");
+        canvas.width = bitmap.width;
+        canvas.height = bitmap.height;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(bitmap, 0, 0);
+        const colors = points.map(([x, y]) =>
+          [...ctx.getImageData(x, y, 1, 1).data].slice(0, 3),
+        );
+        bitmap.close();
+        return colors;
+      },
+      { png, points },
+    );
+    const expected = [
+      [200, 73, 67],
+      [65, 141, 224],
+      [227, 185, 79],
+      [160, 95, 211],
+    ];
+    pixels.forEach((rgb, i) =>
+      assert(
+        rgb.every((v, j) => Math.abs(v - expected[i][j]) < 20),
+        "all source corners must reach viewport corners without blank bands or cropping",
+      ),
+    );
+  };
   for (const size of [
     { width: 640, height: 420 },
     { width: 1920, height: 1080 },
@@ -213,22 +269,106 @@ const fs = require("node:fs");
       ),
       false,
     );
+    await verifyFillPixels();
   }
+  await page.setViewportSize({ width: 900, height: 1200 });
+  await verifyFillPixels();
+  fs.mkdirSync(".local/ui-verification", { recursive: true });
+  await page.screenshot({
+    path: ".local/ui-verification/viewer-fill-tall.png",
+  });
+  await page.getByRole("button", { name: "显示工具栏", exact: true }).click();
+  await page.getByText("全屏切换", { exact: true }).click();
+  await page.setViewportSize({ width: 1920, height: 1080 });
+  await verifyFillPixels();
+  await page.screenshot({
+    path: ".local/ui-verification/viewer-fill-wide.png",
+  });
+  await page.getByRole("button", { name: "显示工具栏", exact: true }).click();
+  await page.getByText("全屏切换", { exact: true }).click();
   await page.setViewportSize({ width: 1200, height: 800 });
+  await verifyFillPixels();
+  const filled = await page.getByAltText("远端桌面").boundingBox();
+  const beforeFillClick = await page.evaluate(
+    () =>
+      window.fixture.calls.filter(
+        (c) => c.cmd === "remote_input" && c.args.input?.kind === "button",
+      ).length,
+  );
+  await page.mouse.click(
+    filled.x + filled.width * 0.25,
+    filled.y + filled.height * 0.75,
+  );
+  await page.waitForFunction(
+    (before) =>
+      window.fixture.calls.filter(
+        (c) => c.cmd === "remote_input" && c.args.input?.kind === "button",
+      ).length > before,
+    beforeFillClick,
+  );
+  const mappedFill = await page.evaluate(
+    () =>
+      window.fixture.calls
+        .filter(
+          (c) => c.cmd === "remote_input" && c.args.input?.kind === "button",
+        )
+        .at(-1).args.input,
+  );
+  assert(
+    Math.abs(mappedFill.x - 0.25) < 0.005 &&
+      Math.abs(mappedFill.y - 0.75) < 0.005,
+    "fill coordinates must follow independent axis scaling",
+  );
+  await page.getByRole("button", { name: "显示工具栏", exact: true }).click();
+  await page.getByText("更多操作", { exact: true }).click();
+  assert.equal(
+    await page
+      .getByRole("button", { name: "铺满窗口", exact: true })
+      .getAttribute("aria-pressed"),
+    "true",
+  );
+  await page.getByRole("button", { name: "保持比例", exact: true }).click();
+  await page.getByText("更多操作", { exact: true }).click();
+  await page.mouse.move(400, 300);
+  await page.locator(".viewer-toolbar").waitFor({ state: "hidden" });
+  const buttonCount = await page.evaluate(
+    () =>
+      window.fixture.calls.filter(
+        (c) => c.cmd === "remote_input" && c.args.input?.kind === "button",
+      ).length,
+  );
+  await page.mouse.click(200, 50);
+  assert.equal(
+    await page.evaluate(
+      () =>
+        window.fixture.calls.filter(
+          (c) => c.cmd === "remote_input" && c.args.input?.kind === "button",
+        ).length,
+    ),
+    buttonCount,
+    "letterbox must not inject clicks",
+  );
   const paint = await page.getByAltText("远端桌面").boundingBox();
   const scale = Math.min(paint.width / 800, paint.height / 450);
+  const beforeContainClick = await page.evaluate(
+    () => window.fixture.calls.length,
+  );
   await page.mouse.click(
     paint.x + (paint.width - 800 * scale) / 2 + 800 * scale * 0.25,
     paint.y + (paint.height - 450 * scale) / 2 + 450 * scale * 0.75,
   );
-  await page.waitForFunction(() =>
-    window.fixture.calls.some(
-      (c) =>
-        c.cmd === "remote_input" &&
-        c.args.input?.kind === "button" &&
-        Math.abs(c.args.input.x - 0.25) < 0.005 &&
-        Math.abs(c.args.input.y - 0.75) < 0.005,
-    ),
+  await page.waitForFunction(
+    (before) =>
+      window.fixture.calls
+        .slice(before)
+        .some(
+          (c) =>
+            c.cmd === "remote_input" &&
+            c.args.input?.kind === "button" &&
+            Math.abs(c.args.input.x - 0.25) < 0.005 &&
+            Math.abs(c.args.input.y - 0.75) < 0.005,
+        ),
+    beforeContainClick,
   );
   await page.getByAltText("远端桌面").click();
   assert.equal(
@@ -354,10 +494,22 @@ const fs = require("node:fs");
     ),
     0,
   );
+  await load();
+  assert(
+    await page.locator(".viewer-window:not(.viewer-fill)").count(),
+    "aspect preference should survive reconnect/reload",
+  );
+  await page.getByText("更多操作", { exact: true }).click();
+  await page.getByRole("button", { name: "铺满窗口", exact: true }).click();
+  await load();
+  assert(
+    await page.locator(".viewer-fill").count(),
+    "fill preference should survive reconnect/reload",
+  );
   assert.deepEqual(errors, []);
   await browser.close();
   console.log(
-    "PASS custom titlebar/fullscreen; adaptive 720p/2K/4K and legacy capability; static FPS/stalled updates; compact viewer at 640/1200/1920 widths; on-demand tools; letterbox pointer mapping; pause/retry; terminal cleanup; read-only input. Synthetic IPC only.",
+    "PASS screenshot corner coverage in fill mode for wide/tall/fullscreen/restored windows; fill and letterbox coordinates/blank rejection; fit preference retention; custom titlebar/fullscreen; adaptive 2K/4K; FPS/pause/terminal/read-only regressions. Synthetic IPC only.",
   );
 })().catch((e) => {
   console.error(e);

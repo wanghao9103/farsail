@@ -2303,6 +2303,22 @@ function Viewer({
   const [autoQuality, setAutoQuality] = useState(true);
   const [viewportEdge, setViewportEdge] = useState(0);
   const [fullscreen, setFullscreen] = useState(false);
+  const [fitMode, setFitMode] = useState<"fill" | "contain">(() => {
+    try {
+      return localStorage.getItem("farsail.viewer.fit") === "contain"
+        ? "contain"
+        : "fill";
+    } catch {
+      return "fill";
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem("farsail.viewer.fit", fitMode);
+    } catch {
+      /* Session choice remains usable if storage is unavailable. */
+    }
+  }, [fitMode]);
   const windowAction = (action: string) =>
     void invoke<{ fullscreen?: boolean }>("viewer_window_action", { action })
       .then((s) => {
@@ -2623,15 +2639,15 @@ function Viewer({
       rect.width / picture.width,
       rect.height / picture.height,
     );
-    const w = picture.width * scale,
-      h = picture.height * scale;
+    const w = fitMode === "fill" ? rect.width : picture.width * scale,
+      h = fitMode === "fill" ? rect.height : picture.height * scale;
     const x = (e.clientX - rect.left - (rect.width - w) / 2) / w;
     const y = (e.clientY - rect.top - (rect.height - h) / 2) / h;
     return x >= 0 && x <= 1 && y >= 0 && y <= 1 ? { x, y } : null;
   };
   return (
     <section
-      className={`viewer-window ${showToolbar ? "tools-visible" : ""} ${fullscreen ? "viewer-fullscreen" : ""}`}
+      className={`viewer-window ${fitMode === "fill" ? "viewer-fill" : ""} ${showToolbar ? "tools-visible" : ""} ${fullscreen ? "viewer-fullscreen" : ""}`}
       onMouseMove={(e) => {
         if (e.clientY <= (fullscreen ? 10 : 46) && !e.buttons)
           setToolbarVisible(true);
@@ -2797,6 +2813,40 @@ function Viewer({
                   />
                   保持工具栏显示
                 </label>
+                <div className="viewer-fit-settings">
+                  <strong>画面显示</strong>
+                  <div
+                    className="section-switcher"
+                    role="group"
+                    aria-label="画面显示方式"
+                  >
+                    {(
+                      [
+                        ["fill", "铺满窗口"],
+                        ["contain", "保持比例"],
+                      ] as const
+                    ).map(([mode, label]) => (
+                      <button
+                        type="button"
+                        key={mode}
+                        className={fitMode === mode ? "active" : ""}
+                        aria-pressed={fitMode === mode}
+                        onClick={() => {
+                          generation.current++;
+                          send(null);
+                          setFitMode(mode);
+                        }}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="hint">
+                    {fitMode === "fill"
+                      ? "完整画面铺满窗口；两端比例不同时会拉伸。"
+                      : "保持远端原始比例；两端比例不同时会留边。"}
+                  </p>
+                </div>
                 <div className="viewer-connection-info">
                   <strong>连接信息</strong>
                   <p className="muted">

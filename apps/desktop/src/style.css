@@ -2037,6 +2037,15 @@ main > .alert {
   height: 100%;
   object-fit: contain;
 }
+.viewer-fill .remote-screen img {
+  object-fit: fill;
+}
+.viewer-fit-settings {
+  margin-bottom: 16px;
+}
+.viewer-fit-settings .section-switcher {
+  margin: 8px 0;
+}
 .viewer-window .remote-screen:focus {
   outline: 2px solid #69d8b3;
   outline-offset: -2px;
