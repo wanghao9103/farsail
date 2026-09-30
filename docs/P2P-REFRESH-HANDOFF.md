@@ -47,3 +47,7 @@ Write set: `crates/transport/src/lib.rs`, `crates/transport/Cargo.toml` if neede
 
 ## Handoff status
 No product changes made yet for P2P-019; candidate refresh API not yet verified. Parent stops writing after this handoff commit. All prior diagnostic processes ended; only local probe source/results and build caches remain. Take exclusive responsibility for this write set and carry to verified delivery; do not ask routine permission already authorized above.
+
+## Completed successor delivery (2026-09-30)
+
+P2P-019 source `5c261c5578635bbe6174b209ff6bfbb0b0d588f6` implements bounded original-endpoint refresh, relay-session maintenance, prompt watched-address publication and public scheduling status. Local regression, exact-source CI/install and four anonymous public asset hash checks passed; [0.1.9 release](https://github.com/wanghao9103/farsail/releases/tag/windows-preview-0.1.9-5c261c5). The final evidence, precise write set and physical cross-NAT migration limitation are authoritative in [WI-P2P-019](verification/WI-P2P-019.md). All owned test processes are stopped. Primary WIP/server/production profiles/credentials were not modified; no messages were sent to other chats. Continue in this existing managed checkout, not the old primary.

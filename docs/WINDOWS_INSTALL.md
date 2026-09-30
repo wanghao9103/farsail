@@ -1,14 +1,16 @@
 # Windows x64 预览安装与双机联调
 
-FarSail 0.1.8 是支持自动适配与 720p/1080p/2K/4K 档位的 JPEG 查看/鼠标键盘控制预览。远程窗口默认最大化，使用与客户端一致的深色标题栏，全屏时隐藏；工具栏自动隐藏，移到顶部或点击显示入口可展开，并可固定显示。默认完整画面铺满可用区域，比例不同时会拉伸；“更多操作 → 画面显示”可选择保持比例（有意留边），选择会保留，鼠标坐标同步。编码不放大源显示器、不修改远端系统分辨率。需要 Windows 10/11 x64 的普通交互桌面；不需要安装 Rust、Node 或开发工具。文件传输、HEVC、自适应视频码率和手机端尚未交付。安全桌面、UAC 和无人登录桌面不支持。服务器真实 CA、跨 NAT 和两台家用电脑的效果须另行验收。
+FarSail 0.1.9 是支持自动适配与 720p/1080p/2K/4K 档位的 JPEG 查看/鼠标键盘控制预览。远程窗口默认最大化，使用与客户端一致的深色标题栏，全屏时隐藏；工具栏自动隐藏，移到顶部或点击显示入口可展开，并可固定显示。默认完整画面铺满可用区域，比例不同时会拉伸；“更多操作 → 画面显示”可选择保持比例（有意留边），选择会保留，鼠标坐标同步。编码不放大源显示器、不修改远端系统分辨率。需要 Windows 10/11 x64 的普通交互桌面；不需要安装 Rust、Node 或开发工具。文件传输、HEVC、自适应视频码率和手机端尚未交付。安全桌面、UAC 和无人登录桌面不支持。
+
+新连接前主动刷新发现，中继会话定时重试直连，地址变化及时上报；刷新保留原会话和画面。窗口会显示正在尝试直连、定时重试或强制中继。真实回环 QAD 失败→恢复和持续认证传帧通过；两台物理电脑在网络修复后同一会话中继→直连仍需现场验收，不能保证所有 NAT 可直连。
 
 ## 下载与安装
 
-当前固定预发布：[下载安装包](https://github.com/wanghao9103/farsail/releases/download/windows-preview-0.1.8-0f43f10/FarSail_0.1.8_x64-setup.exe)、[SHA256SUMS.txt](https://github.com/wanghao9103/farsail/releases/download/windows-preview-0.1.8-0f43f10/SHA256SUMS.txt)，其余元数据见 [发布页](https://github.com/wanghao9103/farsail/releases/tag/windows-preview-0.1.8-0f43f10)。源码 SHA、安装包 SHA256 和安装验证证据见 [VIEWER-018](verification/WI-VIEWER-018.md)。同时下载 `FarSail_0.1.8_x64-setup.exe`、`SHA256SUMS.txt`、`release-metadata.json`。PowerShell 在下载目录执行：
+当前固定预发布：[下载安装包](https://github.com/wanghao9103/farsail/releases/download/windows-preview-0.1.9-5c261c5/FarSail_0.1.9_x64-setup.exe)、[SHA256SUMS.txt](https://github.com/wanghao9103/farsail/releases/download/windows-preview-0.1.9-5c261c5/SHA256SUMS.txt)，其余元数据见 [发布页](https://github.com/wanghao9103/farsail/releases/tag/windows-preview-0.1.9-5c261c5)。源码 SHA、安装包 SHA256 和安装验证证据见 [P2P-019](verification/WI-P2P-019.md)。同时下载 `FarSail_0.1.9_x64-setup.exe`、`SHA256SUMS.txt`、`release-metadata.json`。PowerShell 在下载目录执行：
 
 ```powershell
 $expected = ((Get-Content ./SHA256SUMS.txt -Raw).Trim() -split '\s+')[0]
-$actual = (Get-FileHash ./FarSail_0.1.8_x64-setup.exe -Algorithm SHA256).Hash
+$actual = (Get-FileHash ./FarSail_0.1.9_x64-setup.exe -Algorithm SHA256).Hash
 if ($actual -ine $expected) { throw 'SHA256 mismatch: do not install' }
 ```
 
@@ -35,7 +37,7 @@ if ($actual -ine $expected) { throw 'SHA256 mismatch: do not install' }
 
 ## 升级、卸载与凭据
 
-查看/控制端升级到 0.1.8 即可使用铺满/保持比例显示；2K/4K 档位和静止画面保活仍需两端至少 0.1.7，较旧端仅有 720p/1080p 档位。已部署的 4252 服务端兼容此客户端，无需重新部署、初始化或重置密钥。先关闭 FarSail 再安装新版本。应用标识维持 `app.farsail.desktop`；原生配置和 DPAPI 加密凭据保存在当前 Windows 用户的 `%LOCALAPPDATA%\app.farsail.desktop`。重装和默认卸载保留该目录。卸载界面若显示删除应用数据选项，请保持未勾选以保留凭据。若希望撤销登录，先在应用内退出；卸载本身不等于服务端撤销会话。不要把该目录复制给其他人或上传。
+建议两端升级到 0.1.9，使双方都能主动、有界刷新发现；后续网络恢复不需为重新发现而重启客户端。查看端至少 0.1.8 可使用铺满/保持比例显示；2K/4K 档位和静止画面保活仍需两端至少 0.1.7，较旧端仅有 720p/1080p 档位。已部署的 4252 服务端兼容此客户端，无需重新部署、初始化或重置密钥。先关闭 FarSail 再安装新版本。应用标识维持 `app.farsail.desktop`；原生配置和 DPAPI 加密凭据保存在当前 Windows 用户的 `%LOCALAPPDATA%\app.farsail.desktop`。重装和默认卸载保留该目录。卸载界面若显示删除应用数据选项，请保持未勾选以保留凭据。若希望撤销登录，先在应用内退出；卸载本身不等于服务端撤销会话。不要把该目录复制给其他人或上传。
 
 ## 开发者复现
 
