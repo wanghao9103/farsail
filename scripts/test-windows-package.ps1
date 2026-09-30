@@ -32,8 +32,8 @@ function Find-UI([string]$Name, [string]$Type = '') {
         }
         Start-Sleep -Milliseconds 500
     } while ([DateTime]::UtcNow -lt $until)
-    # Only names from this synthetic, signed-out app window, never the desktop.
-    $items | ForEach-Object { "$($_.Current.ControlType.ProgrammaticName): $($_.Current.Name)" } | Write-Output
+    # Only accessibility names from this own synthetic app window, never the desktop.
+    $items | ForEach-Object { Write-Host "$($_.Current.ControlType.ProgrammaticName): $($_.Current.Name)" }
     throw "UI element not found: $Name ($Type)"
 }
 function Click-UI([string]$Name) {
@@ -134,8 +134,10 @@ try {
     Click-UI '登录'
     $null=Find-UI '*还没有设备*'
     Click-UI '*总览'
+    # Wait for the actual form; the device page has an identically named navigation button.
+    Set-UIValue '本机设备名称' 'Synthetic sharing fixture'
     Click-UI '添加这台电脑'
-    $null=Find-UI '*这台电脑已添加*'
+    $null=Find-UI 'Synthetic sharing fixture'
     Close-App
     $preferencePath=Join-Path $profileDir 'sharing-preferences.bin'
     $saved=[ordered]@{version=1;scope=@{server=$fixture.server;owner=$fixture.owner;device=$fixture.device;session=$fixture.session};sharing=$true;watch=$true}

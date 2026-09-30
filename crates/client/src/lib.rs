@@ -760,11 +760,7 @@ impl NativeClient {
             };
         }
         if matches!(op, "login" | "bind" | "unbind_device" | "password") {
-            if op != "unbind_device" {
-                self.forget_sharing_preferences()?;
-            } else {
-                self.cancel_sharing_restore();
-            }
+            self.cancel_sharing_restore();
             self.stop_transport().await;
         }
         if op == "revoke_remote"
@@ -923,6 +919,7 @@ impl NativeClient {
                     owner_id: owner,
                     session_id: s.login.as_ref().unwrap().session_id.clone(),
                 };
+                self.forget_sharing_preferences()?;
                 self.store
                     .write("device-token", &serde_json::to_vec(&credential).unwrap())?;
                 s.device = Some(credential);

@@ -85,6 +85,32 @@ struct Fixture {
     address_status: Arc<AtomicU16>,
     owner: Arc<std::sync::Mutex<String>>,
 }
+#[tokio::test]
+async fn failed_identity_mutation_keeps_same_identity_intent() {
+    let f = Fixture::new(Arc::new(Store::default())).await;
+    let c = f.remember().await;
+    // The fixture rejects these mutations. Cancellation stops activity, but no identity changed.
+    assert!(
+        c.call(
+            "password",
+            json!({"current_password":"synthetic","new_password":"synthetic"})
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(c.public_state().await["sharePreferences"]["watch"], true);
+    assert!(c.call("bind", json!({"name":"synthetic"})).await.is_err());
+    assert_eq!(c.public_state().await["sharePreferences"]["sharing"], true);
+    assert!(
+        c.call("login", json!({"email":"synthetic","password":"synthetic"}))
+            .await
+            .is_err()
+    );
+    assert_eq!(c.public_state().await["sharePreferences"]["watch"], true);
+    let next = f.client();
+    next.restore_sharing(|| Ok(())).await.unwrap();
+    next.stop_transport().await;
+}
 impl Drop for Fixture {
     fn drop(&mut self) {
         self.server.abort();

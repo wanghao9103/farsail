@@ -48,7 +48,7 @@ async fn call(
     ) {
         viewer::cancel_all(window.app_handle());
         // Cancel remembered permission before awaiting runtime cleanup.
-        let preference = if op == "unbind_device" {
+        let preference = if op != "logout" {
             client.cancel_sharing_restore();
             Ok(())
         } else {
