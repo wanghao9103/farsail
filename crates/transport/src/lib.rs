@@ -21,6 +21,9 @@ use tokio::sync::Mutex;
 pub const ALPN: &[u8] = b"farsail/session/1";
 const TIMEOUT: Duration = Duration::from_secs(10);
 const MEDIA_TIMEOUT: Duration = Duration::from_millis(400);
+fn media_timeout(bytes: usize) -> Duration {
+    MEDIA_TIMEOUT + Duration::from_millis((bytes.saturating_sub(1_000_000) / 1000).min(3600) as u64)
+}
 const LIMIT: usize = 4096;
 #[cfg(test)]
 const LEASE_POLL: Duration = Duration::from_secs(1);
@@ -387,7 +390,7 @@ impl Channel {
     fn max(self) -> usize {
         match self {
             Self::Control => 64 * 1024,
-            Self::Media => 1024 * 1024,
+            Self::Media => 4_000_000 + 49,
             Self::File => 256 * 1024,
         }
     }
@@ -580,7 +583,7 @@ impl Session {
             return Err(Error::Frame);
         }
         let timeout = if frame.channel == Channel::Media {
-            MEDIA_TIMEOUT
+            media_timeout(frame.bytes.len())
         } else {
             TIMEOUT
         };
@@ -641,7 +644,7 @@ impl Session {
         }
         let mut bytes = vec![0; size];
         let read_timeout = if channel == Channel::Media {
-            MEDIA_TIMEOUT
+            media_timeout(size)
         } else {
             TIMEOUT
         };
@@ -819,6 +822,42 @@ mod tests {
             stalled: AtomicBool::new(false),
         });
         (source, target, authority)
+    }
+    #[tokio::test]
+    async fn bounded_4k_payload_can_cross_authenticated_media_channel() {
+        let (source, target, auth) = pair().await;
+        let host = tokio::spawn({
+            let target = target.clone();
+            let auth = auth.clone();
+            async move { target.accept(auth).await.unwrap() }
+        });
+        let src = source
+            .connect(target.addr(), "test-session", RemotePermission::View, auth)
+            .await
+            .unwrap();
+        let dst = host.await.unwrap();
+        let payload = vec![73; Channel::Media.max()];
+        let (sent, received) = tokio::join!(
+            src.send(Frame {
+                channel: Channel::Media,
+                bytes: payload.clone()
+            }),
+            dst.receive()
+        );
+        sent.unwrap();
+        assert_eq!(received.unwrap().bytes, payload);
+        assert!(
+            src.send(Frame {
+                channel: Channel::Media,
+                bytes: vec![0; Channel::Media.max() + 1]
+            })
+            .await
+            .is_err()
+        );
+        src.close();
+        dst.close();
+        source.close().await;
+        target.close().await;
     }
     #[tokio::test]
     async fn direct_authenticated_frames_renewal_and_revocation() {
@@ -1161,9 +1200,9 @@ mod tests {
             .unwrap();
         let dst = host.await.unwrap();
         let mut raw = src.conn.open_uni().await.unwrap();
-        raw.write_all(&[1, 2, 0x00, 0x10, 0x00, 0x01])
-            .await
-            .unwrap(); // media size > 1 MiB
+        let mut header = vec![1, Channel::Media.tag()];
+        header.extend_from_slice(&((Channel::Media.max() + 1) as u32).to_be_bytes());
+        raw.write_all(&header).await.unwrap();
         raw.finish().unwrap();
         assert!(matches!(dst.receive().await, Err(Error::Frame)));
         assert!(!dst.is_open().await);

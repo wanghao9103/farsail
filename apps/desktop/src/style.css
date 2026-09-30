@@ -1846,11 +1846,18 @@ main > .alert {
 
 /* Native viewer owns the full client area; connection details stay collapsed. */
 .viewer-window {
+  --viewer-title-height: 36px;
   position: relative;
   height: 100dvh;
-  padding: 0;
+  padding: var(--viewer-title-height) 0 0;
   background: #101719;
   color: #e5efec;
+}
+.viewer-fullscreen {
+  --viewer-title-height: 0px;
+}
+.viewer-titlebar {
+  z-index: 40;
 }
 .viewer-body {
   height: 100%;
@@ -1862,7 +1869,7 @@ main > .alert {
 }
 .viewer-toolbar {
   position: absolute;
-  inset: 0 0 auto;
+  inset: var(--viewer-title-height) 0 auto;
   z-index: 30;
   opacity: 0;
   visibility: hidden;
@@ -1888,7 +1895,7 @@ main > .alert {
 .viewer-reveal {
   position: absolute;
   z-index: 31;
-  top: 0;
+  top: var(--viewer-title-height);
   left: 50%;
   transform: translateX(-50%);
   border: 1px solid #405b6a;

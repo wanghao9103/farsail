@@ -35,12 +35,14 @@ pub struct Windows(pub Mutex<HashMap<String, Arc<Binding>>>);
 pub async fn viewer_window_action(
     window: tauri::WebviewWindow,
     action: String,
-) -> Result<(), String> {
+) -> Result<Value, String> {
     if !window.label().starts_with("viewer-") {
         return Err("不是查看窗口".into());
     }
     let result = match action.as_str() {
         "minimize" => window.minimize(),
+        "drag" => window.start_dragging(),
+        "state" => Ok(()),
         "maximize" => {
             if window.is_maximized().map_err(|e| e.to_string())? {
                 window.unmaximize()
@@ -48,11 +50,21 @@ pub async fn viewer_window_action(
                 window.maximize()
             }
         }
-        "fullscreen" => window.set_fullscreen(!window.is_fullscreen().map_err(|e| e.to_string())?),
+        "fullscreen" => {
+            let fullscreen = !window.is_fullscreen().map_err(|e| e.to_string())?;
+            window
+                .set_fullscreen(fullscreen)
+                .map_err(|e| e.to_string())?;
+            return Ok(json!({"fullscreen":fullscreen}));
+        }
         "close" => window.close(),
         _ => return Err("invalid window action".into()),
     };
-    result.map_err(|e| e.to_string())
+    result.map_err(|e| e.to_string())?;
+    if action == "close" {
+        return Ok(json!({}));
+    }
+    Ok(json!({"fullscreen":window.is_fullscreen().map_err(|e|e.to_string())?}))
 }
 
 pub fn main_only(window: &tauri::WebviewWindow) -> Result<(), String> {
@@ -131,6 +143,7 @@ pub async fn viewer_open(window: tauri::WebviewWindow, id: String) -> Result<(),
     .inner_size(1200.0, 800.0)
     .min_inner_size(640.0, 420.0)
     .maximized(true)
+    .decorations(false)
     .on_navigation(|url| {
         let origin = (url.scheme() == "tauri" && url.host_str() == Some("localhost"))
             || (url.scheme() == "http" && url.host_str() == Some("tauri.localhost"))
@@ -175,6 +188,7 @@ pub fn smoke_setup(app: &tauri::AppHandle) -> tauri::Result<()> {
     .title("FarSail isolated viewer test")
     .inner_size(1000.0, 700.0)
     .maximized(true)
+    .decorations(false)
     .build()?;
     Ok(())
 }
@@ -191,6 +205,7 @@ pub fn smoke_probe(webview: &tauri::Webview) {
       try {
         const initial=await invoke('ipc_viewer_state');
         if(!initial.maximized) throw Error('viewer did not open maximized');
+        if(initial.decorations || !document.querySelector('.viewer-titlebar')) throw Error('custom titlebar missing');
         for(const [cmd,args] of [['state',{}],['call',{op:'admin_users',args:{}}],['set_server',{server:'http://127.0.0.1:1'}],['share_enable',{}],['remote_watch',{enabled:true}],['remote_input',{id:'other',input:null}],['media_profile',{id:'other',profile:1}],['transport_connect',{id:'other',permission:'view'}],['plugin:window|close',{label:'main'}]]) {
           let blocked=false; try { await invoke(cmd,args); } catch { blocked=true; }
           if(!blocked) throw Error('unexpected permission: '+cmd); denied.push(cmd);
@@ -203,11 +218,15 @@ pub fn smoke_probe(webview: &tauri::Webview) {
         await new Promise(r=>setTimeout(r,300));
         const maximized=await invoke('ipc_viewer_state');
         if(!maximized.maximized) throw Error('maximize failed');
-        await invoke('viewer_window_action',{action:'fullscreen'});
+        const toggleFullscreen=()=>[...document.querySelectorAll('button')].find(b=>b.textContent==='全屏切换').click();
+        toggleFullscreen();
         await new Promise(r=>setTimeout(r,300));
         const fullscreen=await invoke('ipc_viewer_state');
         if(!fullscreen.fullscreen) throw Error('fullscreen failed');
-        await invoke('viewer_window_action',{action:'fullscreen'});
+        if(document.querySelector('.viewer-titlebar')) throw Error('titlebar should hide in fullscreen');
+        toggleFullscreen();
+        await new Promise(r=>setTimeout(r,300));
+        if(!document.querySelector('.viewer-titlebar')) throw Error('titlebar should return after fullscreen');
         await invoke('viewer_window_action',{action:'minimize'});
         await new Promise(r=>setTimeout(r,300));
         const minimized=await invoke('ipc_viewer_state');
@@ -222,7 +241,7 @@ pub fn smoke_probe(webview: &tauri::Webview) {
 #[tauri::command]
 pub fn ipc_viewer_state(window: tauri::WebviewWindow) -> Result<Value, String> {
     Ok(
-        json!({"maximized":window.is_maximized().map_err(|e|e.to_string())?,"fullscreen":window.is_fullscreen().map_err(|e|e.to_string())?,"minimized":window.is_minimized().map_err(|e|e.to_string())?,"mainExists":window.app_handle().get_webview_window("main").is_some()}),
+        json!({"decorations":window.is_decorated().map_err(|e|e.to_string())?,"maximized":window.is_maximized().map_err(|e|e.to_string())?,"fullscreen":window.is_fullscreen().map_err(|e|e.to_string())?,"minimized":window.is_minimized().map_err(|e|e.to_string())?,"mainExists":window.app_handle().get_webview_window("main").is_some()}),
     )
 }
 pub fn cancel(app: &tauri::AppHandle, label: &str) -> Option<String> {

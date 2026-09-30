@@ -43,7 +43,7 @@ impl VideoProfile {
         bytes
     }
     fn parse(bytes: &[u8], tag: &[u8; 4]) -> Option<Self> {
-        if bytes.len() != 13 || &bytes[..4] != tag || bytes[12] > 1 {
+        if bytes.len() != 13 || &bytes[..4] != tag || bytes[12] > 3 {
             return None;
         }
         Some(Self {
@@ -138,6 +138,7 @@ struct Live {
     video_profile: Arc<StdMutex<VideoProfile>>,
     video_request: AtomicU64,
     video_supported: AtomicBool,
+    video_max_profile: AtomicU32,
     displays: Arc<StdMutex<Vec<Display>>>,
     error: Arc<StdMutex<Option<String>>>,
     frame: watch::Receiver<Option<Vec<u8>>>,
@@ -206,6 +207,7 @@ impl RemoteRuntime {
             video_profile: Arc::new(StdMutex::new(VideoProfile::default())),
             video_request: AtomicU64::new(0),
             video_supported: AtomicBool::new(false),
+            video_max_profile: AtomicU32::new(1),
             displays: Arc::new(StdMutex::new(Vec::new())),
             error: Arc::new(StdMutex::new(None)),
             frame: rx,
@@ -288,6 +290,13 @@ impl RemoteRuntime {
             .session
             .send(Frame {
                 channel: Channel::Media,
+                bytes: b"FSV1\x03".to_vec(),
+            })
+            .await;
+        let _ = live
+            .session
+            .send(Frame {
+                channel: Channel::Media,
                 bytes: initial_profile.packet(b"FSP1"),
             })
             .await;
@@ -305,6 +314,8 @@ impl RemoteRuntime {
             let mut last_id = 0;
             let mut last_profile = u8::MAX;
             let mut sequence = 0;
+            let mut last_frame: Option<JpegFrame> = None;
+            let mut last_emit = std::time::Instant::now();
             while alive.load(Ordering::SeqCst) {
                 let id = selected.load(Ordering::SeqCst);
                 let profile = video_profile.lock().unwrap().profile;
@@ -312,6 +323,7 @@ impl RemoteRuntime {
                     *current.lock().unwrap() = None;
                     let version = layout.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
                     drop(capture.take());
+                    last_frame = None;
                     capture = match Capture::new_with_profile(id, profile) {
                         Ok(c) => {
                             *current.lock().unwrap() = Some((c.display().clone(), version));
@@ -332,6 +344,8 @@ impl RemoteRuntime {
                         Ok(Some(frame)) => match frame.to_wire() {
                             Ok(bytes) => {
                                 tx.send_replace(Some(bytes));
+                                last_frame = Some(frame);
+                                last_emit = std::time::Instant::now();
                             }
                             Err(e) => {
                                 *error.lock().unwrap() = Some(e.to_string());
@@ -339,7 +353,20 @@ impl RemoteRuntime {
                                 break;
                             }
                         },
-                        Ok(None) => (),
+                        Ok(None) => {
+                            if last_emit.elapsed() >= Duration::from_secs(1)
+                                && let Some(frame) = last_frame.as_mut()
+                            {
+                                frame.meta.sequence = sequence;
+                                frame.meta.captured_ms = SystemTime::now()
+                                    .duration_since(UNIX_EPOCH)
+                                    .map_or(0, |time| time.as_millis() as u64);
+                                if let Ok(bytes) = frame.to_wire() {
+                                    tx.send_replace(Some(bytes));
+                                    last_emit = std::time::Instant::now();
+                                }
+                            }
+                        }
                         Err(e) => {
                             *error.lock().unwrap() = Some(e.to_string());
                             worker_failed.store(true, Ordering::SeqCst);
@@ -347,7 +374,7 @@ impl RemoteRuntime {
                         }
                     }
                 }
-                std::thread::sleep(Duration::from_millis(180));
+                std::thread::sleep(Duration::from_millis(66));
             }
         });
         let sender_live = live.clone();
@@ -373,7 +400,12 @@ impl RemoteRuntime {
                         .duration_since(UNIX_EPOCH)
                         .map_or(u64::MAX, |t| t.as_millis() as u64)
                         .saturating_sub(frame.meta.captured_ms);
-                    if age > 700 && missed == 0 {
+                    let max_age = if frame.meta.width.max(frame.meta.height) > 1920 {
+                        2000
+                    } else {
+                        700
+                    };
+                    if age > max_age && missed == 0 {
                         continue 'sending;
                     }
                     let wait = budget.charge(bytes.len());
@@ -393,9 +425,14 @@ impl RemoteRuntime {
                 if sent.is_err() && !matches!(sent, Err(farsail_transport::Error::Timeout)) {
                     break;
                 }
-                if sent.is_err()
-                    || !wait_for_ack(&mut ack_rx, sequence, Duration::from_secs(2)).await
-                {
+                let ack_deadline = Duration::from_secs(
+                    if sender_live.video_profile.lock().unwrap().profile >= 2 {
+                        5
+                    } else {
+                        2
+                    },
+                );
+                if sent.is_err() || !wait_for_ack(&mut ack_rx, sequence, ack_deadline).await {
                     missed += 1;
                     if missed >= 3 {
                         sender_live.session.close_with_reason("media_timeout");
@@ -600,7 +637,10 @@ impl RemoteRuntime {
             if frame.channel != Channel::Media {
                 continue;
             }
-            if let Some(applied) = VideoProfile::parse(&frame.bytes, b"FSP1") {
+            if frame.bytes.len() == 5 && frame.bytes.starts_with(b"FSV1") && frame.bytes[4] <= 3 {
+                live.video_max_profile
+                    .store(u32::from(frame.bytes[4]), Ordering::SeqCst);
+            } else if let Some(applied) = VideoProfile::parse(&frame.bytes, b"FSP1") {
                 let mut profile = live.video_profile.lock().unwrap();
                 if applied.generation >= profile.generation
                     && applied.generation <= live.video_request.load(Ordering::SeqCst)
@@ -661,7 +701,7 @@ impl RemoteRuntime {
         let (path, rtt) = live.session.path();
         let profile = *live.video_profile.lock().unwrap();
         Ok(
-            json!({"id":id,"state":path,"rtt_ms":rtt,"permission":live.session.permission(),"sharing":live.host,"verification_code":live.session.verification_code().map_err(|e|e.to_string())?,"displays":*live.displays.lock().unwrap(),"error":*live.error.lock().unwrap(),"input":*live.input_state.lock().unwrap(),"video":{"profile":profile.profile,"generation":profile.generation,"supported":live.video_supported.load(Ordering::SeqCst)}}),
+            json!({"id":id,"state":path,"rtt_ms":rtt,"permission":live.session.permission(),"sharing":live.host,"verification_code":live.session.verification_code().map_err(|e|e.to_string())?,"displays":*live.displays.lock().unwrap(),"error":*live.error.lock().unwrap(),"input":*live.input_state.lock().unwrap(),"video":{"profile":profile.profile,"generation":profile.generation,"supported":live.video_supported.load(Ordering::SeqCst),"max_profile":live.video_max_profile.load(Ordering::SeqCst)}}),
         )
     }
     pub async fn next_frame(&self, id: &str, after: u64) -> Result<Vec<u8>, String> {
@@ -730,7 +770,10 @@ impl RemoteRuntime {
             .get(id)
             .cloned()
             .ok_or("remote session not active")?;
-        if live.host || profile > 1 || !live.video_supported.load(Ordering::SeqCst) {
+        if live.host
+            || u32::from(profile) > live.video_max_profile.load(Ordering::SeqCst)
+            || !live.video_supported.load(Ordering::SeqCst)
+        {
             return Err("被控端需更新到支持高清切换的版本".into());
         }
         let _guard = live.send_lock.lock().await;
@@ -864,7 +907,9 @@ mod tests {
         assert_eq!((decoded.generation, decoded.profile), (17, 0));
         assert!(VideoProfile::parse(&request, b"FSP1").is_none());
         let mut bad = request.clone();
-        bad[12] = 2;
+        bad[12] = 3;
+        assert_eq!(VideoProfile::parse(&bad, b"FSQ1").unwrap().profile, 3);
+        bad[12] = 4;
         assert!(VideoProfile::parse(&bad, b"FSQ1").is_none());
         let mut oversized = request;
         oversized.push(0);

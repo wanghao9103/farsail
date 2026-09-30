@@ -93,13 +93,14 @@ pub struct Capture {
     profile: u8,
 }
 fn output_size(width: usize, height: usize, profile: u8) -> Result<(usize, usize)> {
-    if width == 0 || height == 0 || profile > 1 {
+    if width == 0 || height == 0 || profile > 3 {
         return Err(Error::Geometry);
     }
-    let (long, short) = if profile == 0 {
-        (1280.0, 720.0)
-    } else {
-        (1920.0, 1080.0)
+    let (long, short) = match profile {
+        0 => (1280.0, 720.0),
+        1 => (1920.0, 1080.0),
+        2 => (2560.0, 1440.0),
+        _ => (3840.0, 2160.0),
     };
     let (max_w, max_h) = if width >= height {
         (long, short)
@@ -117,7 +118,7 @@ impl Capture {
         Self::new_with_profile(id, 1)
     }
     pub fn new_with_profile(id: u32, profile: u8) -> Result<Self> {
-        if profile > 1 {
+        if profile > 3 {
             return Err(Error::Geometry);
         }
         if id == 0 {
@@ -193,23 +194,29 @@ impl Capture {
             origin_x: self.display.x,
             origin_y: self.display.y,
         };
-        let qualities: &[u8] = if self.profile == 0 {
-            &[60, 45, 30]
-        } else {
-            &[85, 65, 45, 30]
-        };
-        for &quality in qualities {
-            match JpegFrame::encode_rgb(meta.clone(), &rgb, quality) {
-                Ok(frame) => {
-                    self.last_rgb = Some(rgb);
-                    return Ok(Some(frame));
-                }
-                Err(farsail_media::Error::TooLarge) => continue,
-                Err(e) => return Err(e.into()),
-            }
-        }
-        Err(farsail_media::Error::TooLarge.into())
+        let frame = encode_profile(meta, &rgb, self.profile)?;
+        self.last_rgb = Some(rgb);
+        Ok(Some(frame))
     }
+}
+
+fn encode_profile(meta: FrameMeta, rgb: &[u8], profile: u8) -> Result<JpegFrame> {
+    let qualities: &[u8] = if profile == 0 {
+        &[60, 45, 30]
+    } else {
+        &[85, 65, 45, 30]
+    };
+    for &quality in qualities {
+        match JpegFrame::encode_rgb(meta.clone(), rgb, quality) {
+            Ok(frame) if profile >= 2 || frame.jpeg.len() <= 1_000_000 => {
+                return Ok(frame);
+            }
+            Ok(_) => continue,
+            Err(farsail_media::Error::TooLarge) => continue,
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Err(farsail_media::Error::TooLarge.into())
 }
 
 #[derive(Default)]
@@ -523,6 +530,37 @@ fn move_to(
 mod tests {
     use super::*;
     #[test]
+    fn noisy_4k_compresses_within_limit_and_legacy_hd_stays_compatible() {
+        let mut seed = 17u32;
+        for (width, height, profile, limit) in [
+            (1920, 1080, 1, 1_000_000),
+            (3840, 2160, 3, farsail_media::MAX_BYTES),
+        ] {
+            let rgb: Vec<u8> = (0..width * height * 3)
+                .map(|_| {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 17;
+                    seed ^= seed << 5;
+                    seed as u8
+                })
+                .collect();
+            let meta = FrameMeta {
+                monitor: 1,
+                layout: 1,
+                sequence: 1,
+                captured_ms: 0,
+                width,
+                height,
+                origin_x: 0,
+                origin_y: 0,
+            };
+            let frame = encode_profile(meta.clone(), &rgb, profile).unwrap();
+            assert_eq!(frame.meta, meta);
+            assert!(frame.jpeg.len() <= limit);
+            frame.validate().unwrap();
+        }
+    }
+    #[test]
     fn hd_profile_preserves_native_1080p_and_handles_portrait_without_upscaling() {
         assert_eq!(output_size(1920, 1080, 0).unwrap(), (1280, 720));
         assert_eq!(output_size(1920, 1080, 1).unwrap(), (1920, 1080));
@@ -530,7 +568,11 @@ mod tests {
         assert_eq!(output_size(3840, 2160, 1).unwrap(), (1920, 1080));
         assert_eq!(output_size(800, 600, 1).unwrap(), (800, 600));
         assert!(output_size(0, 1080, 1).is_err());
-        assert!(output_size(1920, 1080, 2).is_err());
+        assert_eq!(output_size(3840, 2160, 2).unwrap(), (2560, 1440));
+        assert_eq!(output_size(3840, 2160, 3).unwrap(), (3840, 2160));
+        assert_eq!(output_size(2160, 3840, 3).unwrap(), (2160, 3840));
+        assert_eq!(output_size(1920, 1080, 3).unwrap(), (1920, 1080));
+        assert!(output_size(1920, 1080, 4).is_err());
     }
     #[test]
     fn absolute_mouse_coordinates_cover_negative_monitor_and_pixel_centres() {

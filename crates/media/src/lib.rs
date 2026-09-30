@@ -3,10 +3,10 @@ use serde::{Deserialize, Serialize};
 use std::io::Cursor;
 use std::time::{Duration, Instant};
 
-pub const MAX_PIXELS: u32 = 2_073_600;
-pub const MAX_BYTES: usize = 1_000_000;
+pub const MAX_PIXELS: u32 = 8_294_400;
+pub const MAX_BYTES: usize = 4_000_000;
 /// JPEG payload budget, excluding QUIC/TLS/IP headers and retransmissions.
-pub const BASELINE_PAYLOAD_BPS: u64 = 1_500_000;
+pub const BASELINE_PAYLOAD_BPS: u64 = 6_000_000;
 const HEADER: usize = 49;
 
 pub struct ByteBudget {
@@ -275,6 +275,36 @@ mod tests {
         let mut bad = frame.to_wire().unwrap();
         bad[36] = 33;
         assert!(JpegFrame::from_wire(&bad).is_err());
+    }
+    #[test]
+    fn native_2k_and_4k_roundtrip_stay_bounded() {
+        for (width, height) in [(2560, 1440), (3840, 2160)] {
+            let meta = FrameMeta {
+                monitor: 1,
+                layout: 1,
+                sequence: 1,
+                captured_ms: 1,
+                width,
+                height,
+                origin_x: 0,
+                origin_y: 0,
+            };
+            let rgb = vec![127; width as usize * height as usize * 3];
+            let frame = JpegFrame::encode_rgb(meta.clone(), &rgb, 85).unwrap();
+            let wire = frame.to_wire().unwrap();
+            let decoded = JpegFrame::from_wire(&wire).unwrap();
+            assert_eq!(decoded.meta, meta);
+            assert_eq!(decoded.decode_rgb().unwrap().len(), rgb.len());
+            assert!(wire.len() <= MAX_BYTES + HEADER);
+            let mut oversized = meta;
+            oversized.width += 1;
+            if height == 2160 {
+                assert!(JpegFrame::encode_rgb(oversized, &rgb, 85).is_err());
+            }
+        }
+        let mut budget = ByteBudget::new(BASELINE_PAYLOAD_BPS);
+        assert_eq!(budget.charge(MAX_BYTES + HEADER), Duration::ZERO);
+        assert_ne!(budget.charge(MAX_BYTES + HEADER), Duration::MAX);
     }
     #[test]
     fn payload_budget_limits_sustained_rate() {

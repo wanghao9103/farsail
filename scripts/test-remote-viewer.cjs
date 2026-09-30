@@ -20,7 +20,10 @@ const fs = require("node:fs");
       inputBlocked: false,
       inputGeneration: 0,
       staleInput: null,
-      video: { profile: 1, generation: 0, supported: true },
+      video: { profile: 1, generation: 0, supported: true, max_profile: 3 },
+      heartbeat: true,
+      lastFrame: 0,
+      fullscreen: false,
       calls: [],
       delay: false,
       release: null,
@@ -67,16 +70,23 @@ const fs = require("node:fs");
             input: reportedInput,
             rtt_ms: 23,
             displays: [
-              { id: 1, name: "Display", width: 800, height: 450, dpi: 96 },
+              { id: 1, name: "Display", width: 3840, height: 2160, dpi: 96 },
             ],
             error: f.closed ? "会话已结束，画面与输入已停止" : null,
             retryable: f.retryable,
           };
         }
         if (cmd === "media_next") {
-          if (args.after === 0 && !f.closed) return packet.buffer;
           await new Promise((r) => setTimeout(r, 150));
           if (f.closed) throw Error("closed");
+          if (
+            args.after === 0 ||
+            (f.heartbeat && Date.now() - f.lastFrame >= 1000)
+          ) {
+            v.setBigUint64(17, BigInt(args.after + 1));
+            f.lastFrame = Date.now();
+            return packet.buffer.slice(0);
+          }
           return new ArrayBuffer(0);
         }
         if (cmd === "remote_input" && f.delay) {
@@ -96,6 +106,10 @@ const fs = require("node:fs");
           f.video.generation++;
           return f.video.generation;
         }
+        if (cmd === "viewer_window_action") {
+          if (args.action === "fullscreen") f.fullscreen = !f.fullscreen;
+          return { fullscreen: f.fullscreen };
+        }
         return {};
       },
     };
@@ -105,6 +119,32 @@ const fs = require("node:fs");
     await page.getByAltText("远端桌面").waitFor();
   };
   await load();
+  assert(await page.locator(".viewer-titlebar").isVisible());
+  assert.equal(await page.getByLabel("画面分辨率").inputValue(), "-2");
+  for (const [width, profile] of [
+    [2560, 2],
+    [3840, 3],
+    [1200, 0],
+  ]) {
+    await page.setViewportSize({ width, height: 800 });
+    await page.waitForFunction(
+      (p) => window.fixture.video.profile === p,
+      profile,
+    );
+    await page
+      .getByText("正在切换画面分辨率…", { exact: true })
+      .waitFor({ state: "hidden" });
+  }
+  await page.getByLabel("画面分辨率").selectOption("3");
+  await page.waitForFunction(() => window.fixture.video.profile === 3);
+  await page
+    .getByText("正在切换画面分辨率…", { exact: true })
+    .waitFor({ state: "hidden" });
+  await page.getByLabel("画面分辨率").selectOption("2");
+  await page.waitForFunction(() => window.fixture.video.profile === 2);
+  await page
+    .getByText("正在切换画面分辨率…", { exact: true })
+    .waitFor({ state: "hidden" });
   await page.getByLabel("画面分辨率").selectOption("0");
   await page.waitForFunction(() =>
     window.fixture.calls.some(
@@ -134,9 +174,27 @@ const fs = require("node:fs");
   await page.getByText("更多操作", { exact: true }).click();
   await page.mouse.move(900, 600);
   await page.locator(".viewer-toolbar").waitFor({ state: "hidden" });
-  assert((await page.locator(".remote-screen").boundingBox()).height >= 799);
+  assert((await page.locator(".remote-screen").boundingBox()).height >= 763);
   await page.getByRole("button", { name: "显示工具栏", exact: true }).click();
   await page.locator(".viewer-toolbar").waitFor({ state: "visible" });
+  await page.getByText("全屏切换", { exact: true }).click();
+  assert.equal(await page.locator(".viewer-titlebar").count(), 0);
+  assert((await page.locator(".remote-screen").boundingBox()).height >= 799);
+  await page.getByText("全屏切换", { exact: true }).click();
+  assert(await page.locator(".viewer-titlebar").isVisible());
+  await page.waitForFunction(() =>
+    /[1-9][\d.]* 帧\/秒/.test(
+      document.querySelector(".viewer-status").textContent,
+    ),
+  );
+  await page.evaluate(() => (window.fixture.heartbeat = false));
+  await page.waitForFunction(() =>
+    document
+      .querySelector(".viewer-status")
+      .textContent.includes("画面暂未更新"),
+  );
+  assert(await page.getByAltText("远端桌面").isVisible());
+  await page.evaluate(() => (window.fixture.heartbeat = true));
   for (const size of [
     { width: 640, height: 420 },
     { width: 1920, height: 1080 },
@@ -194,7 +252,9 @@ const fs = require("node:fs");
     window.fixture.inputBlocked = true;
     window.fixture.inputGeneration++;
   });
-  await page.getByText("控制已暂停", { exact: true }).waitFor();
+  await page
+    .getByText("控制已暂停", { exact: true })
+    .waitFor({ state: "attached" });
   assert(await page.getByAltText("远端桌面").isVisible());
   assert.equal(await page.getByText("会话已结束，远端画面已清除").count(), 0);
   const blockedBefore = await page.evaluate(
@@ -212,7 +272,7 @@ const fs = require("node:fs");
   await page.getByRole("button", { name: "重试控制", exact: true }).click();
   await page
     .getByText("控制已暂停", { exact: true })
-    .waitFor({ state: "hidden" });
+    .waitFor({ state: "detached" });
   assert(await page.getByAltText("远端桌面").isVisible());
   await page.getByAltText("远端桌面").click();
   await page.keyboard.press("Z");
@@ -258,6 +318,10 @@ const fs = require("node:fs");
     0,
   );
   await load();
+  await page.evaluate(() => (window.fixture.video.max_profile = 1));
+  await page.waitForFunction(
+    () => document.querySelector('option[value="3"]').disabled,
+  );
   await page.evaluate(() => {
     window.fixture.retryable = true;
     window.fixture.closed = true;
@@ -293,7 +357,7 @@ const fs = require("node:fs");
   assert.deepEqual(errors, []);
   await browser.close();
   console.log(
-    "PASS compact viewer area at 640/1200/1920 widths; on-demand tools; letterbox pointer mapping; focus/input; pause/retry; terminal frame/queue cleanup; network retries/cancel; read-only input. Synthetic IPC only.",
+    "PASS custom titlebar/fullscreen; adaptive 720p/2K/4K and legacy capability; static FPS/stalled updates; compact viewer at 640/1200/1920 widths; on-demand tools; letterbox pointer mapping; pause/retry; terminal cleanup; read-only input. Synthetic IPC only.",
   );
 })().catch((e) => {
   console.error(e);

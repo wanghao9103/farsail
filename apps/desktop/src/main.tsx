@@ -2235,7 +2235,12 @@ type RemoteDisplay = {
   rotation: number;
 };
 type RemoteStatus = {
-  video?: { profile: number; generation: number; supported: boolean };
+  video?: {
+    profile: number;
+    generation: number;
+    supported: boolean;
+    max_profile?: number;
+  };
   input?: { generation: number; blocked: boolean; message: string | null };
   retryable?: boolean;
   state: string;
@@ -2280,7 +2285,7 @@ function Viewer({
   const [problem, setProblem] = useState("");
   const image = useRef<HTMLImageElement>(null);
   const last = useRef(0);
-  const count = useRef(0);
+  const frameTimes = useRef<number[]>([]);
   const url = useRef<string | null>(null);
   const inputQueue = useRef<Promise<unknown>>(Promise.resolve());
   const inputPending = useRef(0);
@@ -2295,6 +2300,31 @@ function Viewer({
   const toolbarTimer = useRef<number | undefined>(undefined);
   const [profileWanted, setProfileWanted] = useState<number | null>(null);
   const [profilePending, setProfilePending] = useState<number | null>(null);
+  const [autoQuality, setAutoQuality] = useState(true);
+  const [viewportEdge, setViewportEdge] = useState(0);
+  const [fullscreen, setFullscreen] = useState(false);
+  const windowAction = (action: string) =>
+    void invoke<{ fullscreen?: boolean }>("viewer_window_action", { action })
+      .then((s) => {
+        if (typeof s.fullscreen === "boolean") setFullscreen(s.fullscreen);
+      })
+      .catch((e) => setProblem(errorText(e)));
+  const requestProfile = (profile: number) => {
+    setProfileWanted(profile);
+    void invoke<number>("media_profile", { id, profile })
+      .then(setProfilePending)
+      .catch((err) => {
+        setProfileWanted(null);
+        setAutoQuality(false);
+        setProblem(errorText(err));
+      });
+  };
+  useEffect(() => {
+    const refresh = () => windowAction("state");
+    refresh();
+    window.addEventListener("resize", refresh);
+    return () => window.removeEventListener("resize", refresh);
+  }, []);
   const showToolbar = toolbarVisible || toolsOpen || toolbarPinned;
   const scheduleHide = () => {
     window.clearTimeout(toolbarTimer.current);
@@ -2322,6 +2352,63 @@ function Viewer({
   const inputBlockedRef = useRef(false);
   const inputGeneration = useRef(0);
   const screen = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const node = screen.current;
+    if (!node) return;
+    let timer: number;
+    const measure = () => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        const rect = node.getBoundingClientRect();
+        setViewportEdge(
+          Math.max(rect.width, rect.height) * window.devicePixelRatio,
+        );
+      }, 250);
+    };
+    const observer = new ResizeObserver(measure);
+    observer.observe(node);
+    window.addEventListener("resize", measure);
+    measure();
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", measure);
+      window.clearTimeout(timer);
+    };
+  }, []);
+  const selectedDisplay = status?.displays.find(
+    (d) => d.id === (picture?.display ?? 1),
+  );
+  const sourceEdge = selectedDisplay
+    ? Math.max(selectedDisplay.width, selectedDisplay.height)
+    : 0;
+  useEffect(() => {
+    if (
+      !autoQuality ||
+      ended ||
+      !status?.video?.supported ||
+      !viewportEdge ||
+      !sourceEdge ||
+      profileWanted != null ||
+      profilePending != null
+    )
+      return;
+    const edge = Math.min(viewportEdge, sourceEdge);
+    const target = Math.min(
+      edge <= 1280 ? 0 : edge <= 1920 ? 1 : edge <= 2560 ? 2 : 3,
+      status.video.max_profile ?? 1,
+    );
+    if (status.video.profile !== target) requestProfile(target);
+  }, [
+    autoQuality,
+    ended,
+    viewportEdge,
+    sourceEdge,
+    status?.video?.supported,
+    status?.video?.profile,
+    status?.video?.max_profile,
+    profileWanted,
+    profilePending,
+  ]);
   const generation = useRef(0);
   const control =
     !ended &&
@@ -2395,7 +2482,7 @@ function Viewer({
       setEnded(true);
       setPicture(null);
       setFps(0);
-      count.current = 0;
+      frameTimes.current = [];
       if (url.current) {
         URL.revokeObjectURL(url.current);
         url.current = null;
@@ -2432,6 +2519,7 @@ function Viewer({
               generation.current++;
               controlRef.current = false;
               setText("");
+              setToolbarVisible(true);
             }
             inputBlockedRef.current = s.input?.blocked ?? false;
             setStatus(s);
@@ -2446,8 +2534,19 @@ function Viewer({
       if (!terminal) pollStatus();
     }, 750);
     const fpsTimer = window.setInterval(() => {
-      setFps(count.current);
-      count.current = 0;
+      const now = performance.now();
+      frameTimes.current = frameTimes.current.filter((t) => now - t <= 4000);
+      const times = frameTimes.current;
+      setFps(
+        times.length > 1
+          ? Number(
+              (
+                ((times.length - 1) * 1000) /
+                (times[times.length - 1] - times[0])
+              ).toFixed(1),
+            )
+          : 0,
+      );
     }, 1000);
     const receive = async () => {
       while (live && receiving) {
@@ -2478,7 +2577,8 @@ function Viewer({
           const old = url.current;
           url.current = next;
           last.current = sequence;
-          count.current++;
+          frameTimes.current.push(performance.now());
+          if (frameTimes.current.length > 240) frameTimes.current.shift();
           setPicture({
             url: next,
             display: view.getUint32(5),
@@ -2531,11 +2631,57 @@ function Viewer({
   };
   return (
     <section
-      className={`viewer-window ${showToolbar ? "tools-visible" : ""}`}
+      className={`viewer-window ${showToolbar ? "tools-visible" : ""} ${fullscreen ? "viewer-fullscreen" : ""}`}
       onMouseMove={(e) => {
-        if (e.clientY <= 10 && !e.buttons) setToolbarVisible(true);
+        if (e.clientY <= (fullscreen ? 10 : 46) && !e.buttons)
+          setToolbarVisible(true);
       }}
     >
+      {!fullscreen && (
+        <header className="window-titlebar viewer-titlebar">
+          <div
+            className="window-drag"
+            onMouseDown={(e) => {
+              if (e.button === 0 && e.detail === 1) windowAction("drag");
+            }}
+            onDoubleClick={() => windowAction("maximize")}
+          >
+            <span>
+              FarSail <span className="window-subtitle">遥舟 · 远程桌面</span>
+            </span>
+          </div>
+          <div className="window-controls">
+            <button
+              aria-label="最小化"
+              title="最小化"
+              onClick={() => windowAction("minimize")}
+            >
+              <svg width="12" height="12" viewBox="0 0 12 12">
+                <path d="M1 6h10" />
+              </svg>
+            </button>
+            <button
+              aria-label="最大化或还原"
+              title="最大化 / 还原"
+              onClick={() => windowAction("maximize")}
+            >
+              <svg width="12" height="12" viewBox="0 0 12 12">
+                <rect x="1.5" y="1.5" width="9" height="9" />
+              </svg>
+            </button>
+            <button
+              className="window-close"
+              aria-label="关闭窗口"
+              title="结束并关闭"
+              onClick={onStop}
+            >
+              <svg width="12" height="12" viewBox="0 0 12 12">
+                <path d="m2 2 8 8M10 2l-8 8" />
+              </svg>
+            </button>
+          </div>
+        </header>
+      )}
       {!showToolbar && (
         <button
           className="viewer-reveal"
@@ -2568,8 +2714,8 @@ function Viewer({
                     : "仅查看"}
             </strong>
             <span className="muted">
-              {pathLabel(status?.state)} · {status?.rtt_ms ?? "—"} 毫秒 · {fps}{" "}
-              帧/秒
+              {pathLabel(status?.state)} · {status?.rtt_ms ?? "—"} 毫秒 ·{" "}
+              {fps > 0 ? `${fps} 帧/秒` : picture ? "画面暂未更新" : "等待画面"}
             </span>
           </div>
           <label className="viewer-display-selector">
@@ -2599,30 +2745,40 @@ function Viewer({
               disabled={ended || !status?.video?.supported}
               value={
                 status?.video?.supported
-                  ? (profileWanted ?? status.video.profile)
+                  ? autoQuality
+                    ? -2
+                    : (profileWanted ?? status.video.profile)
                   : -1
               }
               title={
                 !status?.video?.supported
                   ? "被控端需更新后才能切换"
-                  : "高清更清晰，省流模式占用较少带宽"
+                  : "自动按窗口大小适配；高分辨率取决于对方显示器，当前尺寸见更多操作"
               }
               onChange={(e) => {
                 const profile = Number(e.target.value);
-                setProfileWanted(profile);
-                void invoke<number>("media_profile", { id, profile })
-                  .then(setProfilePending)
-                  .catch((err) => {
-                    setProfileWanted(null);
-                    setProblem(errorText(err));
-                  });
+                setAutoQuality(profile === -2);
+                if (profile !== -2) requestProfile(profile);
               }}
             >
               <option value="-1" disabled>
                 {picture ? "对方需更新" : "等待画面"}
               </option>
+              <option value="-2">自动适配</option>
               <option value="0">720p · 省流</option>
               <option value="1">1080p · 高清</option>
+              <option
+                value="2"
+                disabled={(status?.video?.max_profile ?? 1) < 2}
+              >
+                2K · 超清
+              </option>
+              <option
+                value="3"
+                disabled={(status?.video?.max_profile ?? 1) < 3}
+              >
+                4K · 超清
+              </option>
             </select>
           </label>
 
@@ -2652,7 +2808,9 @@ function Viewer({
                     连接编号：{id}
                     <br />
                     {pathLabel(status?.state)} · 网络往返{" "}
-                    {status?.rtt_ms ?? "—"} 毫秒 · 每秒 {fps} 帧<br />
+                    {status?.rtt_ms ?? "—"} 毫秒 ·{" "}
+                    {fps > 0 ? `${fps} 帧/秒（近 4 秒）` : "等待画面更新"}
+                    <br />
                     连接核对码：{status?.verification_code ?? "正在获取"}
                     。请与对方确认两端显示一致。
                   </p>
@@ -2688,15 +2846,7 @@ function Viewer({
                 </p>
               </div>
             </details>
-            <button
-              onClick={() =>
-                void invoke("viewer_window_action", {
-                  action: "fullscreen",
-                }).catch((e) => setProblem(errorText(e)))
-              }
-            >
-              全屏切换
-            </button>
+            <button onClick={() => windowAction("fullscreen")}>全屏切换</button>
             <button className="danger-text" onClick={onStop}>
               {reconnecting ? "取消重连并关闭" : "结束并关闭"}
             </button>
