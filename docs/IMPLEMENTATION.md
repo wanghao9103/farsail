@@ -327,3 +327,9 @@ Windows 原生层按显示器所属 DXGI 适配器采集，处理 DPI、负坐�
 源码 `40edacb2e17b1ac1d2dc04baa3457135fcb831e2` 已推送并发布 [0.1.4](https://github.com/wanghao9103/farsail/releases/tag/windows-preview-0.1.4-40edacb)。本机自建前台窗口真实输入、GUI-less 工作线程定位、认证 loopback 暂停/媒体继续/恢复、两组浏览器回归及静态检查通过；最终 Windows client 36660400761、installer 36660402240、transport 36660400809、backend 36660400832 全部成功。四个附件完整匿名下载校验一致，安装包 7,849,691 字节，SHA256 `7cbec092f01f7ee6f05d15fea1fcf4c163f4c5b0e41aeebdfb9b592e8186322b`。
 
 两台电脑都需要更新，尤其被控端；服务端无需更新。用户机器原始 Windows 拒绝的唯一根因仍未复现，不能把旧截图归因为 UAC。新版提供具体 Windows 返回码，并避免这类输入拒绝直接关闭视频。证据与后续入口见 [INPUT-014](verification/WI-INPUT-014.md)。本机运行时已关闭，生产安装/配置与原目录的文件传输 WIP 未改。
+
+## VIEWER-015 — 大画面、隐藏工具栏和高清切换（2026-09-30）
+
+在当前发布工作区以 0.1.4 为基线，远程窗口默认最大化，工具栏改为浮动自动隐藏，文字与连接详情按需展开；传输分辨率支持 720p/1080p，默认高清并改善色度压缩，像素/单帧/带宽预算不扩大。实际接收尺寸可查，原比例和鼠标留边定位保留。两端更新可用完整画质切换，无服务端更新。
+
+源码 `cf5b72aadf4854fe536fa6e4155ccc3585357da2` 已推送并发布 [0.1.5](https://github.com/wanghao9103/farsail/releases/tag/windows-preview-0.1.5-cf5b72a)。实际原生默认最大化/还原/全屏/关闭隔离、DXGI 内存采集、编码色彩边缘、浏览器全客户区/隐藏/定位/切换及既有回归通过。Windows installer 36666218872、client 36666217848、transport 36666217772、backend 36666217762 全部成功。四个公开附件匿名下载核验一致，安装包 7,871,208 字节，SHA256 `d6d2871952212339754c599336f20159d8f015c8861d86d3bddbaf5c579e0f9c`。详见 [VIEWER-015](verification/WI-VIEWER-015.md)。测试运行时已关闭；后续复用当前管理工作区，不将旧主目录覆盖到已发布源码。
