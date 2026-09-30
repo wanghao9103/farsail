@@ -8,6 +8,8 @@
 
 **当前状态：WI-001 协调服务、WI-002 Windows 客户端、WI-003 认证加密传输及 WI-004 Windows 远程查看/输入基线已在本机验证，WI-008B 提供已验收的 [Windows x64 预览安装包](docs/WINDOWS_INSTALL.md)。** iroh 数据通道支持本地直连及自建 TLS relay；Windows 端可在本机开启共享，默认逐次批准后传送 JPEG 画面并接受鼠标键盘；0.1.2 提供独立原生查看窗口、断线清理和本机显式开启的同账号“远程值守”，详见 [验证记录](docs/verification/WI-REMOTE-012.md)。0.1.3 增加固定桌面工作区、明确的连接操作及计算机名称显示，见 [新版交付记录](docs/verification/WI-UI-RELEASE-013.md)。0.1.4 修复鼠标输入与输入拒绝时保留画面的处理，见 [输入修复记录](docs/verification/WI-INPUT-014.md)。0.1.5 提供默认最大化、自动隐藏工具栏与 720p/1080p 高清切换，见 [窗口与画质记录](docs/verification/WI-VIEWER-015.md)。0.1.6 将远程画面光标改为普通箭头，见 [光标更新](docs/verification/WI-INPUT-016.md)。安装包未签名；文件内容、公网跨 NAT、HEVC与手机端仍待验证或实现。
 
+0.1.7 增加统一深色远程标题栏、按窗口自动适配、2K/4K JPEG 档位和静止画面保活，帧率显示真实接收更新；两端升级可用完整功能。下载入口见上方安装说明，验证见 [VIEWER-017](docs/verification/WI-VIEWER-017.md)。
+
 ## 计划能力
 
 - 账号注册与登录、设备绑定、同账号全部可远程设备列表。

@@ -13,3 +13,17 @@
 - Native WebView smoke passed: decorations disabled with the shared custom titlebar, default maximized, restore/maximize, real frontend fullscreen button hides/restores titlebar, minimize, viewer close preserves main. Nine forbidden IPC calls remained denied. Native testing exposed that entering fullscreen from maximized may not produce a WebView resize; fullscreen IPC now returns the requested state explicitly. Release checks pending.
 - Profile capability is bounded `FSV1` plus max preset byte; absent capability retains 720p/1080p compatibility. Encoding requests/acks retain their monotonic generation. 4K is an encoding ceiling without source upscaling or remote OS resolution changes.
 - Capture sleeps 66 ms instead of 180 ms (about 15 vs 5 FPS ceiling before capture/encoding/network). Static snapshots repeat about once per second; UI reports actual receipt intervals over four seconds and explicitly labels missing updates. Payload rate is capped at 6 MB/s; larger frames have bounded size-based Media timeout and high-profile ACK deadline. These are not measured physical two-PC performance guarantees.
+
+## Published evidence
+- Source `d7753f2806827dbf60f003b7095075bf7c7c2a33` pushed to main; tag points to the same source.
+- [Installer 36680856936](https://github.com/wanghao9103/farsail/actions/runs/36680856936), [Windows client 36680825793](https://github.com/wanghao9103/farsail/actions/runs/36680825793), [transport 36680825771](https://github.com/wanghao9103/farsail/actions/runs/36680825771), [backend 36680825765](https://github.com/wanghao9103/farsail/actions/runs/36680825765): all success at the exact source.
+- [Release 0.1.7](https://github.com/wanghao9103/farsail/releases/tag/windows-preview-0.1.7-d7753f2) / [Windows x64 installer](https://github.com/wanghao9103/farsail/releases/download/windows-preview-0.1.7-d7753f2/FarSail_0.1.7_x64-setup.exe).
+
+| Public attachment | Bytes | SHA-256 |
+| --- | ---: | --- |
+| FarSail_0.1.7_x64-setup.exe | 7,873,131 | `1ee9c1deab63567a03d4a9647bee702e688712c2365f91d045cde35ce8ca5ca5` |
+| SHA256SUMS.txt | 95 | `3c82b76514087c1d35204fe4520d167625af95f9bb31d54df820586c9bfeedaf` |
+| release-metadata.json | 651 | `0a14167be23810c2bcee336325390dd245738329f1964878c3e4d0bbe18c3b60` |
+| installation-verification.json | 422 | `9194737f1b2065e4a5c557550b6e06f25cbe4cf41137d06f326c1bdb1c03ce0d` |
+
+All four files downloaded anonymously over verified HTTPS and matched CI originals by bytes and SHA-256. Installer CI passed actual install, embedded native settings IPC/restart, reinstall/uninstall retention and absence of debug probes. No production installation, profile, server or primary file-transfer WIP changed. Local test/Vite processes stopped. Installer unsigned; real two-PC/4K-display network performance remains unmeasured. Personal inbox knowledge updated with the bounded profile/transport/budget/fullscreen-state mechanism.
