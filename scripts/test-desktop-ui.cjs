@@ -42,6 +42,7 @@ const fs = require("node:fs");
       failLogin: false,
       sharing: false,
       remoteWatch: false,
+      sharePreferences: { sharing: false, watch: false, restore: "idle" },
       bound: true,
       computerName: "DESKTOP-TEST",
       role: "user",
@@ -88,12 +89,15 @@ const fs = require("node:fs");
             computerName: f.computerName,
             sharing: f.sharing,
             remoteWatch: f.remoteWatch,
+            sharePreferences: f.sharePreferences,
+            transportRunning: f.transportRunning,
           };
         if (cmd === "transport_start") {
           if (f.failTransport) throw "relay did not become reachable";
           f.sharing = false;
           local.can_host = false;
           f.connected = {};
+          f.transportRunning = true;
           return {};
         }
         if (cmd === "transport_connect") {
@@ -106,17 +110,20 @@ const fs = require("node:fs");
         }
         if (cmd === "share_enable") {
           f.sharing = true;
+          f.sharePreferences = { sharing: true, watch: f.sharePreferences.watch, restore: "ready" };
           local.can_host = true;
           return {};
         }
         if (cmd === "share_disable") {
           f.sharing = false;
           f.remoteWatch = false;
+          f.sharePreferences = { sharing: false, watch: false, restore: "idle" };
           local.can_host = false;
           return {};
         }
         if (cmd === "remote_watch") {
           f.remoteWatch = args.enabled;
+          f.sharePreferences.watch = args.enabled;
           return {};
         }
         if (cmd === "remote_status") {
@@ -230,6 +237,8 @@ const fs = require("node:fs");
           return {};
         }
         if (op === "logout" || op === "password") {
+          f.transportRunning = false;
+          f.sharePreferences = { sharing: false, watch: false, restore: "idle" };
           f.signedIn = false;
           f.sharing = false;
           f.connected = {};
@@ -279,6 +288,31 @@ const fs = require("node:fs");
     .waitFor();
   assert.equal(await page.evaluate(() => window.fixture.sharing), true);
   assert.equal(await page.evaluate(() => window.fixture.remoteWatch), false);
+  // Startup intent must never be rendered as effective sharing. Opt-outs remain usable.
+  await page.evaluate(() => {
+    window.fixture.sharing = false;
+    window.fixture.remoteWatch = false;
+    window.fixture.sharePreferences = { sharing: true, watch: true, restore: "pending" };
+  });
+  await page.getByRole("button", { name: "刷新", exact: true }).click();
+  await page.getByText(/尚未开启共享/).waitFor();
+  assert(await page.getByRole("button", { name: "关闭远程值守", exact: true }).isEnabled());
+  await page.getByRole("button", { name: "关闭远程值守", exact: true }).click();
+  assert.equal(await page.evaluate(() => window.fixture.sharePreferences.watch), false);
+  await page.evaluate(() => { window.fixture.sharePreferences.restore = "failed"; });
+  await page.getByRole("button", { name: "刷新", exact: true }).click();
+  await page.getByText(/本次未恢复共享/).waitFor();
+  const beforeRetry = await page.evaluate(() => window.fixture.calls.length);
+  await page.getByRole("button", { name: "重试本机共享", exact: true }).click();
+  await page.getByText("本机共享已恢复", { exact: true }).waitFor();
+  const retry = await page.evaluate((n) => window.fixture.calls.slice(n), beforeRetry);
+  assert(!retry.some((x) => x.cmd === "transport_start"), "reuse native restored transport");
+  assert(retry.some((x) => x.cmd === "share_enable"));
+  await page.evaluate(() => { window.fixture.sharing = false; window.fixture.sharePreferences.restore = "pending"; });
+  await page.getByRole("button", { name: "刷新", exact: true }).click();
+  await page.getByRole("button", { name: "停止本机共享", exact: true }).click();
+  assert.equal(await page.evaluate(() => window.fixture.sharePreferences.sharing), false);
+  await page.getByRole("button", { name: "开启本机共享", exact: true }).click();
   await page.getByRole("button", { name: "开启远程值守", exact: true }).click();
   await page
     .getByRole("button", { name: "关闭远程值守", exact: true })

@@ -42,21 +42,33 @@ async fn call(
     args: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
     viewer::main_only(&window)?;
-    if matches!(
+    let preference = if matches!(
         op.as_str(),
         "logout" | "password" | "unbind_device" | "bind"
     ) {
         viewer::cancel_all(window.app_handle());
-        client.disable_host_local();
+        // Cancel remembered permission before awaiting runtime cleanup.
+        let preference = if op == "unbind_device" {
+            client.cancel_sharing_restore();
+            Ok(())
+        } else {
+            client.forget_sharing_preferences()
+        };
         remote.stop_all().await;
-    }
+        preference
+    } else {
+        Ok(())
+    };
     if op == "revoke_remote"
         && let Some(id) = args.get("id").and_then(serde_json::Value::as_str)
     {
         viewer::cancel_session(window.app_handle(), id);
         remote.stop(id).await;
     }
-    client.call(&op, args).await.map_err(|e| e.to_string())
+    // Local sign-out must still clear credentials when the optional preference store fails.
+    let result = client.call(&op, args).await.map_err(|e| e.to_string());
+    preference.map_err(|e| e.to_string())?;
+    result
 }
 #[tauri::command]
 fn monitors(window: tauri::WebviewWindow) -> Result<Vec<farsail_windows::Display>, String> {
@@ -69,16 +81,20 @@ async fn share_enable(
     client: tauri::State<'_, Arc<NativeClient>>,
 ) -> Result<serde_json::Value, String> {
     viewer::main_only(&window)?;
-    if !client.transport_running().await {
-        return Err("start the transport endpoint first".into());
-    }
-    let displays = farsail_windows::displays().map_err(|e| e.to_string())?;
-    let display = displays.first().ok_or("no interactive display")?;
-    farsail_windows::Capture::new(display.id).map_err(|e| e.to_string())?;
     client
-        .set_host_capability(true)
+        .enable_sharing_preference(check_sharing_desktop)
         .await
         .map_err(|e| e.to_string())
+}
+fn check_sharing_desktop() -> farsail_client::Result<()> {
+    let displays =
+        farsail_windows::displays().map_err(|e| farsail_client::Error::Invalid(e.to_string()))?;
+    let display = displays
+        .first()
+        .ok_or_else(|| farsail_client::Error::Invalid("no interactive display".into()))?;
+    farsail_windows::Capture::new(display.id)
+        .map_err(|e| farsail_client::Error::Invalid(e.to_string()))?;
+    Ok(())
 }
 #[tauri::command]
 async fn share_disable(
@@ -87,12 +103,14 @@ async fn share_disable(
     remote: tauri::State<'_, Arc<RemoteRuntime>>,
 ) -> Result<serde_json::Value, String> {
     viewer::main_only(&window)?;
-    client.disable_host_local();
+    let preference = client.stop_sharing_preference();
     remote.stop_hosts().await;
-    client
+    let result = client
         .set_host_capability(false)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string());
+    preference.map_err(|e| e.to_string())?;
+    result
 }
 #[tauri::command]
 async fn remote_status(
@@ -242,15 +260,20 @@ async fn remote_watch(
     enabled: bool,
 ) -> Result<(), String> {
     viewer::main_only(&window)?;
-    client
-        .set_remote_watch(enabled)
-        .map_err(|e| e.to_string())?;
-    if !enabled {
-        remote.stop_hosts().await;
+    if enabled {
         client
-            .revoke_host_approvals()
+            .enable_watch_preference()
             .await
             .map_err(|e| e.to_string())?;
+    } else {
+        let preference = client.stop_watch_preference();
+        remote.stop_hosts().await;
+        let result = client
+            .revoke_host_approvals()
+            .await
+            .map_err(|e| e.to_string());
+        preference.map_err(|e| e.to_string())?;
+        result?;
     }
     Ok(())
 }
@@ -287,6 +310,15 @@ pub fn run() {
     let builder = tauri::Builder::default()
         .on_page_load(|webview, _| {
             #[cfg(debug_assertions)]
+            if let Ok(mode) = std::env::var("FARSAIL_SHARE_SMOKE") {
+                if webview.label() == "main" && !IPC_SMOKE_STARTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    let server=std::env::var("FARSAIL_SHARE_SMOKE_SERVER").unwrap_or_default();
+                    let script=format!("const mode={};const server={};{}",serde_json::to_string(&mode).unwrap(),serde_json::to_string(&server).unwrap(),include_str!("share_smoke.js"));
+                    let _=webview.eval(&script);
+                }
+                return;
+            }
+            #[cfg(debug_assertions)]
             if std::env::var_os("FARSAIL_VIEWER_SMOKE").is_some() { viewer::smoke_probe(webview); return; }
             #[cfg(not(debug_assertions))]
             let _ = webview;
@@ -322,6 +354,9 @@ pub fn run() {
             let remote=RemoteRuntime::new(client.clone());
             let heartbeat = client.clone();
             tauri::async_runtime::spawn(async move {
+                // Runs on every ordinary application start, regardless of the selected UI page.
+                // Finish this one attempt before heartbeat stale-capability cleanup begins.
+                let _ = heartbeat.restore_sharing(check_sharing_desktop).await;
                 let mut interval = tokio::time::interval(std::time::Duration::from_secs(25));
                 loop {
                     interval.tick().await;
@@ -370,6 +405,7 @@ pub fn run() {
                 return;
             }
             viewer::cancel_all(window.app_handle());
+            window.state::<Arc<NativeClient>>().cancel_sharing_restore();
             static CLOSING: std::sync::atomic::AtomicBool =
                 std::sync::atomic::AtomicBool::new(false);
             if !CLOSING.swap(true, std::sync::atomic::Ordering::SeqCst) {

@@ -20,7 +20,27 @@ type PublicState = {
   deviceId: string | null;
   sharing: boolean;
   remoteWatch?: boolean;
+  transportRunning?: boolean;
+  sharePreferences?: {
+    sharing: boolean;
+    watch: boolean;
+    restore: "idle" | "pending" | "ready" | "failed";
+  };
 };
+const sharingChoice = (state: PublicState) =>
+  state.sharing || !!state.sharePreferences?.sharing;
+const watchChoice = (state: PublicState) =>
+  state.remoteWatch || !!state.sharePreferences?.watch;
+function SharingRecovery({ state }: { state: PublicState }) {
+  if (state.sharing || !state.sharePreferences?.sharing) return null;
+  return (
+    <p className="hint" role="status">
+      {state.sharePreferences.restore === "pending"
+        ? "正在检查登录、设备、连接和本机桌面，尚未开启共享。你可以取消恢复。"
+        : "已记住开启偏好，但本次未恢复共享。请检查登录、网络和 Windows 桌面；可重试或关闭偏好。"}
+    </p>
+  );
+}
 type ConnectionInvitation = {
   id: string;
   code: string;
@@ -98,17 +118,19 @@ const pathLabel = (value?: string, discovery?: string) => {
   if (value === "relay") {
     if (discovery === "forced_relay") return "已按设置强制中继";
     if (discovery === "trying_direct") return "中继传输中 · 正在尝试直连";
-    if (discovery === "refresh_failed") return "中继传输中 · 地址刷新失败，将重试";
+    if (discovery === "refresh_failed")
+      return "中继传输中 · 地址刷新失败，将重试";
     if (discovery === "relay_fallback") return "中继传输中 · 定时重试直连";
   }
   return (
-  ({
-    direct: "已直连",
-    relay: "已通过中继连接",
-    connected: "已连接",
-    connecting: "正在连接",
-    closed: "已断开",
-  })[value ?? ""] ?? "尚未连接");
+    {
+      direct: "已直连",
+      relay: "已通过中继连接",
+      connected: "已连接",
+      connecting: "正在连接",
+      closed: "已断开",
+    }[value ?? ""] ?? "尚未连接"
+  );
 };
 const deviceLabel = (id: string, devices: Device[], localId: string | null) =>
   `${devices.find((d) => d.id === id)?.name ?? `设备 ${short(id)}`}${id === localId ? "（本机）" : ""}`;
@@ -195,6 +217,8 @@ function App() {
       const q = await invoke<PublicState>("state");
       if (version !== refreshVersion.current) return;
       setPublicState(q);
+      if (typeof q.transportRunning === "boolean")
+        setTransportReady(q.transportRunning);
       const local = all.find((d) => d.id === q.deviceId);
       const computerName = q.computerName?.trim();
       const migrationKey = `${q.server}/${current.id}/${q.deviceId}`;
@@ -231,6 +255,21 @@ function App() {
     void refresh().catch((e) => setProblem(errorText(e)));
   }, [refresh]);
   useEffect(() => {
+    if (!native || publicState.sharePreferences?.restore !== "pending") return;
+    const timer = window.setInterval(() => {
+      const version = refreshVersion.current;
+      void invoke<PublicState>("state")
+        .then((next) => {
+          if (version !== refreshVersion.current) return;
+          setPublicState(next);
+          if (typeof next.transportRunning === "boolean")
+            setTransportReady(next.transportRunning);
+        })
+        .catch(() => {});
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [publicState.sharePreferences?.restore]);
+  useEffect(() => {
     if (!me) return;
     const timer = window.setInterval(() => {
       void refresh();
@@ -261,7 +300,11 @@ function App() {
     setTransportReady(false);
   };
   const prepareTransport = async () => {
-    if (transportReady) return;
+    const current = await invoke<PublicState>("state");
+    if (current.transportRunning ?? transportReady) {
+      setTransportReady(true);
+      return;
+    }
     await invoke("transport_start", {
       relayUrl: relayUrl || null,
       forceRelay,
@@ -519,25 +562,30 @@ function App() {
                 </p>
                 <div className="row-actions">
                   <button
-                    className={publicState.sharing ? "secondary" : "primary"}
+                    className={
+                      sharingChoice(publicState) ? "secondary" : "primary"
+                    }
                     disabled={busy || !publicState.deviceId}
                     onClick={() =>
                       void act(
                         async () => {
-                          if (!publicState.sharing) await prepareTransport();
+                          if (!sharingChoice(publicState))
+                            await prepareTransport();
                           await invoke(
-                            publicState.sharing
+                            sharingChoice(publicState)
                               ? "share_disable"
                               : "share_enable",
                           );
                         },
-                        publicState.sharing
+                        sharingChoice(publicState)
                           ? "已停止本机共享，对方不能继续查看或控制本机"
                           : "本机共享已开启，默认收到连接请求后需要批准",
                       )
                     }
                   >
-                    {publicState.sharing ? "停止本机共享" : "开启本机共享"}
+                    {sharingChoice(publicState)
+                      ? "停止本机共享"
+                      : "开启本机共享"}
                   </button>
                   {publicState.sharing && (
                     <button
@@ -548,6 +596,7 @@ function App() {
                     </button>
                   )}
                 </div>
+                <SharingRecovery state={publicState} />
                 {!publicState.deviceId && (
                   <p className="hint">
                     {me
@@ -1369,25 +1418,44 @@ function Devices({
                     </p>
                   </div>
                   <button
-                    className={state.sharing ? "secondary" : "primary"}
+                    className={sharingChoice(state) ? "secondary" : "primary"}
                     disabled={busy || !device.enabled}
                     onClick={() =>
                       void act(
                         async () => {
-                          if (!state.sharing) await prepareTransport();
+                          if (!sharingChoice(state)) await prepareTransport();
                           await invoke(
-                            state.sharing ? "share_disable" : "share_enable",
+                            sharingChoice(state)
+                              ? "share_disable"
+                              : "share_enable",
                           );
                         },
-                        state.sharing
+                        sharingChoice(state)
                           ? "已停止本机共享"
                           : "本机共享已开启，等待连接请求",
                       )
                     }
                   >
-                    {state.sharing ? "停止本机共享" : "开启本机共享"}
+                    {sharingChoice(state) ? "停止本机共享" : "开启本机共享"}
                   </button>
                 </div>
+                <SharingRecovery state={state} />
+                {!state.sharing &&
+                  state.sharePreferences?.sharing &&
+                  state.sharePreferences.restore !== "pending" && (
+                    <button
+                      disabled={busy || !device.enabled}
+                      className="secondary"
+                      onClick={() =>
+                        void act(async () => {
+                          await prepareTransport();
+                          await invoke("share_enable");
+                        }, "本机共享已恢复")
+                      }
+                    >
+                      重试本机共享
+                    </button>
+                  )}
                 <p className="hint">
                   {state.sharing
                     ? "本机正在等待连接；你可以随时停止共享。"
@@ -1400,26 +1468,26 @@ function Devices({
                       开启后，同账号设备可直接连接，无需逐次批准。
                     </p>
                     <p className="hint">
-                      仅本次共享有效。关闭后会断开正在访问本机的连接，恢复逐次批准；需要
+                      本机共享和远程值守会记住你的选择，重启后通过登录、设备和桌面检查才会恢复。关闭后会断开正在访问本机的连接，恢复逐次批准；需要
                       Windows 已登录且应用保持运行。
                     </p>
                   </div>
                   <button
-                    disabled={busy || !state.sharing}
-                    className={state.remoteWatch ? "secondary" : "primary"}
+                    disabled={busy || (!state.sharing && !watchChoice(state))}
+                    className={watchChoice(state) ? "secondary" : "primary"}
                     onClick={() =>
                       void act(
                         () =>
                           invoke("remote_watch", {
-                            enabled: !state.remoteWatch,
+                            enabled: !watchChoice(state),
                           }),
-                        state.remoteWatch
+                        watchChoice(state)
                           ? "远程值守已关闭，恢复手动批准"
                           : "远程值守已开启",
                       )
                     }
                   >
-                    {state.remoteWatch ? "关闭远程值守" : "开启远程值守"}
+                    {watchChoice(state) ? "关闭远程值守" : "开启远程值守"}
                   </button>
                 </div>
                 <h3>
@@ -1708,10 +1776,11 @@ function Requests({
           error?: string | null;
         }>("remote_status", { id: r.id })
           .catch(() =>
-            invoke<{ state: string; rtt_ms: number | null; discovery?: string }>(
-              "transport_status",
-              { id: r.id },
-            ),
+            invoke<{
+              state: string;
+              rtt_ms: number | null;
+              discovery?: string;
+            }>("transport_status", { id: r.id }),
           )
           .then((v) => setPaths((old) => ({ ...old, [r.id]: v })))
           .catch(() => {});
@@ -2130,7 +2199,8 @@ function Requests({
                     </small>
                     {r.state === "approved" && (
                       <small>
-                        连接状态：{pathLabel(paths[r.id]?.state, paths[r.id]?.discovery)}
+                        连接状态：
+                        {pathLabel(paths[r.id]?.state, paths[r.id]?.discovery)}
                         {paths[r.id]?.rtt_ms != null
                           ? ` · 网络往返 ${paths[r.id].rtt_ms} 毫秒`
                           : ""}
@@ -2741,7 +2811,8 @@ function Viewer({
                     : "仅查看"}
             </strong>
             <span className="muted">
-              {pathLabel(status?.state, status?.discovery)} · {status?.rtt_ms ?? "—"} 毫秒 ·{" "}
+              {pathLabel(status?.state, status?.discovery)} ·{" "}
+              {status?.rtt_ms ?? "—"} 毫秒 ·{" "}
               {fps > 0 ? `${fps} 帧/秒` : picture ? "画面暂未更新" : "等待画面"}
             </span>
           </div>

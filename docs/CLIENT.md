@@ -1,5 +1,7 @@
 # FarSail Windows 客户端（WI-002/003/004）
 
+0.1.10 的本机共享与远程值守偏好见 [SHARE-020](verification/WI-SHARE-020.md)。DPAPI 只保存这两项已成功开启的选择及服务/账号/设备/登录会话范围，不保存高级连接参数。原生启动仅尝试恢复一次，先重验登录、心跳、传输和桌面，再发布共享能力；界面分别显示记住的意图和有效活动。手动关闭、退出登录、身份变化会取消迟到恢复；普通关窗或故障停止活动而保留有效偏好。首次默认关闭，仍需 Windows 已登录且应用运行，不提供服务、自启动或安全桌面支持。
+
 Windows 客户端位于 `apps/desktop`，React/Vite 页面调用 Tauri 2 命令，账号、设备和授权 HTTP 请求由 `crates/client` 发出。服务协议见 [API.md](API.md)，传输见 [TRANSPORT.md](TRANSPORT.md)，画面与输入细节见 [REMOTE.md](REMOTE.md)。Windows 远程查看与鼠标键盘基线已接入；文件内容仍属 WI-005。
 
 无需开发环境的 Windows x64 预览安装、WebView2、未签名说明及第二台电脑联调步骤见 [WINDOWS_INSTALL.md](WINDOWS_INSTALL.md)；固定下载与实际验证结果见 [WI-008B](verification/WI-008B.md)。

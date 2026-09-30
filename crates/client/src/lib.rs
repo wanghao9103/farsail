@@ -19,6 +19,7 @@ use std::{
 };
 use tokio::sync::{Mutex, broadcast, watch};
 use url::Url;
+mod preferences;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -228,6 +229,34 @@ struct State {
     generation: Option<i64>,
     grant: std::collections::HashMap<String, String>,
 }
+struct DeviceSnapshot {
+    base: String,
+    token: String,
+    generation: i64,
+}
+impl DeviceSnapshot {
+    fn from_state(s: &State) -> Result<Self> {
+        Ok(Self {
+            base: s.base.clone(),
+            token: s
+                .device
+                .as_ref()
+                .ok_or(Error::Unbound)?
+                .device_token
+                .clone(),
+            generation: s
+                .generation
+                .ok_or_else(|| Error::Invalid("heartbeat required".into()))?,
+        })
+    }
+    fn current(&self, s: &State) -> bool {
+        s.base == self.base
+            && s.generation == Some(self.generation)
+            && s.device
+                .as_ref()
+                .is_some_and(|d| d.device_token == self.token)
+    }
+}
 pub struct NativeClient {
     http: Http,
     store: Arc<dyn SecureStore>,
@@ -244,6 +273,7 @@ pub struct NativeClient {
     auto_approve: std::sync::atomic::AtomicU64,
     session_tx: broadcast::Sender<(Session, bool)>,
     capability_lock: Mutex<()>,
+    preferences: std::sync::Mutex<preferences::Preferences>,
 }
 
 impl NativeClient {
@@ -257,21 +287,23 @@ impl NativeClient {
         let device = read_json::<DeviceCredential>(&*store, "device-token")?;
         let (cancel_tx, _) = watch::channel(0u64);
         let (session_tx, _) = broadcast::channel(16);
+        let state = State {
+            base,
+            login,
+            expiry: Instant::now(),
+            owner: None,
+            device,
+            generation: None,
+            grant: Default::default(),
+        };
+        let preferences = preferences::Preferences::load(&*store, &state);
         Ok(Self {
             http: Http::builder()
                 .timeout(Duration::from_secs(15))
                 .redirect(reqwest::redirect::Policy::none())
                 .build()?,
             store,
-            state: Mutex::new(State {
-                base,
-                login,
-                expiry: Instant::now(),
-                owner: None,
-                device,
-                generation: None,
-                grant: Default::default(),
-            }),
+            state: Mutex::new(state),
             transport: Mutex::new(None),
             transport_sessions: Mutex::new(Default::default()),
             transport_epoch: Mutex::new(0),
@@ -282,11 +314,16 @@ impl NativeClient {
             auto_approve: std::sync::atomic::AtomicU64::new(0),
             session_tx,
             capability_lock: Mutex::new(()),
+            preferences: std::sync::Mutex::new(preferences),
         })
     }
     pub async fn public_state(&self) -> Value {
         let s = self.state.lock().await;
-        json!({"server": s.base, "signedIn": s.login.is_some(), "deviceId": s.device.as_ref().map(|x| &x.id), "sharing":self.hosting_enabled(), "remoteWatch":self.auto_approve.load(Ordering::SeqCst) & 1 == 1})
+        let preferences = self.preferences.lock().unwrap().public(&s);
+        let mut result = json!({"server": s.base, "signedIn": s.login.is_some(), "deviceId": s.device.as_ref().map(|x| &x.id), "sharing":self.hosting_enabled(), "remoteWatch":self.auto_approve.load(Ordering::SeqCst) & 1 == 1, "sharePreferences":preferences});
+        drop(s);
+        result["transportRunning"] = json!(self.transport_running().await);
+        result
     }
     pub fn subscribe_sessions(&self) -> broadcast::Receiver<(Session, bool)> {
         self.session_tx.subscribe()
@@ -302,7 +339,7 @@ impl NativeClient {
                 Some(state.wrapping_add(2) & !1)
             });
     }
-    /// Local, process-lifetime opt-in. Never restored from account/server state.
+    /// Runtime-only switch. Explicit user choices use the separate preference methods.
     pub fn set_remote_watch(&self, enabled: bool) -> Result<()> {
         let host_epoch = self.host_state.load(Ordering::SeqCst);
         if enabled && host_epoch & 1 == 0 {
@@ -402,17 +439,32 @@ impl NativeClient {
         self.transport.lock().await.is_some()
     }
     pub async fn set_host_capability(&self, enabled: bool) -> Result<Value> {
+        self.set_host_capability_inner(enabled, None).await
+    }
+    async fn set_host_capability_for_preference(&self, revision: u64) -> Result<Value> {
+        self.set_host_capability_inner(true, Some(revision)).await
+    }
+    async fn set_host_capability_inner(
+        &self,
+        enabled: bool,
+        preference: Option<u64>,
+    ) -> Result<Value> {
         if !enabled {
             self.disable_host_local();
         }
         let started = self.host_state.load(Ordering::SeqCst);
         let _guard = self.capability_lock.lock().await;
-        if enabled && self.host_state.load(Ordering::SeqCst) != started {
+        if enabled
+            && (self.host_state.load(Ordering::SeqCst) != started
+                || preference.is_some_and(|r| !self.preference_current(r)))
+        {
             return Err(Error::Invalid("sharing start cancelled".into()));
         }
-        let generation = self.state.lock().await.generation.ok_or(Error::Unbound)?;
+        let identity = DeviceSnapshot::from_state(&*self.state.lock().await)?;
+        let generation = identity.generation;
         let result = self
-            .transport_request(
+            .transport_request_as(
+                &identity,
                 Method::POST,
                 "/v1/devices/capability",
                 None,
@@ -423,7 +475,8 @@ impl NativeClient {
             self.disable_host_local();
             let _ = tokio::time::timeout(
                 Duration::from_secs(2),
-                self.transport_request(
+                self.transport_request_as(
+                    &identity,
                     Method::POST,
                     "/v1/devices/capability",
                     None,
@@ -434,12 +487,14 @@ impl NativeClient {
         }
         if result.is_ok() && enabled {
             let still_current = self.host_state.load(Ordering::SeqCst) == started
+                && preference.is_none_or(|r| self.preference_current(r))
                 && !self.signing_out.load(Ordering::SeqCst)
                 && self.transport_running().await
-                && self.state.lock().await.generation == Some(generation);
+                && identity.current(&*self.state.lock().await);
             if !still_current {
                 let _ = self
-                    .transport_request(
+                    .transport_request_as(
+                        &identity,
                         Method::POST,
                         "/v1/devices/capability",
                         None,
@@ -454,7 +509,8 @@ impl NativeClient {
                 .is_err()
             {
                 let _ = self
-                    .transport_request(
+                    .transport_request_as(
+                        &identity,
                         Method::POST,
                         "/v1/devices/capability",
                         None,
@@ -486,6 +542,9 @@ impl NativeClient {
         let mut s = self.state.lock().await;
         if s.login.is_some() {
             return Err(Error::Invalid("sign out before changing server".into()));
+        }
+        if s.base != base {
+            self.forget_sharing_preferences()?;
         }
         self.store.write("server", base.as_bytes())?;
         s.base = base;
@@ -587,7 +646,7 @@ impl NativeClient {
         }
     }
     fn clear_auth(&self, s: &mut State) -> Result<()> {
-        self.disable_host_local();
+        let preferences = self.forget_sharing_preferences();
         if let Ok(mut sessions) = self.transport_sessions.try_lock() {
             for session in sessions.values() {
                 session.close();
@@ -600,7 +659,8 @@ impl NativeClient {
         s.generation = None;
         s.grant.clear();
         self.store.delete("login")?;
-        self.store.delete("device-token")
+        self.store.delete("device-token")?;
+        preferences
     }
     async fn user(
         &self,
@@ -658,9 +718,11 @@ impl NativeClient {
             .clone();
         let result = self.raw(s, method, path, body, Some(&token), None).await;
         if matches!(&result, Err(Error::Http(401, _))) {
+            let preference = self.forget_sharing_preferences();
             s.device = None;
             s.generation = None;
             self.store.delete("device-token")?;
+            preference?;
         }
         result
     }
@@ -669,6 +731,7 @@ impl NativeClient {
             return self.list_devices().await;
         }
         if op == "logout" {
+            let preferences = self.forget_sharing_preferences();
             self.signing_out.store(true, Ordering::SeqCst);
             self.cancel_tx.send_modify(|v| *v = v.wrapping_add(1));
             self.stop_transport().await;
@@ -679,6 +742,7 @@ impl NativeClient {
             drop(s);
             self.signing_out.store(false, Ordering::SeqCst);
             local?;
+            preferences?;
             let access = access.ok_or(Error::SignedOut)?;
             let remote = tokio::time::timeout(
                 Duration::from_secs(2),
@@ -696,6 +760,11 @@ impl NativeClient {
             };
         }
         if matches!(op, "login" | "bind" | "unbind_device" | "password") {
+            if op != "unbind_device" {
+                self.forget_sharing_preferences()?;
+            } else {
+                self.cancel_sharing_restore();
+            }
             self.stop_transport().await;
         }
         if op == "revoke_remote"
@@ -790,6 +859,7 @@ impl NativeClient {
                             .as_ref()
                             .is_some_and(|l| d.session_id != l.session_id)
                 }) {
+                    self.forget_sharing_preferences()?;
                     s.device = None;
                     s.generation = None;
                     self.store.delete("device-token")?;
@@ -884,6 +954,9 @@ impl NativeClient {
             }
             "unbind_device" => {
                 let id = string("id")?;
+                if s.device.as_ref().is_some_and(|d| d.id == id) {
+                    self.forget_sharing_preferences()?;
+                }
                 let v = self
                     .user(
                         &mut s,
@@ -1118,23 +1191,27 @@ impl NativeClient {
         grant: Option<&str>,
         body: Option<Value>,
     ) -> Result<Value> {
-        let (base, device_token, generation) = {
-            let s = self.state.lock().await;
-            let d = s.device.as_ref().ok_or(Error::Unbound)?;
-            (
-                s.base.clone(),
-                d.device_token.clone(),
-                s.generation
-                    .ok_or_else(|| Error::Invalid("heartbeat required".into()))?,
-            )
-        };
+        let identity = DeviceSnapshot::from_state(&*self.state.lock().await)?;
+        self.transport_request_as(&identity, method, path, grant, body)
+            .await
+    }
+    // A delayed capability response must be compensated against its original identity,
+    // even after sign-out clears the current device or the server has changed.
+    async fn transport_request_as(
+        &self,
+        identity: &DeviceSnapshot,
+        method: Method,
+        path: &str,
+        grant: Option<&str>,
+        body: Option<Value>,
+    ) -> Result<Value> {
         let mut request = self
             .http
-            .request(method, format!("{base}{path}"))
-            .bearer_auth(grant.unwrap_or(&device_token))
-            .header("X-Farsail-Generation", generation.to_string());
+            .request(method, format!("{}{path}", identity.base))
+            .bearer_auth(grant.unwrap_or(&identity.token))
+            .header("X-Farsail-Generation", identity.generation.to_string());
         if grant.is_some() {
-            request = request.header("X-Farsail-Device-Token", &device_token);
+            request = request.header("X-Farsail-Device-Token", &identity.token);
         }
         if let Some(body) = body {
             request = request.json(&body);
