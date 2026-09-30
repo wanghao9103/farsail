@@ -1,14 +1,14 @@
 # Windows x64 预览安装与双机联调
 
-FarSail 0.1.5 是可切换 720p/1080p 的 JPEG 查看/鼠标键盘控制预览。远程窗口默认最大化，工具栏自动隐藏；移到顶部或点击显示入口可展开，并可固定显示。需要 Windows 10/11 x64 的普通交互桌面；不需要安装 Rust、Node 或开发工具。文件传输、HEVC、自适应视频和手机端尚未交付。安全桌面、UAC 和无人登录桌面不支持。服务器真实 CA、跨 NAT 和两台家用电脑的效果须另行验收。
+FarSail 0.1.6 是可切换 720p/1080p 的 JPEG 查看/鼠标键盘控制预览。远程窗口默认最大化，工具栏自动隐藏；移到顶部或点击显示入口可展开，并可固定显示。需要 Windows 10/11 x64 的普通交互桌面；不需要安装 Rust、Node 或开发工具。文件传输、HEVC、自适应视频和手机端尚未交付。安全桌面、UAC 和无人登录桌面不支持。服务器真实 CA、跨 NAT 和两台家用电脑的效果须另行验收。
 
 ## 下载与安装
 
-当前固定预发布：[下载安装包](https://github.com/wanghao9103/farsail/releases/download/windows-preview-0.1.5-cf5b72a/FarSail_0.1.5_x64-setup.exe)、[SHA256SUMS.txt](https://github.com/wanghao9103/farsail/releases/download/windows-preview-0.1.5-cf5b72a/SHA256SUMS.txt)，其余元数据见 [发布页](https://github.com/wanghao9103/farsail/releases/tag/windows-preview-0.1.5-cf5b72a)。源码 SHA、安装包 SHA256 和安装验证证据见 [VIEWER-015](verification/WI-VIEWER-015.md)。同时下载 `FarSail_0.1.5_x64-setup.exe`、`SHA256SUMS.txt`、`release-metadata.json`。PowerShell 在下载目录执行：
+当前固定预发布：[下载安装包](https://github.com/wanghao9103/farsail/releases/download/windows-preview-0.1.6-bdbfd17/FarSail_0.1.6_x64-setup.exe)、[SHA256SUMS.txt](https://github.com/wanghao9103/farsail/releases/download/windows-preview-0.1.6-bdbfd17/SHA256SUMS.txt)，其余元数据见 [发布页](https://github.com/wanghao9103/farsail/releases/tag/windows-preview-0.1.6-bdbfd17)。源码 SHA、安装包 SHA256 和安装验证证据见 [CURSOR-016](verification/WI-INPUT-016.md)。同时下载 `FarSail_0.1.6_x64-setup.exe`、`SHA256SUMS.txt`、`release-metadata.json`。PowerShell 在下载目录执行：
 
 ```powershell
 $expected = ((Get-Content ./SHA256SUMS.txt -Raw).Trim() -split '\s+')[0]
-$actual = (Get-FileHash ./FarSail_0.1.5_x64-setup.exe -Algorithm SHA256).Hash
+$actual = (Get-FileHash ./FarSail_0.1.6_x64-setup.exe -Algorithm SHA256).Hash
 if ($actual -ine $expected) { throw 'SHA256 mismatch: do not install' }
 ```
 
@@ -35,7 +35,7 @@ if ($actual -ine $expected) { throw 'SHA256 mismatch: do not install' }
 
 ## 升级、卸载与凭据
 
-两端均升级到 0.1.5，尤其被控端，以使用新的鼠标输入及暂停/重试处理。已部署的 4252 服务端兼容此客户端，无需重新部署、初始化或重置密钥。先关闭 FarSail 再安装新版本。应用标识维持 `app.farsail.desktop`；原生配置和 DPAPI 加密凭据保存在当前 Windows 用户的 `%LOCALAPPDATA%\app.farsail.desktop`。重装和默认卸载保留该目录。卸载界面若显示删除应用数据选项，请保持未勾选以保留凭据。若希望撤销登录，先在应用内退出；卸载本身不等于服务端撤销会话。不要把该目录复制给其他人或上传。
+两端均升级到 0.1.6，尤其被控端，以使用新的鼠标输入及暂停/重试处理。已部署的 4252 服务端兼容此客户端，无需重新部署、初始化或重置密钥。先关闭 FarSail 再安装新版本。应用标识维持 `app.farsail.desktop`；原生配置和 DPAPI 加密凭据保存在当前 Windows 用户的 `%LOCALAPPDATA%\app.farsail.desktop`。重装和默认卸载保留该目录。卸载界面若显示删除应用数据选项，请保持未勾选以保留凭据。若希望撤销登录，先在应用内退出；卸载本身不等于服务端撤销会话。不要把该目录复制给其他人或上传。
 
 ## 开发者复现
 
