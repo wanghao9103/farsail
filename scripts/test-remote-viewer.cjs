@@ -15,6 +15,8 @@ const fs = require("node:fs");
   await page.addInitScript(() => {
     const f = (window.fixture = {
       closed: false,
+      path: "direct",
+      discovery: "direct",
       retryable: false,
       permission: "control",
       inputBlocked: false,
@@ -73,7 +75,8 @@ const fs = require("node:fs");
           };
           f.staleInput = null;
           return {
-            state: f.closed ? "closed" : "direct",
+            state: f.closed ? "closed" : f.path,
+            discovery: f.discovery,
             permission: f.permission,
             video: f.video,
             input: reportedInput,
@@ -128,6 +131,28 @@ const fs = require("node:fs");
     await page.getByAltText("远端桌面").waitFor();
   };
   await load();
+  for (const [discovery, label] of [
+    ["trying_direct", "正在尝试直连"],
+    ["relay_fallback", "定时重试直连"],
+    ["refresh_failed", "地址刷新失败，将重试"],
+    ["forced_relay", "已按设置强制中继"],
+  ]) {
+    await page.evaluate((discovery) => {
+      window.fixture.path = "relay";
+      window.fixture.discovery = discovery;
+    }, discovery);
+    await page.waitForFunction((label) =>
+      document.querySelector(".viewer-status").textContent.includes(label), label);
+    assert(await page.getByAltText("远端桌面").isVisible(), "discovery states preserve the live picture");
+  }
+  await page.evaluate(() => {
+    window.fixture.path = "direct";
+    window.fixture.discovery = "direct";
+  });
+  await page.waitForFunction(() => document.querySelector(".viewer-status").textContent.includes("已直连"));
+  if (!(await page.locator(".viewer-toolbar").isVisible())) {
+    await page.getByRole("button", { name: "显示工具栏", exact: true }).click();
+  }
   assert(await page.locator(".viewer-titlebar").isVisible());
   assert.equal(await page.getByLabel("画面分辨率").inputValue(), "-2");
   for (const [width, profile] of [

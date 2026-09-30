@@ -1,7 +1,7 @@
 //! Device-bound encrypted QUIC with coordinator-validated short leases.
 use farsail_core::RemotePermission;
 use iroh::{
-    Endpoint, EndpointAddr, EndpointId, RelayMode, RelayUrl, SecretKey,
+    Endpoint, EndpointAddr, EndpointId, RelayMode, RelayUrl, SecretKey, Watcher,
     endpoint::{Connection, Incoming, PortmapperConfig, presets},
 };
 use iroh_relay::tls::CaTlsConfig;
@@ -25,6 +25,14 @@ fn media_timeout(bytes: usize) -> Duration {
     MEDIA_TIMEOUT + Duration::from_millis((bytes.saturating_sub(1_000_000) / 1000).min(3600) as u64)
 }
 const LIMIT: usize = 4096;
+const DISCOVERY_COOLDOWN: Duration = Duration::from_secs(30);
+const DISCOVERY_WINDOW: Duration = Duration::from_secs(8);
+
+#[derive(Default)]
+struct Discovery {
+    attempted: Option<Instant>,
+    failed: bool,
+}
 #[cfg(test)]
 const LEASE_POLL: Duration = Duration::from_secs(1);
 #[cfg(not(test))]
@@ -138,9 +146,24 @@ pub struct Transport {
     endpoint: Endpoint,
     replay: Arc<Mutex<Replay>>,
     configured_relay: Option<RelayUrl>,
+    relay_config: Option<Arc<iroh_relay::RelayConfig>>,
+    force_relay: bool,
+    discovery: Arc<Mutex<Discovery>>,
 }
 impl Transport {
     pub async fn bind(secret: [u8; 32], config: Config) -> Result<Self> {
+        let relay_config = config
+            .relay
+            .clone()
+            .map(iroh_relay::RelayConfig::from)
+            .map(Arc::new);
+        Self::bind_with_relay_config(secret, config, relay_config).await
+    }
+    async fn bind_with_relay_config(
+        secret: [u8; 32],
+        config: Config,
+        relay_config: Option<Arc<iroh_relay::RelayConfig>>,
+    ) -> Result<Self> {
         if config.force_relay && config.relay.is_none() {
             return Err(Error::Denied);
         }
@@ -161,9 +184,9 @@ impl Transport {
             .clear_address_lookup()
             .portmapper_config(PortmapperConfig::Disabled)
             .relay_mode(
-                config
-                    .relay
-                    .map(|u| RelayMode::custom([u]))
+                relay_config
+                    .clone()
+                    .map(|c| RelayMode::Custom([c].into_iter().collect()))
                     .unwrap_or(RelayMode::Disabled),
             );
         if !config.relay_ca_der.is_empty() {
@@ -181,6 +204,9 @@ impl Transport {
             endpoint,
             replay: Arc::new(Mutex::new(Replay::default())),
             configured_relay,
+            relay_config,
+            force_relay: config.force_relay,
+            discovery: Arc::new(Mutex::new(Discovery::default())),
         })
     }
     pub fn id(&self) -> EndpointId {
@@ -194,6 +220,72 @@ impl Transport {
     }
     pub async fn close(&self) {
         self.endpoint.close().await
+    }
+    pub async fn wait_closed(&self) {
+        self.endpoint.closed().await;
+    }
+    pub fn watch_addr(&self) -> impl Watcher<Value = EndpointAddr> + use<> {
+        self.endpoint.watch_addr()
+    }
+    /// Schedule a complete QAD report on the existing endpoint. Iroh 1.2.0 treats
+    /// re-inserting the identical relay config as a major discovery update.
+    /// This does not remove a relay, rotate identity, or recreate connections.
+    /// The actor owns the report; success here means scheduled, not UDP success.
+    pub async fn refresh_discovery(&self) -> Result<bool> {
+        if self.endpoint.is_closed() {
+            return Err(Error::Closed);
+        }
+        let Some(config) = self.relay_config.as_ref().filter(|_| !self.force_relay) else {
+            return Ok(false);
+        };
+        let Ok(mut state) = self.discovery.try_lock() else {
+            return Ok(false);
+        };
+        if state
+            .attempted
+            .is_some_and(|t| t.elapsed() < DISCOVERY_COOLDOWN)
+        {
+            return Ok(false);
+        }
+        state.attempted = Some(Instant::now());
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            self.endpoint
+                .insert_relay(config.url.clone(), config.clone()),
+        )
+        .await;
+        state.failed = result.is_err() || self.endpoint.is_closed();
+        if state.failed {
+            return Err(if self.endpoint.is_closed() {
+                Error::Closed
+            } else {
+                Error::Timeout
+            });
+        }
+        Ok(true)
+    }
+    /// Bounded public scheduling state; deliberately does not infer NAT/QAD results.
+    pub async fn discovery_state(&self, path: &str) -> &'static str {
+        if self.force_relay {
+            return "forced_relay";
+        }
+        if path == "direct" {
+            return "direct";
+        }
+        if self.relay_config.is_none() {
+            return "unavailable";
+        }
+        let state = self.discovery.lock().await;
+        if state.failed {
+            "refresh_failed"
+        } else if state
+            .attempted
+            .is_some_and(|t| t.elapsed() < DISCOVERY_WINDOW)
+        {
+            "trying_direct"
+        } else {
+            "relay_fallback"
+        }
     }
 
     pub async fn connect<A: Authority>(
@@ -210,6 +302,8 @@ impl Transport {
             return Err(Error::Denied);
         }
         let target = addr.id;
+        // Discovery failure must not prevent the encrypted relay fallback.
+        let _ = self.refresh_discovery().await;
         let conn = within(async { self.endpoint.connect(addr, ALPN).await.map_err(io) }).await?;
         if conn.remote_id() != target {
             return Err(Error::Denied);
@@ -266,6 +360,7 @@ impl Transport {
         incoming: Incoming,
         authority: Arc<A>,
     ) -> Result<Session> {
+        let _ = self.refresh_discovery().await;
         let conn = within(async { incoming.accept().map_err(io)?.await.map_err(io) }).await?;
         let (mut tx, mut rx) = within(async { conn.accept_bi().await.map_err(io) }).await?;
         let bytes = within(async { rx.read_to_end(LIMIT).await.map_err(io) }).await?;
@@ -822,6 +917,246 @@ mod tests {
             stalled: AtomicBool::new(false),
         });
         (source, target, authority)
+    }
+    #[tokio::test]
+    async fn qad_failure_recovers_on_same_endpoint_without_interrupting_session() {
+        use iroh_relay::{
+            RelayConfig as ClientRelayConfig, RelayQuicConfig,
+            server::{CertConfig, QuicConfig, RelayConfig, Server, ServerConfig, TlsConfig},
+        };
+        use rustls_pki_types::PrivatePkcs8KeyDer;
+        let certified = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let cert = certified.cert.der().clone();
+        let tls = rustls::ServerConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![cert.clone()],
+            PrivatePkcs8KeyDer::from(certified.signing_key.serialize_der()).into(),
+        )
+        .unwrap();
+        let mut relay = RelayConfig::new("127.0.0.1:0".parse::<SocketAddr>().unwrap());
+        relay.tls = Some(TlsConfig::new(
+            "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
+            CertConfig::Manual {
+                server_config: tls.clone(),
+            },
+        ));
+        let mut relay_server_config = ServerConfig::default();
+        relay_server_config.relay = Some(relay);
+        let server = Server::spawn(relay_server_config).await.unwrap();
+        let url: RelayUrl = format!("https://localhost:{}/", server.https_addr().unwrap().port())
+            .parse()
+            .unwrap();
+        // Reserve a UDP black hole, then replace it with a real trusted QAD server.
+        let black_hole = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let qad_addr = black_hole.local_addr().unwrap();
+        let relay_config = Arc::new(ClientRelayConfig::new(
+            url.clone(),
+            Some(RelayQuicConfig::new(qad_addr.port())),
+        ));
+        let config = Config {
+            relay: Some(url.clone()),
+            relay_ca_der: vec![cert.to_vec()],
+            ..Config::default()
+        };
+        let source =
+            Transport::bind_with_relay_config([41; 32], config.clone(), Some(relay_config.clone()))
+                .await
+                .unwrap();
+        let direct_config = config.clone();
+        let direct_relay_config = relay_config.clone();
+        let target = Transport::bind_with_relay_config(
+            [42; 32],
+            Config {
+                force_relay: true,
+                ..config
+            },
+            Some(relay_config),
+        )
+        .await
+        .unwrap();
+        let source_id = source.id();
+        let mut reports = source.endpoint.net_report();
+        let initial = tokio::time::timeout(Duration::from_secs(15), reports.initialized())
+            .await
+            .unwrap();
+        assert!(!initial.udp_v4 && initial.global_v4.is_none());
+        // Read the previous report so updated() observes only later reports.
+        reports.get();
+        let auth = Arc::new(TestAuthority {
+            source: source.id(),
+            target: target.id(),
+            current: Mutex::new(0),
+            revoked: AtomicBool::new(false),
+            stalled: AtomicBool::new(false),
+        });
+        let host = tokio::spawn({
+            let target = target.clone();
+            let auth = auth.clone();
+            async move { target.accept(auth).await.unwrap() }
+        });
+        let src = source
+            .connect(
+                EndpointAddr::new(target.id()).with_relay_url(url),
+                "test-session",
+                RemotePermission::View,
+                auth.clone(),
+            )
+            .await
+            .unwrap();
+        let dst = host.await.unwrap();
+        assert_eq!(src.path().0, "relay");
+        let connection_id = src.stable_id();
+        let media = tokio::spawn({
+            let src = src.clone();
+            let dst = dst.clone();
+            async move {
+                for n in 0..80u8 {
+                    src.send(Frame {
+                        channel: Channel::Media,
+                        bytes: vec![n; 1024],
+                    })
+                    .await
+                    .unwrap();
+                    assert_eq!(dst.receive().await.unwrap().bytes, vec![n; 1024]);
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            }
+        });
+        drop(black_hole);
+        let mut qad = QuicConfig::new(qad_addr);
+        qad.server_config = Some(tls);
+        let mut qad_server_config = ServerConfig::default();
+        qad_server_config.quic = Some(qad);
+        let qad_server = Server::spawn(qad_server_config).await.unwrap();
+        // Clear only the test cooldown, not discovery state, identity, or connections.
+        source.discovery.lock().await.attempted = None;
+        target.discovery.lock().await.attempted = None;
+        assert!(source.refresh_discovery().await.unwrap());
+        assert!(!target.refresh_discovery().await.unwrap());
+        let recovered = tokio::time::timeout(Duration::from_secs(12), async {
+            loop {
+                let report = reports.updated().await.unwrap().unwrap();
+                if report.udp_v4 {
+                    break report;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert!(recovered.global_v4.is_some());
+        media.await.unwrap();
+        assert_eq!(
+            src.path().0,
+            "relay",
+            "forced peer retains relay during recovery"
+        );
+        assert_eq!(source.id(), source_id);
+        assert_eq!(src.stable_id(), connection_id);
+        assert!(src.is_open_now() && dst.is_open_now());
+        assert!(
+            *auth.current.lock().await >= 1,
+            "lease renewal survived refresh"
+        );
+        assert!(matches!(
+            src.send(Frame {
+                channel: Channel::Control,
+                bytes: vec![]
+            })
+            .await,
+            Err(Error::Denied)
+        ));
+        // Concurrent requests share a cooldown; no per-session/poll discovery storm.
+        let (a, b) = tokio::join!(source.refresh_discovery(), source.refresh_discovery());
+        assert!(!a.unwrap() && !b.unwrap());
+        // The refreshed source can establish a real authenticated direct session
+        // while the original authenticated relay connection stays alive.
+        let direct =
+            Transport::bind_with_relay_config([45; 32], direct_config, Some(direct_relay_config))
+                .await
+                .unwrap();
+        let direct_auth = Arc::new(TestAuthority {
+            source: source.id(),
+            target: direct.id(),
+            current: Mutex::new(0),
+            revoked: AtomicBool::new(false),
+            stalled: AtomicBool::new(false),
+        });
+        let host = tokio::spawn({
+            let direct = direct.clone();
+            let auth = direct_auth.clone();
+            async move { direct.accept(auth).await.unwrap() }
+        });
+        let direct_src = source
+            .connect(
+                direct.addr(),
+                "test-session",
+                RemotePermission::View,
+                direct_auth,
+            )
+            .await
+            .unwrap();
+        let direct_dst = host.await.unwrap();
+        assert_eq!(direct_src.path().0, "direct");
+        let direct_connection_id = direct_src.stable_id();
+        source.discovery.lock().await.attempted = None;
+        assert!(source.refresh_discovery().await.unwrap());
+        direct_src
+            .send(Frame {
+                channel: Channel::Media,
+                bytes: b"direct after recovery".to_vec(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            direct_dst.receive().await.unwrap().bytes,
+            b"direct after recovery"
+        );
+        assert_eq!(direct_src.stable_id(), direct_connection_id);
+        assert_eq!(
+            direct_src.path().0,
+            "direct",
+            "refresh preserves an existing direct path"
+        );
+        assert!(src.is_open_now() && dst.is_open_now());
+        direct_src.close();
+        direct_dst.close();
+        direct.close().await;
+        src.close();
+        dst.close();
+        source.close().await;
+        target.close().await;
+        assert!(matches!(
+            source.refresh_discovery().await,
+            Err(Error::Closed)
+        ));
+        qad_server.shutdown().await.unwrap();
+        server.shutdown().await.unwrap();
+    }
+    #[tokio::test]
+    async fn discovery_skips_no_relay_and_forced_relay() {
+        let source = Transport::bind([43; 32], Config::default()).await.unwrap();
+        assert!(!source.refresh_discovery().await.unwrap());
+        assert_eq!(source.discovery_state("relay").await, "unavailable");
+        source.close().await;
+        let forced = Transport::bind(
+            [44; 32],
+            Config {
+                force_relay: true,
+                relay: Some("https://localhost:9/".parse().unwrap()),
+                ..Config::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(!forced.refresh_discovery().await.unwrap());
+        assert_eq!(forced.discovery_state("relay").await, "forced_relay");
+        assert!(forced.discovery.lock().await.attempted.is_none());
+        forced.close().await;
     }
     #[tokio::test]
     async fn bounded_4k_payload_can_cross_authenticated_media_channel() {

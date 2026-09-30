@@ -94,14 +94,22 @@ const requestLabel = (value: string) =>
     revoked: "已取消或结束",
     expired: "已过期",
   })[value] ?? "状态待确认";
-const pathLabel = (value?: string) =>
+const pathLabel = (value?: string, discovery?: string) => {
+  if (value === "relay") {
+    if (discovery === "forced_relay") return "已按设置强制中继";
+    if (discovery === "trying_direct") return "中继传输中 · 正在尝试直连";
+    if (discovery === "refresh_failed") return "中继传输中 · 地址刷新失败，将重试";
+    if (discovery === "relay_fallback") return "中继传输中 · 定时重试直连";
+  }
+  return (
   ({
     direct: "已直连",
     relay: "已通过中继连接",
     connected: "已连接",
     connecting: "正在连接",
     closed: "已断开",
-  })[value ?? ""] ?? "尚未连接";
+  })[value ?? ""] ?? "尚未连接");
+};
 const deviceLabel = (id: string, devices: Device[], localId: string | null) =>
   `${devices.find((d) => d.id === id)?.name ?? `设备 ${short(id)}`}${id === localId ? "（本机）" : ""}`;
 const dateLabel = (value: string) => new Date(value).toLocaleString();
@@ -1682,6 +1690,7 @@ function Requests({
       {
         state: string;
         rtt_ms: number | null;
+        discovery?: string;
         verification_code?: string | null;
         error?: string | null;
       }
@@ -1694,11 +1703,12 @@ function Requests({
         void invoke<{
           state: string;
           rtt_ms: number | null;
+          discovery?: string;
           verification_code?: string | null;
           error?: string | null;
         }>("remote_status", { id: r.id })
           .catch(() =>
-            invoke<{ state: string; rtt_ms: number | null }>(
+            invoke<{ state: string; rtt_ms: number | null; discovery?: string }>(
               "transport_status",
               { id: r.id },
             ),
@@ -2120,7 +2130,7 @@ function Requests({
                     </small>
                     {r.state === "approved" && (
                       <small>
-                        连接状态：{pathLabel(paths[r.id]?.state)}
+                        连接状态：{pathLabel(paths[r.id]?.state, paths[r.id]?.discovery)}
                         {paths[r.id]?.rtt_ms != null
                           ? ` · 网络往返 ${paths[r.id].rtt_ms} 毫秒`
                           : ""}
@@ -2245,6 +2255,7 @@ type RemoteStatus = {
   retryable?: boolean;
   state: string;
   rtt_ms: number | null;
+  discovery?: string;
   permission: "view" | "control";
   verification_code: string | null;
   displays: RemoteDisplay[];
@@ -2730,7 +2741,7 @@ function Viewer({
                     : "仅查看"}
             </strong>
             <span className="muted">
-              {pathLabel(status?.state)} · {status?.rtt_ms ?? "—"} 毫秒 ·{" "}
+              {pathLabel(status?.state, status?.discovery)} · {status?.rtt_ms ?? "—"} 毫秒 ·{" "}
               {fps > 0 ? `${fps} 帧/秒` : picture ? "画面暂未更新" : "等待画面"}
             </span>
           </div>
@@ -2857,7 +2868,7 @@ function Viewer({
                     <br />
                     连接编号：{id}
                     <br />
-                    {pathLabel(status?.state)} · 网络往返{" "}
+                    {pathLabel(status?.state, status?.discovery)} · 网络往返{" "}
                     {status?.rtt_ms ?? "—"} 毫秒 ·{" "}
                     {fps > 0 ? `${fps} 帧/秒（近 4 秒）` : "等待画面更新"}
                     <br />

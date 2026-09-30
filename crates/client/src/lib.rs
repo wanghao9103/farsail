@@ -235,6 +235,9 @@ pub struct NativeClient {
     transport: Mutex<Option<Transport>>,
     transport_sessions: Mutex<std::collections::HashMap<String, Session>>,
     transport_epoch: Mutex<u64>,
+    // Serialize old/new endpoint uploads so a delayed old address cannot win
+    // after the replacement endpoint publishes in the same heartbeat generation.
+    transport_publication: Mutex<()>,
     signing_out: AtomicBool,
     cancel_tx: watch::Sender<u64>,
     host_state: std::sync::atomic::AtomicU64,
@@ -272,6 +275,7 @@ impl NativeClient {
             transport: Mutex::new(None),
             transport_sessions: Mutex::new(Default::default()),
             transport_epoch: Mutex::new(0),
+            transport_publication: Mutex::new(()),
             signing_out: AtomicBool::new(false),
             cancel_tx,
             host_state: std::sync::atomic::AtomicU64::new(0),
@@ -1203,14 +1207,13 @@ impl NativeClient {
                 .await
                 .map_err(|_| Error::Invalid("relay did not become reachable".into()))?;
         }
-        let addr = transport.addr();
-        self.transport_request(
-            Method::POST,
-            "/v1/devices/endpoint-address",
-            None,
-            Some(json!({"generation":generation,"endpoint_addr":addr})),
-        )
-        .await?;
+        if let Err(error) = self
+            .publish_transport_address(epoch, generation, &transport)
+            .await
+        {
+            transport.close().await;
+            return Err(error);
+        }
         let active = {
             let current = self.transport_epoch.lock().await;
             if *current != epoch || self.signing_out.load(Ordering::SeqCst) {
@@ -1225,6 +1228,44 @@ impl NativeClient {
             return Err(Error::Invalid("transport start cancelled".into()));
         }
         let endpoint_id = transport.id().to_string();
+        let owner = self.clone();
+        let watched = transport.clone();
+        tokio::spawn(async move {
+            use iroh::Watcher;
+            let mut addresses = watched.watch_addr();
+            let mut retry = tokio::time::interval(Duration::from_secs(30));
+            retry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            retry.tick().await;
+            loop {
+                tokio::select! {
+                    _ = watched.wait_closed() => break,
+                    changed = addresses.updated() => {
+                        if changed.is_err() { break; }
+                        // Coalesce address bursts and publish the current snapshot.
+                        tokio::select! {
+                            _ = watched.wait_closed() => break,
+                            _ = tokio::time::sleep(Duration::from_millis(250)) => {}
+                        }
+                    }
+                    _ = retry.tick() => {
+                        let needs_direct = owner.transport_sessions.lock().await.values()
+                            .any(|s| s.is_open_now() && s.path().0 == "relay");
+                        if needs_direct { let _ = watched.refresh_discovery().await; }
+                    }
+                }
+                if *owner.transport_epoch.lock().await != epoch {
+                    break;
+                }
+                let generation = owner.state.lock().await.generation;
+                if let Some(generation) = generation {
+                    // Finish an in-flight upload under the publication lock.
+                    // Cancelling its HTTP future does not cancel a server write.
+                    let _ = owner
+                        .publish_transport_address(epoch, generation, &watched)
+                        .await;
+                }
+            }
+        });
         let owner = self.clone();
         tokio::spawn(async move {
             let permits = Arc::new(tokio::sync::Semaphore::new(8));
@@ -1254,18 +1295,45 @@ impl NativeClient {
     }
 
     pub async fn refresh_transport_address(&self) -> Result<()> {
-        let transport = self.transport.lock().await.clone();
+        let (epoch, transport) = {
+            let epoch = self.transport_epoch.lock().await;
+            (*epoch, self.transport.lock().await.clone())
+        };
         if let Some(transport) = transport {
             let generation = self.state.lock().await.generation.ok_or(Error::Unbound)?;
-            self.transport_request(
-                Method::POST,
-                "/v1/devices/endpoint-address",
-                None,
-                Some(json!({"generation":generation,"endpoint_addr":transport.addr()})),
-            )
-            .await?;
+            self.publish_transport_address(epoch, generation, &transport)
+                .await?;
         }
         Ok(())
+    }
+    async fn publish_transport_address(
+        &self,
+        epoch: u64,
+        generation: i64,
+        transport: &Transport,
+    ) -> Result<()> {
+        let _publication = self.transport_publication.lock().await;
+        if *self.transport_epoch.lock().await != epoch
+            || self.state.lock().await.generation != Some(generation)
+            || self.signing_out.load(Ordering::SeqCst)
+        {
+            return Err(Error::Invalid("address publication cancelled".into()));
+        }
+        self.transport_request(
+            Method::POST,
+            "/v1/devices/endpoint-address",
+            None,
+            Some(json!({"generation":generation,"endpoint_addr":transport.addr()})),
+        )
+        .await?;
+        Ok(())
+    }
+    pub async fn transport_discovery_state(&self, path: &str) -> &'static str {
+        let transport = self.transport.lock().await.clone();
+        match transport {
+            Some(transport) => transport.discovery_state(path).await,
+            None => "unavailable",
+        }
     }
 
     pub async fn connect_transport(
@@ -1274,7 +1342,20 @@ impl NativeClient {
         permission: RemotePermission,
     ) -> Result<Value> {
         let id = uuid(id)?;
-        let epoch = *self.transport_epoch.lock().await;
+        let (epoch, transport) = {
+            let epoch = self.transport_epoch.lock().await;
+            (
+                *epoch,
+                self.transport
+                    .lock()
+                    .await
+                    .clone()
+                    .ok_or_else(|| Error::Invalid("start transport first".into()))?,
+            )
+        };
+        let _ = transport.refresh_discovery().await;
+        // New discoveries are published by the watcher. Keep discovery and
+        // address uploads out of the authorization handshake's critical path.
         let peer = self
             .transport_request(
                 Method::GET,
@@ -1285,12 +1366,9 @@ impl NativeClient {
             .await?;
         let addr: EndpointAddr = serde_json::from_value(peer["endpoint_addr"].clone())
             .map_err(|_| Error::Invalid("invalid peer address".into()))?;
-        let transport = self
-            .transport
-            .lock()
-            .await
-            .clone()
-            .ok_or_else(|| Error::Invalid("start transport first".into()))?;
+        if *self.transport_epoch.lock().await != epoch {
+            return Err(Error::Invalid("transport connection cancelled".into()));
+        }
         let session = transport
             .connect(addr, &id, permission, self.clone())
             .await
@@ -1311,7 +1389,10 @@ impl NativeClient {
             && s.is_open().await
         {
             let (path, rtt) = s.path();
-            return Ok(json!({"id":id,"state":path,"rtt_ms":rtt,"permission":s.permission()}));
+            let discovery = self.transport_discovery_state(path).await;
+            return Ok(
+                json!({"id":id,"state":path,"rtt_ms":rtt,"permission":s.permission(),"discovery":discovery}),
+            );
         }
         let mut sessions = self.transport_sessions.lock().await;
         if let Some(old) = session
@@ -1632,6 +1713,113 @@ mod tests {
         client.set_remote_watch(true).unwrap();
         client.disable_host_local();
         assert_eq!(client.public_state().await["remoteWatch"], false);
+        server.abort();
+    }
+    #[tokio::test]
+    async fn delayed_address_upload_cannot_overwrite_replacement_or_new_generation() {
+        use axum::{Json, Router, routing::post};
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let uploads = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let app = Router::new().route(
+            "/v1/devices/endpoint-address",
+            post({
+                let entered = entered.clone();
+                let release = release.clone();
+                let uploads = uploads.clone();
+                move |Json(body): Json<Value>| {
+                    let entered = entered.clone();
+                    let release = release.clone();
+                    let uploads = uploads.clone();
+                    async move {
+                        if uploads.lock().await.is_empty() {
+                            entered.notify_one();
+                            release.notified().await;
+                        }
+                        uploads.lock().await.push(body);
+                        Json(Value::Null)
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client = Arc::new(NativeClient::new(Arc::new(MemoryStore::default())).unwrap());
+        client
+            .set_server(&format!("http://{}", listener.local_addr().unwrap()))
+            .await
+            .unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        {
+            let mut state = client.state.lock().await;
+            state.device = Some(DeviceCredential {
+                id: "device".into(),
+                owner_id: "owner".into(),
+                device_token: "synthetic".into(),
+                session_id: "login".into(),
+            });
+            state.generation = Some(1);
+            state
+                .grant
+                .insert("pending".into(), "synthetic-approved-grant".into());
+        }
+        let old = Transport::bind([99; 32], TransportConfig::default())
+            .await
+            .unwrap();
+        *client.transport.lock().await = Some(old.clone());
+        let upload = tokio::spawn({
+            let client = client.clone();
+            let old = old.clone();
+            async move { client.publish_transport_address(0, 1, &old).await }
+        });
+        entered.notified().await;
+        // A queued old snapshot is cancelled once its lifecycle changes.
+        let queued_old = tokio::spawn({
+            let client = client.clone();
+            let old = old.clone();
+            async move { client.publish_transport_address(0, 1, &old).await }
+        });
+        let epoch = client.stop_transport().await;
+        let new = Transport::bind([99; 32], TransportConfig::default())
+            .await
+            .unwrap();
+        let replacement = tokio::spawn({
+            let client = client.clone();
+            let new = new.clone();
+            async move { client.publish_transport_address(epoch, 1, &new).await }
+        });
+        assert!(
+            !replacement.is_finished(),
+            "new upload waits for the old HTTP write"
+        );
+        release.notify_one();
+        upload.await.unwrap().unwrap();
+        assert!(queued_old.await.unwrap().is_err());
+        replacement.await.unwrap().unwrap();
+        let rows = uploads.lock().await;
+        assert_eq!(rows.len(), 2);
+        assert_eq!(
+            rows[1]["endpoint_addr"],
+            serde_json::to_value(new.addr()).unwrap()
+        );
+        assert_ne!(rows[0]["endpoint_addr"], rows[1]["endpoint_addr"]);
+        drop(rows);
+        client.state.lock().await.generation = Some(2);
+        assert!(
+            client
+                .publish_transport_address(epoch, 1, &new)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            uploads.lock().await.len(),
+            2,
+            "old generation never reaches HTTP"
+        );
+        assert!(
+            client.state.lock().await.grant.contains_key("pending"),
+            "unused approval survives discovery/lifecycle changes"
+        );
+        new.close().await;
         server.abort();
     }
     #[tokio::test]
