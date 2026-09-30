@@ -130,6 +130,7 @@ pub async fn viewer_open(window: tauri::WebviewWindow, id: String) -> Result<(),
     .title("FarSail · 远程桌面")
     .inner_size(1200.0, 800.0)
     .min_inner_size(640.0, 420.0)
+    .maximized(true)
     .on_navigation(|url| {
         let origin = (url.scheme() == "tauri" && url.host_str() == Some("localhost"))
             || (url.scheme() == "http" && url.host_str() == Some("tauri.localhost"))
@@ -173,6 +174,7 @@ pub fn smoke_setup(app: &tauri::AppHandle) -> tauri::Result<()> {
     )
     .title("FarSail isolated viewer test")
     .inner_size(1000.0, 700.0)
+    .maximized(true)
     .build()?;
     Ok(())
 }
@@ -187,10 +189,16 @@ pub fn smoke_probe(webview: &tauri::Webview) {
       const invoke=window.__TAURI_INTERNALS__.invoke;
       const denied=[];
       try {
-        for(const [cmd,args] of [['state',{}],['call',{op:'admin_users',args:{}}],['set_server',{server:'http://127.0.0.1:1'}],['share_enable',{}],['remote_watch',{enabled:true}],['remote_input',{id:'other',input:null}],['transport_connect',{id:'other',permission:'view'}],['plugin:window|close',{label:'main'}]]) {
+        const initial=await invoke('ipc_viewer_state');
+        if(!initial.maximized) throw Error('viewer did not open maximized');
+        for(const [cmd,args] of [['state',{}],['call',{op:'admin_users',args:{}}],['set_server',{server:'http://127.0.0.1:1'}],['share_enable',{}],['remote_watch',{enabled:true}],['remote_input',{id:'other',input:null}],['media_profile',{id:'other',profile:1}],['transport_connect',{id:'other',permission:'view'}],['plugin:window|close',{label:'main'}]]) {
           let blocked=false; try { await invoke(cmd,args); } catch { blocked=true; }
           if(!blocked) throw Error('unexpected permission: '+cmd); denied.push(cmd);
         }
+        await invoke('viewer_window_action',{action:'maximize'});
+        await new Promise(r=>setTimeout(r,300));
+        const restored=await invoke('ipc_viewer_state');
+        if(restored.maximized) throw Error('restore failed');
         await invoke('viewer_window_action',{action:'maximize'});
         await new Promise(r=>setTimeout(r,300));
         const maximized=await invoke('ipc_viewer_state');
@@ -204,7 +212,7 @@ pub fn smoke_probe(webview: &tauri::Webview) {
         await new Promise(r=>setTimeout(r,300));
         const minimized=await invoke('ipc_viewer_state');
         if(!minimized.minimized || !minimized.mainExists) throw Error('minimize/main isolation failed');
-        await invoke('ipc_smoke_report',{result:JSON.stringify({ok:true,denied,maximized,fullscreen,minimized})});
+        await invoke('ipc_smoke_report',{result:JSON.stringify({ok:true,denied,initial,restored,maximized,fullscreen,minimized})});
         await invoke('viewer_window_action',{action:'close'});
       } catch(e) { await invoke('ipc_smoke_report',{result:JSON.stringify({ok:false,error:String(e),denied})}); }
     },800)"#);

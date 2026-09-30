@@ -66,6 +66,8 @@ pub async fn wait_for_ack(
 pub enum Error {
     #[error("invalid media frame")]
     Invalid,
+    #[error("encoded image exceeds the frame byte limit")]
+    TooLarge,
     #[error("image codec: {0}")]
     Codec(String),
 }
@@ -110,7 +112,11 @@ impl JpegFrame {
             return Err(Error::Invalid);
         }
         let mut jpeg = Vec::new();
-        jpeg_encoder::Encoder::new(&mut jpeg, quality)
+        let mut encoder = jpeg_encoder::Encoder::new(&mut jpeg, quality);
+        if quality >= 80 {
+            encoder.set_sampling_factor(jpeg_encoder::SamplingFactor::F_1_1);
+        }
+        encoder
             .encode(
                 rgb,
                 meta.width as u16,
@@ -125,7 +131,10 @@ impl JpegFrame {
 
     pub fn validate(&self) -> Result<()> {
         geometry(self.meta.width, self.meta.height)?;
-        if self.jpeg.is_empty() || self.jpeg.len() > MAX_BYTES {
+        if self.jpeg.len() > MAX_BYTES {
+            return Err(Error::TooLarge);
+        }
+        if self.jpeg.is_empty() {
             return Err(Error::Invalid);
         }
         let mut decoder = jpeg_decoder::Decoder::new(Cursor::new(&self.jpeg));
@@ -192,6 +201,57 @@ impl JpegFrame {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn hd_sampling_retains_colored_text_edges_and_byte_limit_still_applies() {
+        let meta = FrameMeta {
+            monitor: 1,
+            layout: 1,
+            sequence: 1,
+            captured_ms: 0,
+            width: 64,
+            height: 32,
+            origin_x: 0,
+            origin_y: 0,
+        };
+        let rgb: Vec<u8> = (0..64 * 32)
+            .flat_map(|pixel| {
+                if pixel % 2 == 0 {
+                    [255, 0, 0]
+                } else {
+                    [0, 0, 255]
+                }
+            })
+            .collect();
+        let low = JpegFrame::encode_rgb(meta.clone(), &rgb, 60)
+            .unwrap()
+            .decode_rgb()
+            .unwrap();
+        let high = JpegFrame::encode_rgb(meta.clone(), &rgb, 85)
+            .unwrap()
+            .decode_rgb()
+            .unwrap();
+        let error = |decoded: &[u8]| {
+            decoded
+                .iter()
+                .zip(&rgb)
+                .map(|(actual, expected)| {
+                    (i32::from(*actual) - i32::from(*expected)).unsigned_abs() as u64
+                })
+                .sum::<u64>()
+        };
+        assert!(
+            error(&high) * 2 < error(&low),
+            "desktop color edges must survive HD chroma encoding"
+        );
+        assert!(matches!(
+            JpegFrame {
+                meta,
+                jpeg: vec![0; MAX_BYTES + 1]
+            }
+            .validate(),
+            Err(Error::TooLarge)
+        ));
+    }
     #[test]
     fn roundtrip_and_reject_mismatched_dimensions() {
         let meta = FrameMeta {

@@ -20,6 +20,7 @@ const fs = require("node:fs");
       inputBlocked: false,
       inputGeneration: 0,
       staleInput: null,
+      video: { profile: 1, generation: 0, supported: true },
       calls: [],
       delay: false,
       release: null,
@@ -62,6 +63,7 @@ const fs = require("node:fs");
           return {
             state: f.closed ? "closed" : "direct",
             permission: f.permission,
+            video: f.video,
             input: reportedInput,
             rtt_ms: 23,
             displays: [
@@ -89,6 +91,11 @@ const fs = require("node:fs");
           return {};
         }
         if (cmd === "viewer_reconnect") return new Promise(() => {});
+        if (cmd === "media_profile") {
+          f.video.profile = args.profile;
+          f.video.generation++;
+          return f.video.generation;
+        }
         return {};
       },
     };
@@ -98,6 +105,73 @@ const fs = require("node:fs");
     await page.getByAltText("远端桌面").waitFor();
   };
   await load();
+  await page.getByLabel("画面分辨率").selectOption("0");
+  await page.waitForFunction(() =>
+    window.fixture.calls.some(
+      (c) => c.cmd === "media_profile" && c.args.profile === 0,
+    ),
+  );
+  await page
+    .getByText("正在切换画面分辨率…", { exact: true })
+    .waitFor({ state: "hidden" });
+  assert.equal(await page.getByLabel("画面分辨率").inputValue(), "0");
+  await page.getByLabel("画面分辨率").selectOption("1");
+  await page
+    .getByText("正在切换画面分辨率…", { exact: true })
+    .waitFor({ state: "hidden" });
+  const largeScreen = await page.locator(".remote-screen").boundingBox();
+  assert(
+    largeScreen.height >= 730,
+    "normal toolbar should leave over 90% of an 800px viewport to the desktop",
+  );
+  assert.equal(await page.getByLabel("远端文字").isVisible(), false);
+  await page.getByText("更多操作", { exact: true }).click();
+  await page.getByLabel("保持工具栏显示").check();
+  assert(await page.getByLabel("远端文字").isVisible());
+  await page.getByText("更多操作", { exact: true }).click();
+  await page.getByText("更多操作", { exact: true }).click();
+  await page.getByLabel("保持工具栏显示").uncheck();
+  await page.getByText("更多操作", { exact: true }).click();
+  await page.mouse.move(900, 600);
+  await page.locator(".viewer-toolbar").waitFor({ state: "hidden" });
+  assert((await page.locator(".remote-screen").boundingBox()).height >= 799);
+  await page.getByRole("button", { name: "显示工具栏", exact: true }).click();
+  await page.locator(".viewer-toolbar").waitFor({ state: "visible" });
+  for (const size of [
+    { width: 640, height: 420 },
+    { width: 1920, height: 1080 },
+  ]) {
+    await page.setViewportSize(size);
+    const area = await page.locator(".remote-screen").boundingBox();
+    assert(
+      area.height >= size.height - 60 && area.width >= size.width - 2,
+      "desktop should use remaining client area without permanent forms/borders",
+    );
+    assert.equal(
+      await page.evaluate(
+        () =>
+          document.documentElement.scrollWidth > innerWidth ||
+          document.documentElement.scrollHeight > innerHeight,
+      ),
+      false,
+    );
+  }
+  await page.setViewportSize({ width: 1200, height: 800 });
+  const paint = await page.getByAltText("远端桌面").boundingBox();
+  const scale = Math.min(paint.width / 800, paint.height / 450);
+  await page.mouse.click(
+    paint.x + (paint.width - 800 * scale) / 2 + 800 * scale * 0.25,
+    paint.y + (paint.height - 450 * scale) / 2 + 450 * scale * 0.75,
+  );
+  await page.waitForFunction(() =>
+    window.fixture.calls.some(
+      (c) =>
+        c.cmd === "remote_input" &&
+        c.args.input?.kind === "button" &&
+        Math.abs(c.args.input.x - 0.25) < 0.005 &&
+        Math.abs(c.args.input.y - 0.75) < 0.005,
+    ),
+  );
   await page.getByAltText("远端桌面").click();
   assert.equal(
     await page.evaluate(() => document.activeElement.className),
@@ -219,7 +293,7 @@ const fs = require("node:fs");
   assert.deepEqual(errors, []);
   await browser.close();
   console.log(
-    "PASS focus/button/keyboard; input rejection retains frame; paused input suppressed; explicit retry resumes; terminal frame/queue cleared; terminal never retries; network retries once; cancel; read-only input blocked. Synthetic IPC only.",
+    "PASS compact viewer area at 640/1200/1920 widths; on-demand tools; letterbox pointer mapping; focus/input; pause/retry; terminal frame/queue cleanup; network retries/cancel; read-only input. Synthetic IPC only.",
   );
 })().catch((e) => {
   console.error(e);

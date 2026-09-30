@@ -90,9 +90,36 @@ pub struct Capture {
     display: Display,
     dxgi: Duplication,
     last_rgb: Option<Vec<u8>>,
+    profile: u8,
+}
+fn output_size(width: usize, height: usize, profile: u8) -> Result<(usize, usize)> {
+    if width == 0 || height == 0 || profile > 1 {
+        return Err(Error::Geometry);
+    }
+    let (long, short) = if profile == 0 {
+        (1280.0, 720.0)
+    } else {
+        (1920.0, 1080.0)
+    };
+    let (max_w, max_h) = if width >= height {
+        (long, short)
+    } else {
+        (short, long)
+    };
+    let factor = (width as f64 / max_w).max(height as f64 / max_h).max(1.0);
+    Ok((
+        (width as f64 / factor).floor().max(1.0) as usize,
+        (height as f64 / factor).floor().max(1.0) as usize,
+    ))
 }
 impl Capture {
     pub fn new(id: u32) -> Result<Self> {
+        Self::new_with_profile(id, 1)
+    }
+    pub fn new_with_profile(id: u32, profile: u8) -> Result<Self> {
+        if profile > 1 {
+            return Err(Error::Geometry);
+        }
         if id == 0 {
             return Err(Error::Geometry);
         }
@@ -105,6 +132,7 @@ impl Capture {
             display,
             dxgi,
             last_rgb: None,
+            profile,
         })
     }
     pub fn display(&self) -> &Display {
@@ -138,11 +166,7 @@ impl Capture {
                 "display geometry changed; reconnect after selecting the new layout".into(),
             ));
         }
-        let factor = (logical_w as f64 / 1280.0)
-            .max(logical_h as f64 / 720.0)
-            .max(1.0);
-        let out_w = (logical_w as f64 / factor).floor().max(1.0) as usize;
-        let out_h = (logical_h as f64 / factor).floor().max(1.0) as usize;
+        let (out_w, out_h) = output_size(logical_w, logical_h, self.profile)?;
         let rgb = convert_bgra(
             raw,
             source_width,
@@ -155,7 +179,6 @@ impl Capture {
         if self.last_rgb.as_ref() == Some(&rgb) {
             return Ok(None);
         }
-        self.last_rgb = Some(rgb.clone());
         let captured_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|e| Error::Unavailable(e.to_string()))?
@@ -170,7 +193,22 @@ impl Capture {
             origin_x: self.display.x,
             origin_y: self.display.y,
         };
-        Ok(Some(JpegFrame::encode_rgb(meta, &rgb, 55)?))
+        let qualities: &[u8] = if self.profile == 0 {
+            &[60, 45, 30]
+        } else {
+            &[85, 65, 45, 30]
+        };
+        for &quality in qualities {
+            match JpegFrame::encode_rgb(meta.clone(), &rgb, quality) {
+                Ok(frame) => {
+                    self.last_rgb = Some(rgb);
+                    return Ok(Some(frame));
+                }
+                Err(farsail_media::Error::TooLarge) => continue,
+                Err(e) => return Err(e.into()),
+            }
+        }
+        Err(farsail_media::Error::TooLarge.into())
     }
 }
 
@@ -484,6 +522,16 @@ fn move_to(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn hd_profile_preserves_native_1080p_and_handles_portrait_without_upscaling() {
+        assert_eq!(output_size(1920, 1080, 0).unwrap(), (1280, 720));
+        assert_eq!(output_size(1920, 1080, 1).unwrap(), (1920, 1080));
+        assert_eq!(output_size(1080, 1920, 1).unwrap(), (1080, 1920));
+        assert_eq!(output_size(3840, 2160, 1).unwrap(), (1920, 1080));
+        assert_eq!(output_size(800, 600, 1).unwrap(), (800, 600));
+        assert!(output_size(0, 1080, 1).is_err());
+        assert!(output_size(1920, 1080, 2).is_err());
+    }
     #[test]
     fn absolute_mouse_coordinates_cover_negative_monitor_and_pixel_centres() {
         for (origin, extent) in [(-1920, 3840), (0, 1920), (-1080, 2160), (0, 1)] {

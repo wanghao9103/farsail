@@ -22,6 +22,36 @@ struct InputState {
     blocked: bool,
     message: Option<String>,
 }
+#[derive(Clone, Copy)]
+struct VideoProfile {
+    profile: u8,
+    generation: u64,
+}
+impl Default for VideoProfile {
+    fn default() -> Self {
+        Self {
+            profile: 1,
+            generation: 0,
+        }
+    }
+}
+impl VideoProfile {
+    fn packet(self, tag: &[u8; 4]) -> Vec<u8> {
+        let mut bytes = tag.to_vec();
+        bytes.extend(self.generation.to_be_bytes());
+        bytes.push(self.profile);
+        bytes
+    }
+    fn parse(bytes: &[u8], tag: &[u8; 4]) -> Option<Self> {
+        if bytes.len() != 13 || &bytes[..4] != tag || bytes[12] > 1 {
+            return None;
+        }
+        Some(Self {
+            generation: u64::from_be_bytes(bytes[4..12].try_into().ok()?),
+            profile: bytes[12],
+        })
+    }
+}
 impl InputState {
     fn update(&mut self, error: Option<&farsail_windows::Error>) {
         self.generation = self.generation.saturating_add(1);
@@ -105,6 +135,9 @@ struct Live {
     current: Arc<StdMutex<Option<(Display, u64)>>>,
     input: Arc<StdMutex<InputSink>>,
     input_state: Arc<StdMutex<InputState>>,
+    video_profile: Arc<StdMutex<VideoProfile>>,
+    video_request: AtomicU64,
+    video_supported: AtomicBool,
     displays: Arc<StdMutex<Vec<Display>>>,
     error: Arc<StdMutex<Option<String>>>,
     frame: watch::Receiver<Option<Vec<u8>>>,
@@ -170,6 +203,9 @@ impl RemoteRuntime {
             current: Arc::new(StdMutex::new(None)),
             input: Arc::new(StdMutex::new(InputSink::default())),
             input_state: Arc::new(StdMutex::new(InputState::default())),
+            video_profile: Arc::new(StdMutex::new(VideoProfile::default())),
+            video_request: AtomicU64::new(0),
+            video_supported: AtomicBool::new(false),
             displays: Arc::new(StdMutex::new(Vec::new())),
             error: Arc::new(StdMutex::new(None)),
             frame: rx,
@@ -247,6 +283,14 @@ impl RemoteRuntime {
             return;
         }
         let (tx, mut rx) = watch::channel::<Option<Vec<u8>>>(None);
+        let initial_profile = *live.video_profile.lock().unwrap();
+        let _ = live
+            .session
+            .send(Frame {
+                channel: Channel::Media,
+                bytes: initial_profile.packet(b"FSP1"),
+            })
+            .await;
         let (ack_tx, mut ack_rx) = watch::channel(0u64);
         let alive = live.alive.clone();
         let selected = live.selected.clone();
@@ -255,16 +299,20 @@ impl RemoteRuntime {
         let capture_failed = Arc::new(AtomicBool::new(false));
         let worker_failed = capture_failed.clone();
         let layout = live.layout.clone();
+        let video_profile = live.video_profile.clone();
         tokio::task::spawn_blocking(move || {
             let mut capture: Option<Capture> = None;
             let mut last_id = 0;
+            let mut last_profile = u8::MAX;
             let mut sequence = 0;
             while alive.load(Ordering::SeqCst) {
                 let id = selected.load(Ordering::SeqCst);
-                if id != last_id || capture.is_none() {
+                let profile = video_profile.lock().unwrap().profile;
+                if id != last_id || profile != last_profile || capture.is_none() {
                     *current.lock().unwrap() = None;
                     let version = layout.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
-                    capture = match Capture::new(id) {
+                    drop(capture.take());
+                    capture = match Capture::new_with_profile(id, profile) {
                         Ok(c) => {
                             *current.lock().unwrap() = Some((c.display().clone(), version));
                             Some(c)
@@ -276,6 +324,7 @@ impl RemoteRuntime {
                         }
                     };
                     last_id = id;
+                    last_profile = profile;
                 }
                 if let Some(c) = capture.as_mut() {
                     sequence += 1;
@@ -400,6 +449,24 @@ impl RemoteRuntime {
                     if live.displays.lock().unwrap().iter().any(|d| d.id == id) {
                         live.selected.store(id, Ordering::SeqCst);
                     }
+                } else if frame.channel == Channel::Media
+                    && VideoProfile::parse(&frame.bytes, b"FSQ1").is_some()
+                {
+                    let request = VideoProfile::parse(&frame.bytes, b"FSQ1").unwrap();
+                    let applied = {
+                        let mut profile = live.video_profile.lock().unwrap();
+                        if request.generation > profile.generation {
+                            *profile = request;
+                        }
+                        *profile
+                    };
+                    let _ = live
+                        .session
+                        .send(Frame {
+                            channel: Channel::Media,
+                            bytes: applied.packet(b"FSP1"),
+                        })
+                        .await;
                 } else if frame.channel == Channel::Media
                     && frame.bytes.len() == 12
                     && &frame.bytes[..4] == b"FSA1"
@@ -533,7 +600,15 @@ impl RemoteRuntime {
             if frame.channel != Channel::Media {
                 continue;
             }
-            if frame.bytes.starts_with(b"FSL1") {
+            if let Some(applied) = VideoProfile::parse(&frame.bytes, b"FSP1") {
+                let mut profile = live.video_profile.lock().unwrap();
+                if applied.generation >= profile.generation
+                    && applied.generation <= live.video_request.load(Ordering::SeqCst)
+                {
+                    *profile = applied;
+                    live.video_supported.store(true, Ordering::SeqCst);
+                }
+            } else if frame.bytes.starts_with(b"FSL1") {
                 if let Ok(list) = serde_json::from_slice::<Vec<Display>>(&frame.bytes[4..]) {
                     *live.displays.lock().unwrap() = list;
                 }
@@ -584,8 +659,9 @@ impl RemoteRuntime {
             );
         }
         let (path, rtt) = live.session.path();
+        let profile = *live.video_profile.lock().unwrap();
         Ok(
-            json!({"id":id,"state":path,"rtt_ms":rtt,"permission":live.session.permission(),"sharing":live.host,"verification_code":live.session.verification_code().map_err(|e|e.to_string())?,"displays":*live.displays.lock().unwrap(),"error":*live.error.lock().unwrap(),"input":*live.input_state.lock().unwrap()}),
+            json!({"id":id,"state":path,"rtt_ms":rtt,"permission":live.session.permission(),"sharing":live.host,"verification_code":live.session.verification_code().map_err(|e|e.to_string())?,"displays":*live.displays.lock().unwrap(),"error":*live.error.lock().unwrap(),"input":*live.input_state.lock().unwrap(),"video":{"profile":profile.profile,"generation":profile.generation,"supported":live.video_supported.load(Ordering::SeqCst)}}),
         )
     }
     pub async fn next_frame(&self, id: &str, after: u64) -> Result<Vec<u8>, String> {
@@ -645,6 +721,32 @@ impl RemoteRuntime {
             })
             .await
             .map_err(|e| e.to_string())
+    }
+    pub async fn profile(&self, id: &str, profile: u8) -> Result<u64, String> {
+        let live = self
+            .sessions
+            .lock()
+            .await
+            .get(id)
+            .cloned()
+            .ok_or("remote session not active")?;
+        if live.host || profile > 1 || !live.video_supported.load(Ordering::SeqCst) {
+            return Err("被控端需更新到支持高清切换的版本".into());
+        }
+        let _guard = live.send_lock.lock().await;
+        let generation = live.video_request.fetch_add(1, Ordering::SeqCst) + 1;
+        live.session
+            .send(Frame {
+                channel: Channel::Media,
+                bytes: VideoProfile {
+                    profile,
+                    generation,
+                }
+                .packet(b"FSQ1"),
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(generation)
     }
     pub async fn input(&self, id: &str, value: Option<Value>) -> Result<(), String> {
         let live = self
@@ -751,6 +853,23 @@ impl RemoteRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn video_profile_wire_is_bounded_and_rejects_unknown_presets() {
+        let profile = VideoProfile {
+            generation: 17,
+            profile: 0,
+        };
+        let request = profile.packet(b"FSQ1");
+        let decoded = VideoProfile::parse(&request, b"FSQ1").unwrap();
+        assert_eq!((decoded.generation, decoded.profile), (17, 0));
+        assert!(VideoProfile::parse(&request, b"FSP1").is_none());
+        let mut bad = request.clone();
+        bad[12] = 2;
+        assert!(VideoProfile::parse(&bad, b"FSQ1").is_none());
+        let mut oversized = request;
+        oversized.push(0);
+        assert!(VideoProfile::parse(&oversized, b"FSQ1").is_none());
+    }
     struct InputAuthority {
         source: iroh::EndpointId,
         target: iroh::EndpointId,

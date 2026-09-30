@@ -2235,6 +2235,7 @@ type RemoteDisplay = {
   rotation: number;
 };
 type RemoteStatus = {
+  video?: { profile: number; generation: number; supported: boolean };
   input?: { generation: number; blocked: boolean; message: string | null };
   retryable?: boolean;
   state: string;
@@ -2287,6 +2288,36 @@ function Viewer({
   const [ended, setEnded] = useState(false);
   const [reconnecting, setReconnecting] = useState(false);
   const [retryingInput, setRetryingInput] = useState(false);
+  const [toolbarVisible, setToolbarVisible] = useState(true);
+  const [toolsOpen, setToolsOpen] = useState(false);
+  const [toolbarPinned, setToolbarPinned] = useState(false);
+  const toolbarHovered = useRef(false);
+  const toolbarTimer = useRef<number | undefined>(undefined);
+  const [profileWanted, setProfileWanted] = useState<number | null>(null);
+  const [profilePending, setProfilePending] = useState<number | null>(null);
+  const showToolbar = toolbarVisible || toolsOpen || toolbarPinned;
+  const scheduleHide = () => {
+    window.clearTimeout(toolbarTimer.current);
+    if (!toolbarPinned && !toolsOpen && !toolbarHovered.current)
+      toolbarTimer.current = window.setTimeout(
+        () => setToolbarVisible(false),
+        2200,
+      );
+  };
+  useEffect(() => {
+    if (toolbarVisible) scheduleHide();
+    return () => window.clearTimeout(toolbarTimer.current);
+  }, [toolbarVisible, toolbarPinned, toolsOpen]);
+  useEffect(() => {
+    if (
+      profilePending != null &&
+      status?.video &&
+      status.video.generation >= profilePending
+    ) {
+      setProfilePending(null);
+      setProfileWanted(null);
+    }
+  }, [profilePending, status?.video?.generation]);
   const inputBlocked = status?.input?.blocked ?? false;
   const inputBlockedRef = useRef(false);
   const inputGeneration = useRef(0);
@@ -2499,10 +2530,34 @@ function Viewer({
     return x >= 0 && x <= 1 && y >= 0 && y <= 1 ? { x, y } : null;
   };
   return (
-    <section className="viewer-window">
+    <section
+      className={`viewer-window ${showToolbar ? "tools-visible" : ""}`}
+      onMouseMove={(e) => {
+        if (e.clientY <= 10 && !e.buttons) setToolbarVisible(true);
+      }}
+    >
+      {!showToolbar && (
+        <button
+          className="viewer-reveal"
+          onMouseEnter={() => setToolbarVisible(true)}
+          onClick={() => setToolbarVisible(true)}
+        >
+          显示工具栏
+        </button>
+      )}
       <div className="viewer-body">
-        <div className="viewer-toolbar">
-          <div>
+        <header
+          className="viewer-toolbar"
+          onMouseEnter={() => {
+            toolbarHovered.current = true;
+            window.clearTimeout(toolbarTimer.current);
+          }}
+          onMouseLeave={() => {
+            toolbarHovered.current = false;
+            scheduleHide();
+          }}
+        >
+          <div className="viewer-status">
             <strong>
               {ended
                 ? "会话已结束"
@@ -2512,53 +2567,151 @@ function Viewer({
                     ? "远程控制"
                     : "仅查看"}
             </strong>
-            <p className="muted">
-              连接 {short(id)} ·{" "}
-              {status?.state === "direct"
-                ? "P2P 直连"
-                : status?.state === "relay"
-                  ? "中继回退"
-                  : ended
-                    ? "已断开"
-                    : "协商路径中"}{" "}
-              · 网络往返 {status?.rtt_ms ?? "—"} 毫秒 · 每秒 {fps} 帧
-            </p>
-            <details>
-              <summary>连接详情</summary>
-              <p className="muted">
-                双方校验码：
-                <strong>{status?.verification_code ?? "连接中"}</strong>
-                。请通过可信渠道比较。路径可在直连与中继间迁移，无需重新授权。
-              </p>
-            </details>
+            <span className="muted">
+              {pathLabel(status?.state)} · {status?.rtt_ms ?? "—"} 毫秒 · {fps}{" "}
+              帧/秒
+            </span>
           </div>
-          <div className="row-actions">
-            <button
-              onClick={() =>
-                void invoke("viewer_window_action", { action: "minimize" })
+          <label className="viewer-display-selector">
+            <span className="sr-only">对方的显示器</span>
+            <select
+              aria-label="对方的显示器"
+              disabled={ended || !status?.displays.length}
+              value={picture?.display ?? 1}
+              onChange={(e) =>
+                void invoke("media_select", {
+                  id,
+                  display: Number(e.target.value),
+                }).catch((err) => setProblem(errorText(err)))
               }
             >
-              最小化
-            </button>
+              {status?.displays.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.name} · {d.width}×{d.height} · {d.dpi} DPI
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="viewer-quality-selector">
+            <span className="sr-only">画面分辨率</span>
+            <select
+              aria-label="画面分辨率"
+              disabled={ended || !status?.video?.supported}
+              value={
+                status?.video?.supported
+                  ? (profileWanted ?? status.video.profile)
+                  : -1
+              }
+              title={
+                !status?.video?.supported
+                  ? "被控端需更新后才能切换"
+                  : "高清更清晰，省流模式占用较少带宽"
+              }
+              onChange={(e) => {
+                const profile = Number(e.target.value);
+                setProfileWanted(profile);
+                void invoke<number>("media_profile", { id, profile })
+                  .then(setProfilePending)
+                  .catch((err) => {
+                    setProfileWanted(null);
+                    setProblem(errorText(err));
+                  });
+              }}
+            >
+              <option value="-1" disabled>
+                {picture ? "对方需更新" : "等待画面"}
+              </option>
+              <option value="0">720p · 省流</option>
+              <option value="1">1080p · 高清</option>
+            </select>
+          </label>
+
+          <div className="viewer-toolbar-actions">
+            <details
+              className="viewer-more"
+              onToggle={(e) => setToolsOpen(e.currentTarget.open)}
+            >
+              <summary>更多操作</summary>
+              <div className="viewer-popover">
+                <label className="viewer-pin">
+                  <input
+                    type="checkbox"
+                    checked={toolbarPinned}
+                    onChange={(e) => setToolbarPinned(e.target.checked)}
+                  />
+                  保持工具栏显示
+                </label>
+                <div className="viewer-connection-info">
+                  <strong>连接信息</strong>
+                  <p className="muted">
+                    当前接收画面：
+                    {picture
+                      ? `${picture.width}×${picture.height}`
+                      : "等待画面"}
+                    <br />
+                    连接编号：{id}
+                    <br />
+                    {pathLabel(status?.state)} · 网络往返{" "}
+                    {status?.rtt_ms ?? "—"} 毫秒 · 每秒 {fps} 帧<br />
+                    连接核对码：{status?.verification_code ?? "正在获取"}
+                    。请与对方确认两端显示一致。
+                  </p>
+                </div>{" "}
+                {control && (
+                  <form
+                    className="inline-form"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      if (text) send({ kind: "text", text });
+                      setText("");
+                    }}
+                  >
+                    <input
+                      value={text}
+                      onChange={(e) => setText(e.target.value)}
+                      maxLength={64}
+                      placeholder="向受控窗口输入文字"
+                      aria-label="远端文字"
+                    />
+                    <button className="secondary">发送文字</button>
+                    <button
+                      type="button"
+                      className="secondary"
+                      onClick={() => send(null)}
+                    >
+                      松开所有按键
+                    </button>
+                  </form>
+                )}
+                <p className="hint">
+                  高清模式优先保留文字细节；复杂画面会在数据大小上限内调整压缩。系统权限确认和未登录桌面暂不支持控制。
+                </p>
+              </div>
+            </details>
             <button
               onClick={() =>
-                void invoke("viewer_window_action", { action: "maximize" })
+                void invoke("viewer_window_action", {
+                  action: "fullscreen",
+                }).catch((e) => setProblem(errorText(e)))
               }
             >
-              最大化 / 还原
-            </button>
-            <button
-              onClick={() =>
-                void invoke("viewer_window_action", { action: "fullscreen" })
-              }
-            >
-              全屏 / 退出全屏
+              全屏切换
             </button>
             <button className="danger-text" onClick={onStop}>
               {reconnecting ? "取消重连并关闭" : "结束并关闭"}
             </button>
           </div>
-        </div>
+        </header>
+        {profilePending != null && (
+          <div className="notice-strip" role="status">
+            正在切换画面分辨率…
+          </div>
+        )}
+        {reconnecting && (
+          <div className="notice-strip" role="status">
+            正在重连（最多 3 次）；等待新的授权批准…
+          </div>
+        )}
         {problem && (
           <div className="alert error">
             <ErrorMessage error={problem} />
@@ -2592,29 +2745,6 @@ function Viewer({
             </button>
           </div>
         )}
-        <label>
-          对方的显示器{" "}
-          {reconnecting && (
-            <span role="status">正在重连（最多 3 次）；等待新的授权批准…</span>
-          )}
-          <select
-            aria-label="对方的显示器"
-            disabled={ended || !status?.displays.length}
-            value={picture?.display ?? 1}
-            onChange={(e) =>
-              void invoke("media_select", {
-                id,
-                display: Number(e.target.value),
-              }).catch((err) => setProblem(errorText(err)))
-            }
-          >
-            {status?.displays.map((d) => (
-              <option key={d.id} value={d.id}>
-                {d.name} · {d.width}×{d.height} · {d.dpi} DPI
-              </option>
-            ))}
-          </select>
-        </label>
         <div
           className="remote-screen"
           ref={screen}
@@ -2711,36 +2841,6 @@ function Viewer({
             </span>
           )}
         </div>
-        {control && (
-          <form
-            className="inline-form"
-            onSubmit={(e) => {
-              e.preventDefault();
-              if (text) send({ kind: "text", text });
-              setText("");
-            }}
-          >
-            <input
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              maxLength={64}
-              placeholder="向受控窗口输入文字"
-              aria-label="远端文字"
-            />
-            <button className="secondary">发送文字</button>
-            <button
-              type="button"
-              className="secondary"
-              onClick={() => send(null)}
-            >
-              松开所有按键
-            </button>
-          </form>
-        )}
-        <p className="hint">
-          画面使用低帧率 JPEG；网络 RTT 不是画面延迟。系统安全桌面、UAC
-          和无人登录桌面不支持。
-        </p>
       </div>
     </section>
   );
