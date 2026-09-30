@@ -53,6 +53,7 @@ function Start-App([bool]$SignedOut = $true) {
     $script:root = [Windows.Automation.AutomationElement]::FromHandle($script:appProcess.MainWindowHandle)
     $null = Find-UI '设备控制台'
     if ($SignedOut) { $null = Find-UI '未登录'; $null = Find-UI '本机未共享' }
+    else { Click-UI '*我的设备' }
 }
 function Set-UIValue([string]$Name, [string]$Value) {
     (Find-UI $Name 'Edit').GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern).SetValue($Value)

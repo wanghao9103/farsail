@@ -397,7 +397,7 @@ async fn logout_or_operational_shutdown_cancels_slow_restore_with_different_pers
             async move { c.restore_sharing(|| Ok(())).await }
         });
         f.seen.notified().await;
-        let exit = if logout {
+        let mut exit = if logout {
             Some(tokio::spawn({
                 let c = c.clone();
                 async move { c.call("logout", Value::Null).await }
@@ -414,6 +414,10 @@ async fn logout_or_operational_shutdown_cancels_slow_restore_with_different_pers
             })
             .await
             .unwrap();
+            exit.take().unwrap().await.unwrap().unwrap();
+            // The old capability response arrives after both logout and a server switch.
+            // Compensation must use its original request identity, not current settings.
+            c.set_server("https://another.invalid").await.unwrap();
         }
         f.release.notify_one();
         assert!(restore.await.unwrap().is_err());
@@ -425,9 +429,6 @@ async fn logout_or_operational_shutdown_cancels_slow_restore_with_different_pers
         assert!(!c.hosting_enabled());
         assert!(!f.advertised.load(Ordering::SeqCst));
         assert_eq!(f.store.read(KEY).unwrap().is_some(), !logout);
-        if logout {
-            c.set_server("https://another.invalid").await.unwrap();
-        }
     }
 }
 #[tokio::test]
