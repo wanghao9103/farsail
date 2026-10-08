@@ -51,9 +51,8 @@ function Start-App([bool]$SignedOut = $true) {
     } while (!$script:appProcess.MainWindowHandle -and [DateTime]::UtcNow -lt $until)
     if (!$script:appProcess.MainWindowHandle) { throw 'No native window' }
     $script:root = [Windows.Automation.AutomationElement]::FromHandle($script:appProcess.MainWindowHandle)
-    $null = Find-UI '总览'
-    if ($SignedOut) { $null = Find-UI '未登录'; $null = Find-UI '本机未共享' }
-    else { Click-UI '*我的设备' }
+    if ($SignedOut) { $null = Find-UI '登录 FarSail'; $null = Find-UI '连接设置' }
+    else { $null = Find-UI '总览'; Click-UI '*我的设备' }
 }
 function Set-UIValue([string]$Name, [string]$Value) {
     (Find-UI $Name 'Edit').GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern).SetValue($Value)
@@ -162,7 +161,7 @@ try {
     $null=Find-UI '本机未共享'
     if ((Get-FileHash $preferencePath).Hash -ne $optOutHash) { throw 'Restart changed explicit opt-out' }
     Click-UI '*账号安全'; Click-UI '退出登录'
-    $null=Find-UI '未登录'
+    $null=Find-UI '登录 FarSail'
     if (Test-Path $preferencePath) { throw 'Explicit logout retained approval preference' }
     Click-UI '*设置'; Set-UIValue '服务地址' 'https://example.invalid'; Click-UI '保存地址'
     $null=Find-UI '服务地址已保存'; Close-App
