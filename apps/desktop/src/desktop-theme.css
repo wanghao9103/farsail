@@ -886,9 +886,20 @@ td {
     padding: 0 4px 20px;
     justify-content: center;
   }
-  .brand > div,
-  .sidebar-foot {
+  .brand > div {
     display: none;
+  }
+  .sidebar-foot {
+    padding: 12px 0 0;
+  }
+  .sidebar-account,
+  .sidebar-status > span:not(.status-dot),
+  .sidebar-status small {
+    display: none;
+  }
+  .sidebar-status {
+    grid-template-columns: 1fr;
+    gap: 0;
   }
   nav button {
     justify-content: center;
@@ -943,6 +954,13 @@ td {
   .brand img {
     width: 30px;
     height: 30px;
+  }
+  .sidebar-foot {
+    flex: none;
+    margin: 0 4px;
+    padding: 0;
+    border: 0;
+    align-self: center;
   }
   nav button {
     padding: 7px;

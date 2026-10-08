@@ -672,7 +672,7 @@ const fs = require("node:fs");
     window.fixture.inputGeneration++;
   });
   await page
-    .getByText("控制已暂停", { exact: true })
+    .getByRole("alertdialog", { name: "控制已暂停", exact: true })
     .waitFor({ state: "attached" });
   assert(await page.getByAltText("远端桌面").isVisible());
   assert.equal(await page.getByText("会话已结束，远端画面已清除").count(), 0);
@@ -744,9 +744,15 @@ const fs = require("node:fs");
     window.fixture.retryable = true;
     window.fixture.closed = true;
   });
-  await page.getByRole("button", { name: "取消重连并关闭" }).waitFor();
+  await page
+    .locator(".viewer-empty-state")
+    .getByRole("button", { name: "取消重连并关闭" })
+    .waitFor();
   assert.equal(await page.getByAltText("远端桌面").count(), 0);
-  await page.getByRole("button", { name: "取消重连并关闭" }).click();
+  await page
+    .locator(".viewer-empty-state")
+    .getByRole("button", { name: "取消重连并关闭" })
+    .click();
   assert.equal(
     await page.evaluate(
       () =>
@@ -811,7 +817,11 @@ const fs = require("node:fs");
     window.fixture.closed = true;
     window.fixture.reconnectFailure = "重连已取消或授权已结束";
   });
-  await page.getByText("重连已取消或授权已结束", { exact: true }).waitFor();
+  await page
+    .getByRole("alertdialog")
+    .locator("p")
+    .getByText("重连已取消或授权已结束", { exact: true })
+    .waitFor();
   assert.equal(
     await retryButton.count(),
     0,

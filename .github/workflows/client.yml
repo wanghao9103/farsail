@@ -1,9 +1,9 @@
 name: Windows client
 on:
   push:
-    paths: ['apps/desktop/**', 'crates/client/**', 'crates/transport/**', 'crates/media/**', 'crates/windows/**', 'packages/ui/**', 'package*.json', 'Cargo.*', '.github/workflows/client.yml']
+    paths: ['apps/desktop/**', 'crates/client/**', 'crates/transport/**', 'crates/media/**', 'crates/windows/**', 'packages/ui/**', 'package*.json', 'Cargo.*', 'scripts/test-*', '.github/workflows/client.yml']
   pull_request:
-    paths: ['apps/desktop/**', 'crates/client/**', 'crates/transport/**', 'crates/media/**', 'crates/windows/**', 'packages/ui/**', 'package*.json', 'Cargo.*', '.github/workflows/client.yml']
+    paths: ['apps/desktop/**', 'crates/client/**', 'crates/transport/**', 'crates/media/**', 'crates/windows/**', 'packages/ui/**', 'package*.json', 'Cargo.*', 'scripts/test-*', '.github/workflows/client.yml']
 jobs:
   build:
     runs-on: windows-latest
@@ -19,6 +19,8 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci
+      - name: Pure viewer and feedback state regressions
+        run: node --test scripts/test-feedback-policy.mjs scripts/test-viewer-display-policy.mjs scripts/test-viewer-notice-policy.mjs
       - run: npm run typecheck
       - run: npm run build
       - run: cargo fmt --all -- --check

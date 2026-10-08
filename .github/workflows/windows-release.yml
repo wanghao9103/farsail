@@ -29,6 +29,8 @@ jobs:
           cache: npm
       - name: Build embedded release and NSIS
         run: ./scripts/package-windows.ps1
+      - name: Pure viewer and feedback state regressions
+        run: node --test scripts/test-feedback-policy.mjs scripts/test-viewer-display-policy.mjs scripts/test-viewer-notice-policy.mjs
       - name: Install, native WebView IPC, reinstall and uninstall
         run: ./scripts/test-windows-package.ps1
       - name: Targeted Rust regressions
