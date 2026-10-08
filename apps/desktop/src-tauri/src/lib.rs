@@ -4,6 +4,7 @@ use farsail_transport::Config as TransportConfig;
 use std::sync::Arc;
 use tauri::Manager;
 mod computer;
+mod input_recovery;
 mod remote;
 mod viewer;
 use fs2::FileExt;
@@ -22,6 +23,7 @@ async fn state(
     viewer::main_only(&window)?;
     let mut state = client.public_state().await;
     state["computerName"] = serde_json::json!(computer::name());
+    state["administratorMode"] = serde_json::json!(farsail_windows::administrator_mode());
     Ok(state)
 }
 #[tauri::command]
@@ -149,9 +151,10 @@ async fn remote_input(
     remote: tauri::State<'_, Arc<RemoteRuntime>>,
     id: String,
     input: Option<serde_json::Value>,
+    generation: Option<u64>,
 ) -> Result<(), String> {
     viewer::scoped(&window, &id)?;
-    remote.input(&id, input).await
+    remote.input(&id, input, generation).await
 }
 #[tauri::command]
 async fn media_profile(

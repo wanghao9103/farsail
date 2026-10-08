@@ -2,6 +2,11 @@
 use farsail_media::{FrameMeta, JpegFrame};
 use serde::{Deserialize, Serialize};
 
+mod input_context;
+pub use input_context::{
+    ForegroundWindow, administrator_mode, foreground_window, input_context_ready,
+};
+
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("Windows interactive desktop unavailable: {0}")]

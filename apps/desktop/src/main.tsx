@@ -31,6 +31,7 @@ type Tab =
   | "settings";
 type PublicState = {
   computerName?: string | null;
+  administratorMode?: boolean | null;
   server: string;
   signedIn: boolean;
   deviceId: string | null;
@@ -649,6 +650,20 @@ function App() {
                   act={act}
                   prepareTransport={prepareTransport}
                 />
+                <div className="input-permission-info">
+                  <strong>Windows 运行权限</strong>
+                  <p className="muted">
+                    {publicState.administratorMode === true
+                      ? "本机 FarSail 已以管理员权限运行。"
+                      : publicState.administratorMode === false
+                        ? "本机 FarSail 当前使用普通权限。"
+                        : "暂时无法读取本机运行权限。"}
+                  </p>
+                  <p className="hint">
+                    要操作以管理员权限运行的窗口，请在被控电脑手动以管理员身份启动
+                    FarSail；控制端不需要更改权限。系统授权确认与登录画面仍需在被控电脑上处理。
+                  </p>
+                </div>
                 <SharingRecovery state={publicState} />
                 {!publicState.deviceId && (
                   <p className="hint">
@@ -2683,11 +2698,16 @@ function Viewer({
       return;
     }
     const epoch = generation.current;
+    const observedInputGeneration = inputGeneration.current;
     inputPending.current++;
     inputQueue.current = inputQueue.current
       .then(() => {
         if (epoch === generation.current && controlRef.current)
-          return invoke("remote_input", { id, input });
+          return invoke("remote_input", {
+            id,
+            input,
+            generation: observedInputGeneration,
+          });
       })
       .catch((e) => {
         generation.current++;
@@ -2795,14 +2815,17 @@ function Viewer({
               s.input.generation < inputGeneration.current
             )
               return;
-            if (s.input) inputGeneration.current = s.input.generation;
-            if (s.input?.blocked && !inputBlockedRef.current) {
+            if (
+              (s.input && s.input.generation > inputGeneration.current) ||
+              (s.input?.blocked && !inputBlockedRef.current)
+            ) {
               generation.current++;
               controlRef.current = false;
               clearPointer();
               setText("");
               setToolbarVisible(true);
             }
+            if (s.input) inputGeneration.current = s.input.generation;
             inputBlockedRef.current = s.input?.blocked ?? false;
             setStatus(s);
             if (s.state === "closed") finish(s);

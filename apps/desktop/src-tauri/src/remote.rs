@@ -1,8 +1,11 @@
+use crate::input_recovery::InputRecovery;
 use farsail_client::NativeClient;
 use farsail_core::RemotePermission;
 use farsail_media::{BASELINE_PAYLOAD_BPS, ByteBudget, JpegFrame, wait_for_ack};
 use farsail_transport::{Channel, Frame, Session};
-use farsail_windows::{Capture, Display, Input, InputSink, displays};
+use farsail_windows::{
+    Capture, Display, Input, InputSink, displays, foreground_window, input_context_ready,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -151,6 +154,16 @@ impl VideoProfile {
     }
 }
 impl InputState {
+    fn allows_input(&self, payload: &[u8], observed: Option<u64>) -> bool {
+        payload == b"FSR1"
+            || payload == b"FSR2"
+            || payload == b"FSR3"
+            || (!self.blocked && observed == Some(self.generation))
+    }
+    fn recovery_hint(&self, bytes: &[u8]) -> Option<u64> {
+        recovery_generation(bytes, b"FSU1")
+            .filter(|generation| self.blocked && *generation == self.generation)
+    }
     fn update(&mut self, error: Option<&farsail_windows::Error>) {
         self.generation = self.generation.saturating_add(1);
         self.blocked = error.is_some();
@@ -179,6 +192,19 @@ impl InputState {
             *self = next;
         }
     }
+}
+
+fn recovery_packet(tag: &[u8; 4], generation: u64) -> Vec<u8> {
+    let mut bytes = tag.to_vec();
+    bytes.extend_from_slice(&generation.to_be_bytes());
+    bytes
+}
+
+fn recovery_generation(bytes: &[u8], tag: &[u8; 4]) -> Option<u64> {
+    if bytes.len() != 12 || &bytes[..4] != tag {
+        return None;
+    }
+    Some(u64::from_be_bytes(bytes[4..12].try_into().ok()?))
 }
 
 fn ended_message(reason: &str) -> &'static str {
@@ -245,6 +271,7 @@ struct Live {
     send_sequence: AtomicU64,
     send_lock: Mutex<()>,
     send_permits: Semaphore,
+    auto_resume_sending: AtomicBool,
 }
 
 pub struct RemoteRuntime {
@@ -316,6 +343,7 @@ impl RemoteRuntime {
             send_sequence: AtomicU64::new(0),
             send_lock: Mutex::new(()),
             send_permits: Semaphore::new(32),
+            auto_resume_sending: AtomicBool::new(false),
         });
         sessions.insert(session.id().into(), live.clone());
         drop(sessions);
@@ -561,12 +589,69 @@ impl RemoteRuntime {
         let mut input_count = 0u32;
         let mut move_count = 0u32;
         let mut mouse_recovery = MouseRecovery::default();
+        let mut input_recovery = InputRecovery::default();
+        let mut pending_auto = None;
+        let mut last_recovery_hint: Option<std::time::Instant> = None;
         loop {
             if !live.alive.load(Ordering::SeqCst)
                 || !self.client.hosting_enabled()
                 || !live.session.is_open().await
             {
                 break;
+            }
+            if live.session.permission() == RemotePermission::Control
+                && live.input_state.lock().unwrap().blocked
+            {
+                let hint = {
+                    let mut sink = live.input.lock().unwrap();
+                    let now = std::time::Instant::now();
+                    if let Some(candidate) = input_recovery.prepare(
+                        foreground_window(),
+                        now,
+                        || {
+                            live.alive.load(Ordering::SeqCst)
+                                && self.client.hosting_enabled()
+                                && live.session.is_open_now()
+                        },
+                        input_context_ready,
+                        || sink.release_all(),
+                    ) {
+                        let state = live.input_state.lock().unwrap();
+                        pending_auto = Some((state.generation, candidate));
+                        if last_recovery_hint
+                            .is_none_or(|last| now.duration_since(last) >= Duration::from_secs(1))
+                        {
+                            last_recovery_hint = Some(now);
+                            Some((state.packet(), recovery_packet(b"FSU1", state.generation)))
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                };
+                // The hint does not unblock control. The viewer acknowledges
+                // through its existing ordered input queue, after older gestures.
+                if let Some((pause, hint)) = hint
+                    && (live
+                        .session
+                        .send(Frame {
+                            channel: Channel::Control,
+                            bytes: pause,
+                        })
+                        .await
+                        .is_err()
+                        || live
+                            .session
+                            .send(Frame {
+                                channel: Channel::Control,
+                                bytes: hint,
+                            })
+                            .await
+                            .is_err())
+                {
+                    break;
+                }
             }
             {
                 let incoming = if input_order.pending.is_empty() {
@@ -664,8 +749,36 @@ impl RemoteRuntime {
                             {
                                 break;
                             }
-                            if &payload == b"FSR2" || &payload == b"FSR3" {
+                            if let Some(generation) = recovery_generation(&payload, b"FSR4") {
+                                let mut state = live.input_state.lock().unwrap();
+                                if state.blocked
+                                    && state.generation == generation
+                                    && let Some((pending_generation, candidate)) = pending_auto
+                                    && pending_generation == generation
+                                    && input_recovery.acknowledge(
+                                        candidate,
+                                        || {
+                                            live.alive.load(Ordering::SeqCst)
+                                                && self.client.hosting_enabled()
+                                                && live.session.is_open_now()
+                                        },
+                                        input_context_ready,
+                                        || sink.release_all(),
+                                    )
+                                {
+                                    pending_auto = None;
+                                    state.update(None);
+                                    notice = Some(state.packet());
+                                }
+                            } else if &payload == b"FSR2" || &payload == b"FSR3" {
+                                pending_auto = None;
+                                let before = foreground_window();
                                 let result = sink.release_all();
+                                if result.is_ok() {
+                                    input_recovery.clear();
+                                } else {
+                                    input_recovery.arm(before);
+                                }
                                 if &payload == b"FSR3" && result.is_ok() {
                                     // No reuse of stale geometry or held buttons. The worker
                                     // rebuilds even if the selected monitor/profile is unchanged.
@@ -676,7 +789,10 @@ impl RemoteRuntime {
                                 state.update(result.as_ref().err());
                                 notice = Some(state.packet());
                             } else if &payload == b"FSR1" {
+                                let before = foreground_window();
                                 if let Err(e) = sink.release_all() {
+                                    pending_auto = None;
+                                    input_recovery.arm(before);
                                     let mut state = live.input_state.lock().unwrap();
                                     state.update(Some(&e));
                                     notice = Some(state.packet());
@@ -700,6 +816,7 @@ impl RemoteRuntime {
                                 );
                                 let recoverable =
                                     recoverable_mouse(&input, live.selected.load(Ordering::SeqCst));
+                                let before = foreground_window();
                                 let result = sink.apply(
                                     input,
                                     current.as_ref().map(|x| &x.0),
@@ -722,6 +839,8 @@ impl RemoteRuntime {
                                                     .fetch_add(1, Ordering::SeqCst);
                                             }
                                             Err(e) => {
+                                                pending_auto = None;
+                                                input_recovery.arm(before);
                                                 let mut state = live.input_state.lock().unwrap();
                                                 state.update(Some(&e));
                                                 notice = Some(state.packet());
@@ -734,6 +853,8 @@ impl RemoteRuntime {
                                         continue;
                                     }
                                     if !matches!(e, farsail_windows::Error::Geometry) {
+                                        pending_auto = None;
+                                        input_recovery.arm(before);
                                         let _ = sink.release_all();
                                         let mut state = live.input_state.lock().unwrap();
                                         state.update(Some(&e));
@@ -766,7 +887,7 @@ impl RemoteRuntime {
         }
     }
 
-    async fn run_viewer(&self, live: Arc<Live>, sender: watch::Sender<Option<Vec<u8>>>) {
+    async fn run_viewer(self: &Arc<Self>, live: Arc<Live>, sender: watch::Sender<Option<Vec<u8>>>) {
         let mut last_sequence = 0;
         loop {
             if !live.alive.load(Ordering::SeqCst) || !live.session.is_open().await {
@@ -782,6 +903,28 @@ impl RemoteRuntime {
             {
                 live.input_state.lock().unwrap().accept(&frame.bytes);
                 live.mouse_state.lock().unwrap().accept(&frame.bytes);
+                let recovery = live.input_state.lock().unwrap().recovery_hint(&frame.bytes);
+                if let Some(generation) = recovery
+                    && live
+                        .auto_resume_sending
+                        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                        .is_ok()
+                {
+                    let owner = self.clone();
+                    let live = live.clone();
+                    // Do not hold up screen ACKs while the ordered input send
+                    // lock drains earlier commands. Repeated hints are bounded.
+                    tokio::spawn(async move {
+                        let _ = owner
+                            .input(
+                                live.session.id(),
+                                Some(json!({"kind":"resume_auto","generation":generation})),
+                                None,
+                            )
+                            .await;
+                        live.auto_resume_sending.store(false, Ordering::SeqCst);
+                    });
+                }
                 continue;
             }
             if frame.channel != Channel::Media {
@@ -942,7 +1085,12 @@ impl RemoteRuntime {
             .map_err(|e| e.to_string())?;
         Ok(generation)
     }
-    pub async fn input(&self, id: &str, value: Option<Value>) -> Result<(), String> {
+    pub async fn input(
+        &self,
+        id: &str,
+        value: Option<Value>,
+        observed: Option<u64>,
+    ) -> Result<(), String> {
         let live = self
             .sessions
             .lock()
@@ -962,7 +1110,14 @@ impl RemoteRuntime {
         let recover_mouse = value.as_ref().and_then(Value::as_object).is_some_and(|v| {
             v.len() == 1 && v.get("kind").and_then(Value::as_str) == Some("resume_mouse")
         });
-        let payload = if recover_mouse {
+        let auto_resume = value.as_ref().and_then(Value::as_object).and_then(|v| {
+            (v.len() == 2 && v.get("kind").and_then(Value::as_str) == Some("resume_auto"))
+                .then(|| v.get("generation").and_then(Value::as_u64))
+                .flatten()
+        });
+        let payload = if let Some(generation) = auto_resume {
+            recovery_packet(b"FSR4", generation)
+        } else if recover_mouse {
             b"FSR3".to_vec()
         } else if resume {
             b"FSR2".to_vec()
@@ -993,12 +1148,15 @@ impl RemoteRuntime {
         if !live.alive.load(Ordering::SeqCst) || !live.session.is_open().await {
             return Err("会话已结束，输入已停止".into());
         }
-        if live.input_state.lock().unwrap().blocked
-            && payload != b"FSR1"
-            && payload != b"FSR2"
-            && payload != b"FSR3"
         {
-            return Ok(());
+            let state = live.input_state.lock().unwrap();
+            if let Some(generation) = auto_resume {
+                if !state.blocked || state.generation != generation {
+                    return Ok(());
+                }
+            } else if !state.allows_input(&payload, observed) {
+                return Ok(());
+            }
         }
         let mut bytes = b"FSI1".to_vec();
         bytes.extend_from_slice(
@@ -1355,6 +1513,122 @@ mod tests {
         viewer.accept(&[0; 769]);
         viewer.accept(b"FSB1{\"generation\":999,\"blocked\":false,\"message\":null,\"extra\":1}");
         assert_eq!(viewer.generation, generation);
+    }
+    #[test]
+    fn frontend_gestures_cannot_cross_an_unobserved_pause_resume_generation() {
+        let mut state = InputState::default();
+        let observed_before_pause = Some(state.generation);
+        assert!(state.allows_input(b"click", observed_before_pause));
+        state.update(Some(&farsail_windows::Error::Injection {
+            inserted: 0,
+            expected: 1,
+            code: 0,
+        }));
+        assert!(!state.allows_input(b"click", Some(state.generation)));
+        state.update(None);
+        // A queued JS promise may only enter IPC after native has resumed.
+        assert!(!state.allows_input(b"old-click", observed_before_pause));
+        assert!(!state.allows_input(b"untagged-click", None));
+        assert!(state.allows_input(b"fresh-click", Some(state.generation)));
+        assert!(state.allows_input(b"FSR1", None));
+        assert!(state.allows_input(b"FSR2", None));
+        assert!(state.allows_input(b"FSR3", None));
+    }
+    #[test]
+    fn recovery_hint_requires_current_pause_and_exact_packet() {
+        let mut state = InputState::default();
+        state.update(Some(&farsail_windows::Error::Injection {
+            inserted: 0,
+            expected: 1,
+            code: 0,
+        }));
+        let hint = recovery_packet(b"FSU1", state.generation);
+        assert_eq!(state.recovery_hint(&hint), Some(state.generation));
+        assert_eq!(
+            state.recovery_hint(&recovery_packet(b"FSU1", state.generation + 1)),
+            None
+        );
+        assert_eq!(
+            state.recovery_hint(&recovery_packet(b"FSR4", state.generation)),
+            None
+        );
+        assert_eq!(recovery_generation(&hint[..11], b"FSU1"), None);
+        let mut oversized = hint.clone();
+        oversized.push(0);
+        assert_eq!(recovery_generation(&oversized, b"FSU1"), None);
+        state.update(None);
+        assert_eq!(state.recovery_hint(&hint), None);
+        assert_eq!(
+            state.recovery_hint(&recovery_packet(b"FSU1", state.generation)),
+            None
+        );
+    }
+    #[test]
+    fn ordered_recovery_discards_delayed_old_gestures_before_acknowledgement() {
+        use farsail_windows::ForegroundWindow;
+        let now = std::time::Instant::now();
+        let failed = ForegroundWindow {
+            window: 1,
+            process_id: 10,
+        };
+        let safe = ForegroundWindow {
+            window: 2,
+            process_id: 20,
+        };
+        let mut order = InputOrder::default();
+        assert_eq!(order.push(1, b"failed-click".to_vec()).unwrap().len(), 1);
+        let mut state = InputState::default();
+        state.update(Some(&farsail_windows::Error::Injection {
+            inserted: 0,
+            expected: 1,
+            code: 0,
+        }));
+        let mut recovery = InputRecovery::default();
+        recovery.arm(Some(failed));
+        assert_eq!(
+            recovery.prepare(Some(safe), now, || true, |_| true, || Ok::<(), ()>(())),
+            None
+        );
+        assert_eq!(
+            recovery.prepare(
+                Some(safe),
+                now + Duration::from_secs(1),
+                || true,
+                |_| true,
+                || Ok::<(), ()>(())
+            ),
+            Some(safe)
+        );
+        // seq3 down and seq4 ack arrive before delayed seq2. Preparation must
+        // leave the pause intact until the ordered ack crosses this boundary.
+        assert!(order.push(3, b"old-down".to_vec()).unwrap().is_empty());
+        assert!(
+            order
+                .push(4, recovery_packet(b"FSR4", state.generation))
+                .unwrap()
+                .is_empty()
+        );
+        let mut applied = Vec::new();
+        for payload in order.push(2, b"old-move".to_vec()).unwrap() {
+            if let Some(generation) = recovery_generation(&payload, b"FSR4") {
+                assert!(state.blocked && generation == state.generation);
+                assert!(recovery.acknowledge(safe, || true, |_| true, || Ok::<(), ()>(())));
+                state.update(None);
+            } else if !state.blocked {
+                applied.push(payload);
+            }
+        }
+        assert!(
+            applied.is_empty(),
+            "old gestures cannot land on the new window"
+        );
+        assert!(!state.blocked);
+        for payload in order.push(5, b"fresh-click".to_vec()).unwrap() {
+            if !state.blocked {
+                applied.push(payload);
+            }
+        }
+        assert_eq!(applied, vec![b"fresh-click".to_vec()]);
     }
     #[test]
     fn reordered_input_is_applied_once_in_order_and_bounded() {
