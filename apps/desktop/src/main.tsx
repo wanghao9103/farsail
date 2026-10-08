@@ -5,6 +5,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { Device, Me, Pending, Remote, User } from "@farsail/ui";
 import "./style.css";
 import "./desktop-theme.css";
+import { RefreshFailureGate } from "./feedback-policy";
 import { FailureDialog, failureMessage, type FailureAction } from "./feedback";
 import {
   Home20Regular,
@@ -232,9 +233,10 @@ function App() {
     "login" | "register" | "verify" | "resend" | "recover" | "reset"
   >("login");
   const refreshVersion = useRef(0);
+  const refreshFailures = useRef(new RefreshFailureGate());
   const nameMigrationAttempts = useRef(new Set<string>());
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (foreground = true) => {
     if (!native) {
       setProblem(
         "浏览器预览仅用于检查布局；请运行 Tauri 客户端使用账号与设备功能。",
@@ -263,6 +265,7 @@ function App() {
       }
     });
     if (!p.signedIn) {
+      refreshFailures.current.recovered();
       setConnectionInvite(null);
       setSignupInvite(null);
       setTransportReady(false);
@@ -316,8 +319,17 @@ function App() {
         const rows = await api<Pending[]>("pending");
         if (version === refreshVersion.current) setPending(rows);
       } else setPending([]);
+      if (version === refreshVersion.current)
+        refreshFailures.current.recovered();
     } catch (e) {
-      if (version === refreshVersion.current) setProblem(errorText(e));
+      const error = errorText(e);
+      if (
+        version === refreshVersion.current &&
+        refreshFailures.current.shouldReport(error, foreground)
+      ) {
+        setFailureAction(undefined);
+        setProblem(error);
+      }
     }
   }, []);
   useEffect(() => {
@@ -341,7 +353,7 @@ function App() {
   useEffect(() => {
     if (!me) return;
     const timer = window.setInterval(() => {
-      void refresh();
+      void refresh(false).catch(() => {});
     }, 15000);
     return () => window.clearInterval(timer);
   }, [me?.id, refresh]);
@@ -1088,7 +1100,7 @@ function Overview({
   pending: Pending[];
   busy: boolean;
   act: Action;
-  onRefresh: () => Promise<void>;
+  onRefresh: (foreground?: boolean) => Promise<void>;
   onNavigate: (t: Tab) => void;
 }) {
   const local = devices.find((x) => x.id === state.deviceId);
@@ -1255,7 +1267,7 @@ function Devices({
   prepareTransport: () => Promise<void>;
   onConnectionReset: () => void;
   onView: (id: string) => Promise<void>;
-  onRefresh: () => Promise<void>;
+  onRefresh: (foreground?: boolean) => Promise<void>;
   onNavigate: (tab: Tab) => void;
   devices: Device[];
   state: PublicState;
@@ -1297,7 +1309,10 @@ function Devices({
   }, [device?.id]);
   useEffect(() => {
     if (!waiting) return;
-    const timer = window.setInterval(() => void onRefresh(), 2000);
+    const timer = window.setInterval(
+      () => void onRefresh(false).catch(() => {}),
+      2000,
+    );
     return () => window.clearInterval(timer);
   }, [waiting, onRefresh]);
   useEffect(() => {
@@ -1832,7 +1847,7 @@ function Requests({
   act: Action;
   transportReady: boolean;
   prepareTransport: () => Promise<void>;
-  onRefresh: () => Promise<void>;
+  onRefresh: (foreground?: boolean) => Promise<void>;
   invitation: ConnectionInvitation | null;
   setInvitation: React.Dispatch<
     React.SetStateAction<ConnectionInvitation | null>
@@ -1898,7 +1913,7 @@ function Requests({
   useEffect(() => {
     if (!pendingCount) return;
     const timer = window.setInterval(
-      () => void onRefresh().catch(() => {}),
+      () => void onRefresh(false).catch(() => {}),
       2000,
     );
     return () => window.clearInterval(timer);

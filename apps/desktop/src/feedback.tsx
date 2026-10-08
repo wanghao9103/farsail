@@ -1,4 +1,5 @@
 import { useEffect, useRef, useId } from "react";
+import { DialogKeyboardGate } from "./feedback-policy";
 import {
   ErrorCircle24Filled,
   Dismiss16Regular,
@@ -10,6 +11,32 @@ export type FailureAction = {
   retry?: () => void;
   retryLabel?: string;
 };
+
+const dialogKeys = new DialogKeyboardGate();
+let keyboardBoundaryInstalled = false;
+function installKeyboardBoundary() {
+  if (keyboardBoundaryInstalled) return;
+  keyboardBoundaryInstalled = true;
+  const filter = (event: KeyboardEvent) => {
+    const insideDialog =
+      event.target instanceof Element && !!event.target.closest("dialog[open]");
+    if (insideDialog && event.type === "keydown")
+      dialogKeys.press(event.code || event.key, event.repeat);
+    if (
+      dialogKeys.suppress(
+        event.code || event.key,
+        event.type === "keyup" ? "up" : "down",
+        insideDialog,
+      )
+    ) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }
+  };
+  window.addEventListener("keydown", filter, true);
+  window.addEventListener("keyup", filter, true);
+  window.addEventListener("blur", () => dialogKeys.reset());
+}
 
 export function failureTitle(raw: string) {
   if (/transport timeout/i.test(raw)) return "连接远程电脑超时";
@@ -55,6 +82,7 @@ export function FailureDialog({
   const description = useId();
   const title = action?.title ?? failureTitle(error);
   useEffect(() => {
+    installKeyboardBoundary();
     const node = dialog.current;
     if (!error || !node) return;
     const previous = document.activeElement;
@@ -77,7 +105,10 @@ export function FailureDialog({
         e.preventDefault();
         onDismiss();
       }}
-      onKeyDown={(e) => e.stopPropagation()}
+      onKeyDown={(e) => {
+        e.stopPropagation();
+      }}
+      onKeyUp={(e) => e.stopPropagation()}
     >
       <button
         className="dialog-close"
