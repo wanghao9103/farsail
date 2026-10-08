@@ -51,7 +51,7 @@ function Start-App([bool]$SignedOut = $true) {
     } while (!$script:appProcess.MainWindowHandle -and [DateTime]::UtcNow -lt $until)
     if (!$script:appProcess.MainWindowHandle) { throw 'No native window' }
     $script:root = [Windows.Automation.AutomationElement]::FromHandle($script:appProcess.MainWindowHandle)
-    $null = Find-UI '设备控制台'
+    $null = Find-UI '总览'
     if ($SignedOut) { $null = Find-UI '未登录'; $null = Find-UI '本机未共享' }
     else { Click-UI '*我的设备' }
 }

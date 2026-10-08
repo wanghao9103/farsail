@@ -110,14 +110,22 @@ const fs = require("node:fs");
         }
         if (cmd === "share_enable") {
           f.sharing = true;
-          f.sharePreferences = { sharing: true, watch: f.sharePreferences.watch, restore: "ready" };
+          f.sharePreferences = {
+            sharing: true,
+            watch: f.sharePreferences.watch,
+            restore: "ready",
+          };
           local.can_host = true;
           return {};
         }
         if (cmd === "share_disable") {
           f.sharing = false;
           f.remoteWatch = false;
-          f.sharePreferences = { sharing: false, watch: false, restore: "idle" };
+          f.sharePreferences = {
+            sharing: false,
+            watch: false,
+            restore: "idle",
+          };
           local.can_host = false;
           return {};
         }
@@ -238,7 +246,11 @@ const fs = require("node:fs");
         }
         if (op === "logout" || op === "password") {
           f.transportRunning = false;
-          f.sharePreferences = { sharing: false, watch: false, restore: "idle" };
+          f.sharePreferences = {
+            sharing: false,
+            watch: false,
+            restore: "idle",
+          };
           f.signedIn = false;
           f.sharing = false;
           f.connected = {};
@@ -260,7 +272,11 @@ const fs = require("node:fs");
   await page.getByLabel("邮箱验证码", { exact: true }).waitFor();
   await page.getByLabel("邮箱验证码", { exact: true }).fill("bad-code");
   await page.getByRole("button", { name: "完成验证", exact: true }).click();
-  await page.getByRole("alert").filter({ hasText: "HTTP 400" }).waitFor();
+  await page.getByRole("alertdialog").filter({ hasText: "HTTP 400" }).waitFor();
+  await page
+    .getByRole("alertdialog")
+    .getByLabel("关闭错误", { exact: true })
+    .click();
   assert(await page.getByLabel("邮箱验证码", { exact: true }).isVisible());
   await page.getByLabel("邮箱验证码", { exact: true }).fill("synthetic-code");
   await page.getByRole("button", { name: "完成验证", exact: true }).click();
@@ -292,26 +308,51 @@ const fs = require("node:fs");
   await page.evaluate(() => {
     window.fixture.sharing = false;
     window.fixture.remoteWatch = false;
-    window.fixture.sharePreferences = { sharing: true, watch: true, restore: "pending" };
+    window.fixture.sharePreferences = {
+      sharing: true,
+      watch: true,
+      restore: "pending",
+    };
   });
   await page.getByRole("button", { name: "刷新", exact: true }).click();
   await page.getByText(/尚未开启共享/).waitFor();
-  assert(await page.getByRole("button", { name: "关闭远程值守", exact: true }).isEnabled());
+  assert(
+    await page
+      .getByRole("button", { name: "关闭远程值守", exact: true })
+      .isEnabled(),
+  );
   await page.getByRole("button", { name: "关闭远程值守", exact: true }).click();
-  assert.equal(await page.evaluate(() => window.fixture.sharePreferences.watch), false);
-  await page.evaluate(() => { window.fixture.sharePreferences.restore = "failed"; });
+  assert.equal(
+    await page.evaluate(() => window.fixture.sharePreferences.watch),
+    false,
+  );
+  await page.evaluate(() => {
+    window.fixture.sharePreferences.restore = "failed";
+  });
   await page.getByRole("button", { name: "刷新", exact: true }).click();
   await page.getByText(/本次未恢复共享/).waitFor();
   const beforeRetry = await page.evaluate(() => window.fixture.calls.length);
   await page.getByRole("button", { name: "重试本机共享", exact: true }).click();
   await page.getByText("本机共享已恢复", { exact: true }).waitFor();
-  const retry = await page.evaluate((n) => window.fixture.calls.slice(n), beforeRetry);
-  assert(!retry.some((x) => x.cmd === "transport_start"), "reuse native restored transport");
+  const retry = await page.evaluate(
+    (n) => window.fixture.calls.slice(n),
+    beforeRetry,
+  );
+  assert(
+    !retry.some((x) => x.cmd === "transport_start"),
+    "reuse native restored transport",
+  );
   assert(retry.some((x) => x.cmd === "share_enable"));
-  await page.evaluate(() => { window.fixture.sharing = false; window.fixture.sharePreferences.restore = "pending"; });
+  await page.evaluate(() => {
+    window.fixture.sharing = false;
+    window.fixture.sharePreferences.restore = "pending";
+  });
   await page.getByRole("button", { name: "刷新", exact: true }).click();
   await page.getByRole("button", { name: "停止本机共享", exact: true }).click();
-  assert.equal(await page.evaluate(() => window.fixture.sharePreferences.sharing), false);
+  assert.equal(
+    await page.evaluate(() => window.fixture.sharePreferences.sharing),
+    false,
+  );
   await page.getByRole("button", { name: "开启本机共享", exact: true }).click();
   await page.getByRole("button", { name: "开启远程值守", exact: true }).click();
   await page
@@ -643,7 +684,14 @@ const fs = require("node:fs");
   await page
     .getByRole("button", { name: "发送密码重置邮件", exact: true })
     .click();
-  await page.getByRole("alert").filter({ hasText: "操作未完成" }).waitFor();
+  await page
+    .getByRole("alertdialog")
+    .filter({ hasText: "操作未完成" })
+    .waitFor();
+  await page
+    .getByRole("alertdialog")
+    .getByLabel("关闭错误", { exact: true })
+    .click();
   assert(
     await page
       .getByRole("heading", { name: "找回密码", exact: true })
@@ -664,7 +712,14 @@ const fs = require("node:fs");
   await page
     .getByRole("button", { name: "保存新密码并返回登录", exact: true })
     .click();
-  await page.getByRole("alert").filter({ hasText: "操作未完成" }).waitFor();
+  await page
+    .getByRole("alertdialog")
+    .filter({ hasText: "操作未完成" })
+    .waitFor();
+  await page
+    .getByRole("alertdialog")
+    .getByLabel("关闭错误", { exact: true })
+    .click();
   assert(await page.getByLabel("邮件中的重置码", { exact: true }).isVisible());
   await page
     .getByRole("button", { name: "保存新密码并返回登录", exact: true })
@@ -687,10 +742,8 @@ const fs = require("node:fs");
   await loginAgain();
   await page.getByRole("button", { name: "共享与设置", exact: true }).click();
   const beforeSharing = await page.evaluate(() => window.fixture.calls.length);
-  await page.getByRole("button", { name: "开启本机共享", exact: true }).click();
-  await page
-    .getByRole("button", { name: "停止本机共享", exact: true })
-    .waitFor();
+  await page.getByRole("switch", { name: "本机屏幕共享", exact: true }).check();
+  await page.waitForFunction(() => window.fixture.sharing);
   const sharingCommands = await page.evaluate(
     (from) => window.fixture.calls.slice(from).map((x) => x.cmd),
     beforeSharing,
@@ -705,10 +758,10 @@ const fs = require("node:fs");
     false,
   );
   await page.screenshot({ path: ".local/ui-verification/sharing-actions.png" });
-  await page.getByRole("button", { name: "停止本机共享", exact: true }).click();
   await page
-    .getByRole("button", { name: "开启本机共享", exact: true })
-    .waitFor();
+    .getByRole("switch", { name: "本机屏幕共享", exact: true })
+    .uncheck();
+  await page.waitForFunction(() => !window.fixture.sharing);
   assert.equal(await page.evaluate(() => window.fixture.sharing), false);
   await page.evaluate(() => {
     window.fixture.requests = [
@@ -738,9 +791,13 @@ const fs = require("node:fs");
   });
   await approvedConnect.click();
   await page
-    .getByRole("alert")
+    .getByRole("alertdialog")
     .filter({ hasText: "无法连接中继服务器" })
     .waitFor();
+  await page
+    .getByRole("alertdialog")
+    .getByLabel("关闭错误", { exact: true })
+    .click();
   assert(await approvedConnect.isEnabled());
   await page.evaluate(() => {
     window.fixture.failTransport = false;
@@ -755,7 +812,14 @@ const fs = require("node:fs");
     window.fixture.failNextOp = "revoke_remote";
   });
   await page.getByRole("button", { name: "结束本次连接", exact: true }).click();
-  await page.getByRole("alert").filter({ hasText: "操作未完成" }).waitFor();
+  await page
+    .getByRole("alertdialog")
+    .filter({ hasText: "操作未完成" })
+    .waitFor();
+  await page
+    .getByRole("alertdialog")
+    .getByLabel("关闭错误", { exact: true })
+    .click();
   assert(
     await page
       .getByRole("heading", { name: "远程连接", exact: true })
@@ -785,7 +849,14 @@ const fs = require("node:fs");
     window.fixture.failClipboard = true;
   });
   await page.getByRole("button", { name: "复制设备 ID", exact: true }).click();
-  await page.getByRole("alert").filter({ hasText: "无法自动复制" }).waitFor();
+  await page
+    .getByRole("alertdialog")
+    .filter({ hasText: "无法自动复制" })
+    .waitFor();
+  await page
+    .getByRole("alertdialog")
+    .getByLabel("关闭错误", { exact: true })
+    .click();
   await page.evaluate(() => {
     window.fixture.failClipboard = false;
   });
@@ -946,9 +1017,13 @@ const fs = require("node:fs");
   });
   await page.getByRole("button", { name: "刷新", exact: true }).click();
   await page
-    .getByRole("alert")
+    .getByRole("alertdialog")
     .filter({ hasText: "未能同步本机的计算机名称" })
     .waitFor();
+  await page
+    .getByRole("alertdialog")
+    .getByLabel("关闭错误", { exact: true })
+    .click();
   assert.equal(
     await page.evaluate(() => window.fixture.devices[0].name),
     "这台 Windows 电脑",

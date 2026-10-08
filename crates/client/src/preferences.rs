@@ -286,11 +286,9 @@ impl NativeClient {
             return Err(Error::Invalid("sharing restore cancelled".into()));
         }
         if !self.transport_running().await {
-            self.start_transport(TransportConfig {
-                bind: "0.0.0.0:0".parse().unwrap(),
-                ..Default::default()
-            })
-            .await?;
+            let server = self.state.lock().await.base.clone();
+            self.start_transport(default_transport_config(&server)?)
+                .await?;
         }
         if !self.preference_current(revision) {
             return Err(Error::Invalid("sharing restore cancelled".into()));

@@ -38,6 +38,30 @@ pub enum Error {
 }
 pub type Result<T> = std::result::Result<T, Error>;
 
+// Same desktop defaults for explicit start and remembered sharing restoration.
+// HTTPS deployment serves its authenticated relay on8443; loopback HTTP tests
+// remain direct-only. This selects configuration, never disables TLS verification.
+fn default_transport_config(server: &str) -> Result<TransportConfig> {
+    let mut url = Url::parse(&validate_base(server)?)
+        .map_err(|_| Error::Invalid("invalid server URL".into()))?;
+    let relay = if url.scheme() == "https" {
+        url.set_port(Some(8443))
+            .map_err(|_| Error::Invalid("invalid relay port".into()))?;
+        Some(
+            url.as_str()
+                .parse()
+                .map_err(|_| Error::Invalid("invalid relay URL".into()))?,
+        )
+    } else {
+        None
+    };
+    Ok(TransportConfig {
+        bind: "0.0.0.0:0".parse().unwrap(),
+        relay,
+        ..Default::default()
+    })
+}
+
 /// Only HTTPS is accepted outside the explicit loopback development boundary.
 pub fn validate_base(input: &str) -> Result<String> {
     let u = Url::parse(input).map_err(|_| Error::Invalid("invalid server URL".into()))?;
@@ -321,8 +345,23 @@ impl NativeClient {
         let s = self.state.lock().await;
         let preferences = self.preferences.lock().unwrap().public(&s);
         let mut result = json!({"server": s.base, "signedIn": s.login.is_some(), "deviceId": s.device.as_ref().map(|x| &x.id), "sharing":self.hosting_enabled(), "remoteWatch":self.auto_approve.load(Ordering::SeqCst) & 1 == 1, "sharePreferences":preferences});
+        result["defaultRelay"] = json!(
+            default_transport_config(&s.base)
+                .ok()
+                .and_then(|c| c.relay.map(|r| r.to_string()))
+        );
         drop(s);
         result["transportRunning"] = json!(self.transport_running().await);
+        result["transportConfiguration"] = self
+            .transport
+            .lock()
+            .await
+            .as_ref()
+            .map(|t| {
+                let (relay, force_relay) = t.relay_configuration();
+                json!({"relay":relay,"forceRelay":force_relay})
+            })
+            .unwrap_or(Value::Null);
         result
     }
     pub fn subscribe_sessions(&self) -> broadcast::Receiver<(Session, bool)> {
@@ -1684,6 +1723,30 @@ fn read_json<T: DeserializeOwned>(store: &dyn SecureStore, key: &str) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn restored_transport_matches_default_https_relay_without_weakening_trust() {
+        for server in [
+            "https://example.com",
+            "https://example.com:9443",
+            "https://[::1]:9443",
+        ] {
+            let config = default_transport_config(server).unwrap();
+            let url = Url::parse(&config.relay.unwrap().to_string()).unwrap();
+            assert_eq!(url.scheme(), "https");
+            assert_eq!(url.port(), Some(8443));
+            assert!(!config.force_relay);
+            assert!(config.relay_ca_der.is_empty());
+            assert!(config.bind.ip().is_unspecified());
+        }
+        assert!(
+            default_transport_config("http://127.0.0.1:8787")
+                .unwrap()
+                .relay
+                .is_none()
+        );
+        assert!(default_transport_config("http://example.com").is_err());
+        assert!(default_transport_config("https://user:secret@example.com").is_err());
+    }
     #[derive(Default)]
     struct MemoryStore(std::sync::Mutex<std::collections::HashMap<String, Vec<u8>>>);
     impl SecureStore for MemoryStore {

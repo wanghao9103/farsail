@@ -215,6 +215,12 @@ impl Transport {
     pub fn addr(&self) -> EndpointAddr {
         self.endpoint.addr()
     }
+    pub fn relay_configuration(&self) -> (Option<String>, bool) {
+        (
+            self.configured_relay.as_ref().map(ToString::to_string),
+            self.force_relay,
+        )
+    }
     pub async fn wait_online(&self) {
         self.endpoint.online().await
     }

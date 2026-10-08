@@ -4,6 +4,21 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { Device, Me, Pending, Remote, User } from "@farsail/ui";
 import "./style.css";
+import "./desktop-theme.css";
+import { FailureDialog, failureMessage, type FailureAction } from "./feedback";
+import {
+  Home20Regular,
+  Desktop20Regular,
+  ArrowSwap20Regular,
+  Shield20Regular,
+  Settings20Regular,
+  People20Regular,
+  Dismiss16Regular,
+  Subtract16Regular,
+  Square16Regular,
+  ChevronRight16Regular,
+  ArrowSync20Regular,
+} from "@fluentui/react-icons";
 
 type Tab =
   | "overview"
@@ -21,6 +36,8 @@ type PublicState = {
   sharing: boolean;
   remoteWatch?: boolean;
   transportRunning?: boolean;
+  defaultRelay?: string | null;
+  transportConfiguration?: { relay: string | null; forceRelay: boolean } | null;
   sharePreferences?: {
     sharing: boolean;
     watch: boolean;
@@ -41,6 +58,68 @@ function SharingRecovery({ state }: { state: PublicState }) {
     </p>
   );
 }
+function SettingsSharingControls({
+  state,
+  busy,
+  act,
+  prepareTransport,
+}: {
+  state: PublicState;
+  busy: boolean;
+  act: Action;
+  prepareTransport: () => Promise<void>;
+}) {
+  return (
+    <div className="preference-rows">
+      <label className="preference-row">
+        <span>
+          <strong>本机屏幕共享</strong>
+          <small>开启后，其他设备可申请查看或控制本机。</small>
+        </span>
+        <input
+          type="checkbox"
+          role="switch"
+          aria-label="本机屏幕共享"
+          checked={sharingChoice(state)}
+          disabled={busy || !state.deviceId}
+          onChange={() =>
+            void act(
+              async () => {
+                if (!sharingChoice(state)) await prepareTransport();
+                await invoke(
+                  sharingChoice(state) ? "share_disable" : "share_enable",
+                );
+              },
+              sharingChoice(state) ? "已停止本机共享" : "本机共享已开启",
+            )
+          }
+        />
+      </label>
+      <label className="preference-row">
+        <span>
+          <strong>同账号远程值守</strong>
+          <small>开启后，同账号设备无需逐次批准。</small>
+        </span>
+        <input
+          type="checkbox"
+          role="switch"
+          aria-label="同账号远程值守"
+          checked={watchChoice(state)}
+          disabled={busy || (!state.sharing && !watchChoice(state))}
+          onChange={() =>
+            void act(
+              () => invoke("remote_watch", { enabled: !watchChoice(state) }),
+              watchChoice(state) ? "已关闭远程值守" : "已开启远程值守",
+            )
+          }
+        />
+      </label>
+      <p className="hint">
+        会记住你的选择；重启后重新检查登录、设备和桌面状态。
+      </p>
+    </div>
+  );
+}
 type ConnectionInvitation = {
   id: string;
   code: string;
@@ -57,6 +136,7 @@ type SignupInvitation = {
 const api = <T,>(op: string, args: Record<string, unknown> = {}): Promise<T> =>
   invoke("call", { op, args });
 const native = "__TAURI_INTERNALS__" in window;
+const HANDLED_FAILURE = Symbol("handled failure");
 const errorText = (e: unknown) => String(e instanceof Error ? e.message : e);
 const readableError = (raw: string) => {
   if (/local sign-out complete/.test(raw))
@@ -79,22 +159,8 @@ const readableError = (raw: string) => {
   if (/unbound|device not bound/i.test(raw))
     return "请先将这台电脑添加到账号，再尝试连接。";
   if (/[\u3400-\u9fff]/.test(raw)) return raw;
-  return "操作未完成，请检查网络和服务器设置后重试。";
+  return failureMessage(raw);
 };
-function ErrorMessage({ error }: { error: string }) {
-  const message = readableError(error);
-  return (
-    <div className="error-message">
-      <span>{message}</span>
-      {message !== error && (
-        <details>
-          <summary>查看错误详情</summary>
-          <code>{error}</code>
-        </details>
-      )}
-    </div>
-  );
-}
 const copyText = async (value: string) => {
   try {
     await navigator.clipboard.writeText(value);
@@ -148,6 +214,7 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [problem, setProblem] = useState("");
+  const [failureAction, setFailureAction] = useState<FailureAction>();
   const [devices, setDevices] = useState<Device[]>([]);
   const [requests, setRequests] = useState<Remote[]>([]);
   const [pending, setPending] = useState<Pending[]>([]);
@@ -181,6 +248,8 @@ function App() {
     setServer(p.server);
     setRelayUrl((previous) => {
       if (previous) return previous;
+      if (p.transportConfiguration) return p.transportConfiguration.relay ?? "";
+      if (p.defaultRelay !== undefined) return p.defaultRelay ?? "";
       try {
         const url = new URL(p.server);
         if (url.protocol !== "https:") return "";
@@ -280,18 +349,21 @@ function App() {
     work: () => Promise<unknown>,
     message: string,
     reload = true,
+    failureAction?: FailureAction,
   ) => {
     setBusy(true);
     setProblem("");
+    setFailureAction(undefined);
     setNotice("");
     try {
-      await work();
+      if ((await work()) === HANDLED_FAILURE) return;
       setNotice(message);
       if (reload) await refresh();
     } catch (e) {
       // Failed mutations may still stop sharing or clear local credentials.
       if (reload) await refresh().catch(() => {});
       setProblem(errorText(e));
+      setFailureAction(failureAction);
     } finally {
       setBusy(false);
     }
@@ -350,9 +422,7 @@ function App() {
                   .catch((e) => setProblem(errorText(e)))
               }
             >
-              <svg width="12" height="12" viewBox="0 0 12 12">
-                <path d="M1 6h10" />
-              </svg>
+              <Subtract16Regular />
             </button>
             <button
               aria-label="最大化或还原"
@@ -363,9 +433,7 @@ function App() {
                   .catch((e) => setProblem(errorText(e)))
               }
             >
-              <svg width="12" height="12" viewBox="0 0 12 12">
-                <rect x="1.5" y="1.5" width="9" height="9" />
-              </svg>
+              <Square16Regular />
             </button>
             <button
               className="window-close"
@@ -377,9 +445,7 @@ function App() {
                   .catch((e) => setProblem(errorText(e)))
               }
             >
-              <svg width="12" height="12" viewBox="0 0 12 12">
-                <path d="m2 2 8 8M10 2l-8 8" />
-              </svg>
+              <Dismiss16Regular />
             </button>
           </div>
         </header>
@@ -396,14 +462,16 @@ function App() {
         <nav aria-label="主导航">
           {(
             [
-              ["overview", "总览", "◫"],
-              ["devices", "我的设备", "▣"],
-              ["requests", "远程连接", "⇄"],
-              ["security", "账号安全", "◇"],
-              ...(me?.role === "admin" ? [["admin", "管理控制台", "⚙"]] : []),
-              ["settings", "共享与设置", "☷"],
-            ] as [Tab, string, string][]
-          ).map(([id, label, icon]) => (
+              ["overview", "总览", Home20Regular],
+              ["devices", "我的设备", Desktop20Regular],
+              ["requests", "远程连接", ArrowSwap20Regular],
+              ["settings", "共享与设置", Settings20Regular],
+              ["security", "账号安全", Shield20Regular],
+              ...(me?.role === "admin"
+                ? [["admin", "管理控制台", People20Regular]]
+                : []),
+            ] as [Tab, string, React.ComponentType][]
+          ).map(([id, label, Icon]) => (
             <button
               key={id}
               className={tab === id ? "active" : ""}
@@ -411,7 +479,9 @@ function App() {
               title={label}
               onClick={() => setTab(id)}
             >
-              <span>{icon}</span>
+              <span aria-hidden="true">
+                <Icon />
+              </span>
               {label}
             </button>
           ))}
@@ -422,6 +492,15 @@ function App() {
           aria-label={publicState.sharing ? "本机屏幕共享中" : "本机未共享"}
           title={publicState.sharing ? "本机屏幕共享中" : "本机未共享"}
         >
+          {me && (
+            <div className="sidebar-account">
+              <People20Regular aria-hidden="true" />
+              <span title={me.email}>
+                {me.email}
+                <small>{me.role === "admin" ? "管理员" : "个人账号"}</small>
+              </span>
+            </div>
+          )}
           <div
             className={`status-dot ${publicState.sharing ? "is-sharing" : ""}`}
           />
@@ -438,7 +517,7 @@ function App() {
               {
                 (
                   {
-                    overview: "设备控制台",
+                    overview: "总览",
                     devices: "我的设备",
                     requests: "远程连接",
                     viewer: "远程画面",
@@ -464,14 +543,15 @@ function App() {
             )}
           </div>
         </header>
-        {problem && (
-          <div className="alert error" role="alert">
-            <ErrorMessage error={problem} />
-            <button onClick={() => setProblem("")} aria-label="关闭错误">
-              ×
-            </button>
-          </div>
-        )}
+        <FailureDialog
+          error={problem}
+          message={readableError(problem)}
+          onDismiss={() => {
+            setProblem("");
+            setFailureAction(undefined);
+          }}
+          action={failureAction}
+        />
         {notice && (
           <div className="alert success" role="status">
             <span>{notice}</span>
@@ -495,6 +575,7 @@ function App() {
                 setMe(current);
                 setTab("devices");
               }}
+              onSettings={() => setTab("settings")}
             />
           ) : tab === "settings" ? (
             <section className="stack">
@@ -531,71 +612,31 @@ function App() {
                 {me && <p className="hint">请先退出登录再修改服务地址。</p>}
               </div>
               <div className="card">
-                <h2>当前版本支持</h2>
+                <h2>当前连接设置</h2>
                 <p className="muted">
-                  Windows
-                  电脑可共享屏幕，也可在批准后允许对方操作鼠标键盘。暂不支持文件传输、系统权限确认界面和未登录的桌面。
+                  {!publicState.transportRunning
+                    ? "连接尚未启动"
+                    : publicState.transportConfiguration?.relay
+                      ? "中继已配置，可作为直连失败时的备用路径。"
+                      : "当前仅使用直连，未配置中继备用路径。"}
                 </p>
-                <div className="tag-row">
-                  <span className="tag ready">账号与设备</span>
-                  <span className="tag ready">屏幕查看与控制</span>
-                  <span className="tag">文件传输 · 暂不支持</span>
-                </div>
+                {publicState.transportConfiguration?.relay && (
+                  <p className="setting-value">
+                    {publicState.transportConfiguration.relay}
+                  </p>
+                )}
+                <p className="hint">
+                  这里显示当前端点使用的设置；具体连接路径会显示在远程窗口中。
+                </p>
               </div>
               <div className="card">
-                <h2>让另一台设备连接这台电脑</h2>
-                <ol className="setup-guide">
-                  <li>
-                    <strong>添加本机</strong>：先在“总览”将这台电脑添加到账号。
-                  </li>
-                  <li>
-                    <strong>开启本机共享</strong>
-                    ：点击下方按钮，应用会自动准备连接。
-                  </li>
-                  <li>
-                    <strong>批准对方</strong>
-                    ：收到请求后，在“待我批准”选择允许查看或控制。
-                  </li>
-                </ol>
-                <p className="muted">
-                  停止共享会断开正在访问本机的连接。你连接其他电脑的操作不受影响。
-                </p>
-                <div className="row-actions">
-                  <button
-                    className={
-                      sharingChoice(publicState) ? "secondary" : "primary"
-                    }
-                    disabled={busy || !publicState.deviceId}
-                    onClick={() =>
-                      void act(
-                        async () => {
-                          if (!sharingChoice(publicState))
-                            await prepareTransport();
-                          await invoke(
-                            sharingChoice(publicState)
-                              ? "share_disable"
-                              : "share_enable",
-                          );
-                        },
-                        sharingChoice(publicState)
-                          ? "已停止本机共享，对方不能继续查看或控制本机"
-                          : "本机共享已开启，默认收到连接请求后需要批准",
-                      )
-                    }
-                  >
-                    {sharingChoice(publicState)
-                      ? "停止本机共享"
-                      : "开启本机共享"}
-                  </button>
-                  {publicState.sharing && (
-                    <button
-                      className="secondary"
-                      onClick={() => setTab("requests")}
-                    >
-                      管理远程连接
-                    </button>
-                  )}
-                </div>
+                <h2>本机共享</h2>
+                <SettingsSharingControls
+                  state={publicState}
+                  busy={busy}
+                  act={act}
+                  prepareTransport={prepareTransport}
+                />
                 <SharingRecovery state={publicState} />
                 {!publicState.deviceId && (
                   <p className="hint">
@@ -738,6 +779,7 @@ type Action = (
   work: () => Promise<unknown>,
   message: string,
   reload?: boolean,
+  failureAction?: FailureAction,
 ) => Promise<void>;
 function Auth({
   mode,
@@ -745,6 +787,7 @@ function Auth({
   busy,
   act,
   onLogin,
+  onSettings,
 }: {
   mode: "login" | "register" | "verify" | "resend" | "recover" | "reset";
   setMode: (
@@ -753,9 +796,11 @@ function Auth({
   busy: boolean;
   act: Action;
   onLogin: (x: Record<string, unknown>) => Promise<void>;
+  onSettings: () => void;
 }) {
   const loginErrorDialog = useRef<HTMLDialogElement>(null);
   const [loginError, setLoginError] = useState("");
+  const [loginTechnicalError, setLoginTechnicalError] = useState("");
   const [email, setEmail] = useState(""),
     [password, setPassword] = useState(""),
     [newPassword, setNewPassword] = useState(""),
@@ -780,10 +825,11 @@ function Auth({
             ? "无法登录：邮箱或密码不正确，或账号尚未验证、已被停用。新注册账号请先完成邮箱验证。"
             : /HTTP 429\b/.test(raw)
               ? "登录尝试过于频繁，请稍后再试。"
-              : "暂时无法登录，请检查网络和设置中的服务器地址后重试。";
+              : "暂时未能登录。请稍后再试，或查看技术详情。";
           setLoginError(message);
+          setLoginTechnicalError(raw);
           loginErrorDialog.current?.showModal();
-          throw new Error(message);
+          return HANDLED_FAILURE;
         }
       }, "欢迎回来");
     if (mode === "register")
@@ -828,6 +874,15 @@ function Auth({
   };
   return (
     <div className="auth-wrap">
+      <div className="auth-identity">
+        <img src="/icon.png" alt="FarSail 图标" />
+        <h1>FarSail 遥舟</h1>
+        <p>连接你的电脑，继续你的工作。</p>
+        <button className="text-button" onClick={onSettings}>
+          <Settings20Regular />
+          连接设置
+        </button>
+      </div>
       <dialog
         ref={loginErrorDialog}
         className="login-error-dialog"
@@ -863,8 +918,32 @@ function Auth({
             返回登录
           </button>
         </div>
+        <details className="failure-details">
+          <summary>技术详情</summary>
+          <code>{loginTechnicalError}</code>
+        </details>
       </dialog>
       <section className="card auth-card">
+        <div className="auth-tabs" role="tablist" aria-label="账号入口">
+          <button
+            role="tab"
+            aria-selected={mode === "login"}
+            className={mode === "login" ? "active" : ""}
+            disabled={busy}
+            onClick={() => setMode("login")}
+          >
+            登录
+          </button>
+          <button
+            role="tab"
+            aria-selected={mode === "register"}
+            className={mode === "register" ? "active" : ""}
+            disabled={busy}
+            onClick={() => setMode("register")}
+          >
+            注册
+          </button>
+        </div>
         <div className="eyebrow">SECURE ACCESS</div>
         <h2>{titles[mode]}</h2>
         <p className="muted">
@@ -993,7 +1072,6 @@ function Auth({
 }
 
 function Overview({
-  me,
   state,
   devices,
   requests,
@@ -1021,38 +1099,12 @@ function Overview({
   }, [state.computerName]);
   return (
     <div className="stack">
-      <div className="hero">
-        <div>
-          <div className="eyebrow">YOUR DESK, YOUR RULES</div>
-          <h2>连接你的电脑</h2>
-          <p>你好，{me.email}。这里汇总你账号下的设备和等待处理的请求。</p>
-          <div className="hero-actions">
-            <button className="primary" onClick={() => onNavigate("devices")}>
-              查看所有设备 →
-            </button>
-            <button className="ghost" onClick={() => void onRefresh()}>
-              刷新状态
-            </button>
-          </div>
-        </div>
-        <div className="hero-mark">◈</div>
-      </div>
-      <div className="metrics">
-        <div className="metric">
-          <span>账号设备</span>
-          <strong>{devices.length}</strong>
-          <small>包括离线与停用</small>
-        </div>
-        <div className="metric">
-          <span>在线设备</span>
-          <strong>{devices.filter((x) => x.online).length}</strong>
-          <small>当前保持连接的设备</small>
-        </div>
-        <div className="metric">
-          <span>待处理请求</span>
-          <strong>{pending.length}</strong>
-          <small>需要本机设备批准</small>
-        </div>
+      <div className="overview-commandbar">
+        <p className="muted">管理你的电脑，或开始一次远程连接。</p>
+        <button className="text-button" onClick={() => void onRefresh()}>
+          <ArrowSync20Regular />
+          刷新状态
+        </button>
       </div>
       {!state.deviceId ? (
         <div className="card attention">
@@ -1097,6 +1149,10 @@ function Overview({
       ) : (
         <div className="card local-device">
           <div>
+            <Desktop20Regular
+              className="local-device-icon"
+              aria-hidden="true"
+            />
             <div className="eyebrow">THIS DEVICE</div>
             <h2>{local?.name ?? "本机设备"}</h2>
             <p className="muted">
@@ -1108,7 +1164,10 @@ function Overview({
             <span className={state.sharing ? "tag ready" : "tag"}>
               {state.sharing ? "本机共享已开启" : "本机共享未开启"}
             </span>
-            <button className="primary" onClick={() => onNavigate("settings")}>
+            <button
+              className="secondary"
+              onClick={() => onNavigate("settings")}
+            >
               {state.sharing ? "管理本机共享" : "设置本机共享"}
             </button>
             <small className="muted">
@@ -1117,6 +1176,16 @@ function Overview({
           </div>
         </div>
       )}
+      <div className="overview-shortcuts">
+        <span className="muted">
+          {devices.length} 台设备 · {devices.filter((d) => d.online).length}{" "}
+          台在线{pending.length ? ` · ${pending.length} 条待批准` : ""}
+        </span>
+        <button className="primary" onClick={() => onNavigate("devices")}>
+          查看所有设备
+          <ChevronRight16Regular />
+        </button>
+      </div>
       <div className="card overview-history">
         <div className="section-heading">
           <div>
@@ -1163,7 +1232,7 @@ function Overview({
 function Empty({ text }: { text: string }) {
   return (
     <div className="empty">
-      <span>◎</span>
+      <Desktop20Regular aria-hidden="true" />
       <p>{text}</p>
     </div>
   );
@@ -1204,7 +1273,10 @@ function Devices({
   const inFlight = useRef(false);
   const [editing, setEditing] = useState(false);
   const [newName, setNewName] = useState("");
-  const [confirmUnbind, setConfirmUnbind] = useState(false);
+  const [confirmUnbind, setConfirmUnbind] = useState<{
+    id: string;
+    name: string;
+  } | null>(null);
   const shown = devices
     .filter(
       (d) =>
@@ -1221,7 +1293,7 @@ function Devices({
   const isLocal = device?.id === state.deviceId;
   useEffect(() => {
     setEditing(false);
-    setConfirmUnbind(false);
+    setConfirmUnbind(null);
   }, [device?.id]);
   useEffect(() => {
     if (!waiting) return;
@@ -1247,7 +1319,8 @@ function Devices({
             await onView(request.id);
             setConnectionNote("已在独立窗口打开，可继续管理设备。");
           } catch (e) {
-            setConnectionNote("连接失败，请检查双方网络和共享状态后重试。");
+            setConnectionNote("");
+            void api("revoke_remote", { id: request.id }).catch(() => {});
             throw e;
           } finally {
             inFlight.current = false;
@@ -1256,6 +1329,15 @@ function Devices({
         },
         "已打开独立远程窗口",
         false,
+        {
+          retryLabel: "重新连接",
+          retry: () =>
+            connect(
+              request.permission === "control" ? "control" : "view",
+              request.target_device_id,
+              true,
+            ),
+        },
       );
     } else if (request.state !== "pending") {
       setWaiting(null);
@@ -1266,41 +1348,55 @@ function Devices({
       );
     }
   }, [requests, waiting, act, prepareTransport, onView]);
-  const connect = (permission: "control" | "view") => {
-    if (!device || busy || inFlight.current || waiting) return;
-    const target = device.id;
+  const connect = (
+    permission: "control" | "view",
+    target = device?.id,
+    fresh = false,
+  ) => {
+    if (!device || inFlight.current || (!fresh && (busy || waiting))) return;
+    if (!target) return;
     inFlight.current = true;
     setConnecting(true);
     setConnectionNote("正在发送连接请求…");
-    void act(async () => {
-      try {
-        await prepareTransport();
-        const existing = requests.find(
-          (r) =>
-            r.source_device_id === state.deviceId &&
-            r.target_device_id === target &&
-            r.permission === permission &&
-            r.state === "pending",
-        );
-        const result =
-          existing ??
-          (await api<{ id: string }>("request", {
-            source_device_id: state.deviceId,
-            target_device_id: target,
-            permission,
-          }));
-        setWaiting({ id: result.id, target });
-        setConnectionNote(
-          "等待对方批准，批准后会在此页面打开画面；切换页面后可到“远程连接”查看进度。",
-        );
-      } catch (e) {
-        setConnectionNote("未能发起连接，请检查服务器设置和设备状态。");
-        throw e;
-      } finally {
-        inFlight.current = false;
-        setConnecting(false);
-      }
-    }, "已发送连接请求");
+    void act(
+      async () => {
+        try {
+          await prepareTransport();
+          const existing = fresh
+            ? undefined
+            : requests.find(
+                (r) =>
+                  r.source_device_id === state.deviceId &&
+                  r.target_device_id === target &&
+                  r.permission === permission &&
+                  r.state === "pending",
+              );
+          const result =
+            existing ??
+            (await api<{ id: string }>("request", {
+              source_device_id: state.deviceId,
+              target_device_id: target,
+              permission,
+            }));
+          setWaiting({ id: result.id, target });
+          setConnectionNote(
+            "等待对方批准，批准后会在此页面打开画面；切换页面后可到“远程连接”查看进度。",
+          );
+        } catch (e) {
+          setConnectionNote("");
+          throw e;
+        } finally {
+          inFlight.current = false;
+          setConnecting(false);
+        }
+      },
+      "已发送连接请求",
+      true,
+      {
+        retryLabel: "重新连接",
+        retry: () => connect(permission, target, true),
+      },
+    );
   };
   const blocked = !state.deviceId
     ? "先在“总览”添加这台电脑，才能发起连接。"
@@ -1353,7 +1449,7 @@ function Devices({
               <span
                 className={`device-indicator ${d.online && d.enabled ? "online" : ""}`}
               >
-                ▣
+                <Desktop20Regular />
               </span>
               <span className="device-list-name">
                 <strong>{d.name}</strong>
@@ -1363,7 +1459,7 @@ function Devices({
                   {short(d.id)}
                 </small>
               </span>
-              <span aria-hidden="true">›</span>
+              <ChevronRight16Regular aria-hidden="true" />
             </button>
           ))}
           {!shown.length && (
@@ -1560,7 +1656,8 @@ function Devices({
                     }
                     onClick={() => connect("control")}
                   >
-                    <span>▣</span>远程控制<small>查看屏幕并操作鼠标键盘</small>
+                    <Desktop20Regular aria-hidden="true" />
+                    远程控制<small>查看屏幕并操作鼠标键盘</small>
                   </button>
                   <button
                     className="secondary"
@@ -1679,35 +1776,26 @@ function Devices({
                 </button>
               )}
               {confirmUnbind ? (
-                <div className="notice-strip">
-                  <p>
-                    从账号移除“{device.name}
-                    ”后，与此设备相关的连接将结束。以后使用需要在该电脑重新添加。本机当前连接和共享也会停止。
-                  </p>
-                  <button
-                    className="danger-text"
-                    disabled={busy}
-                    onClick={() =>
+                <FailureDialog
+                  confirmation
+                  error={`移除“${confirmUnbind.name}”后，该设备的连接会结束。以后使用需要在该电脑重新添加。`}
+                  onDismiss={() => setConfirmUnbind(null)}
+                  action={{
+                    title: "从账号移除设备？",
+                    retryLabel: "确认移除设备",
+                    retry: () =>
                       void act(async () => {
                         onConnectionReset();
-                        await api("unbind_device", { id: device.id });
-                        setConfirmUnbind(false);
-                      }, "设备已从账号移除，需要使用时可在该电脑重新添加")
-                    }
-                  >
-                    确认移除设备
-                  </button>
-                  <button
-                    className="text-button"
-                    onClick={() => setConfirmUnbind(false)}
-                  >
-                    保留设备
-                  </button>
-                </div>
+                        await api("unbind_device", { id: confirmUnbind.id });
+                      }, "设备已从账号移除，需要使用时可在该电脑重新添加"),
+                  }}
+                />
               ) : (
                 <button
                   className="danger-text"
-                  onClick={() => setConfirmUnbind(true)}
+                  onClick={() =>
+                    setConfirmUnbind({ id: device.id, name: device.name })
+                  }
                 >
                   从账号移除设备
                 </button>
@@ -2233,14 +2321,33 @@ function Requests({
                             void act(
                               async () => {
                                 await prepareTransport();
-                                await invoke("transport_connect", {
-                                  id: r.id,
-                                  permission: r.permission,
-                                });
-                                await onView(r.id);
+                                try {
+                                  await invoke("transport_connect", {
+                                    id: r.id,
+                                    permission: r.permission,
+                                  });
+                                  await onView(r.id);
+                                } catch (e) {
+                                  void api("revoke_remote", { id: r.id }).catch(
+                                    () => {},
+                                  );
+                                  throw e;
+                                }
                               },
                               "已打开独立远程窗口",
                               false,
+                              {
+                                retryLabel: "重新申请连接",
+                                retry: () =>
+                                  void act(async () => {
+                                    await api("request", {
+                                      source_device_id: r.source_device_id,
+                                      target_device_id: r.target_device_id,
+                                      permission: r.permission,
+                                    });
+                                    await onRefresh();
+                                  }, "已重新申请连接，请等待对方批准"),
+                              },
                             )
                           }
                         >
@@ -2387,6 +2494,23 @@ function Viewer({
   const [reconnecting, setReconnecting] = useState(false);
   const [reconnectFailed, setReconnectFailed] = useState(false);
   const [retryingInput, setRetryingInput] = useState(false);
+  const [dismissedInput, setDismissedInput] = useState<number | null>(null);
+  const [dismissedMouse, setDismissedMouse] = useState<number | null>(null);
+  const [mouseFailure, setMouseFailure] = useState<number | null>(null);
+  useEffect(() => {
+    if (!status?.mouse?.rejected || ended || status.input?.blocked) {
+      setMouseFailure(null);
+      return;
+    }
+    const generation = status.mouse.generation;
+    const timer = window.setTimeout(() => setMouseFailure(generation), 1500);
+    return () => window.clearTimeout(timer);
+  }, [
+    status?.mouse?.rejected,
+    status?.mouse?.generation,
+    status?.input?.blocked,
+    ended,
+  ]);
   const [toolbarVisible, setToolbarVisible] = useState(true);
   const [toolsOpen, setToolsOpen] = useState(false);
   const [toolbarPinned, setToolbarPinned] = useState(false);
@@ -2587,6 +2711,14 @@ function Viewer({
     generation.current++;
     clearPointer();
     send({ kind: "resume_mouse" });
+  };
+  const resumeControl = () => {
+    setRetryingInput(true);
+    generation.current++;
+    clearPointer();
+    void invoke("remote_input", { id, input: { kind: "resume_control" } })
+      .catch((e) => setProblem(errorText(e)))
+      .finally(() => setRetryingInput(false));
   };
   const reconnect = () => {
     setReconnectFailed(false);
@@ -2824,18 +2956,14 @@ function Viewer({
               title="最小化"
               onClick={() => windowAction("minimize")}
             >
-              <svg width="12" height="12" viewBox="0 0 12 12">
-                <path d="M1 6h10" />
-              </svg>
+              <Subtract16Regular />
             </button>
             <button
               aria-label="最大化或还原"
               title="最大化 / 还原"
               onClick={() => windowAction("maximize")}
             >
-              <svg width="12" height="12" viewBox="0 0 12 12">
-                <rect x="1.5" y="1.5" width="9" height="9" />
-              </svg>
+              <Square16Regular />
             </button>
             <button
               className="window-close"
@@ -2843,9 +2971,7 @@ function Viewer({
               title="结束并关闭"
               onClick={onStop}
             >
-              <svg width="12" height="12" viewBox="0 0 12 12">
-                <path d="m2 2 8 8M10 2l-8 8" />
-              </svg>
+              <Dismiss16Regular />
             </button>
           </div>
         </header>
@@ -3022,6 +3148,15 @@ function Viewer({
                     恢复鼠标控制
                   </button>
                 )}
+                {inputBlocked && !ended && (
+                  <button
+                    type="button"
+                    disabled={retryingInput}
+                    onClick={resumeControl}
+                  >
+                    重试控制
+                  </button>
+                )}
                 {control && (
                   <form
                     className="inline-form"
@@ -3069,57 +3204,60 @@ function Viewer({
             正在重连（最多 3 次）；等待新的授权批准…
           </div>
         )}
-        {reconnectFailed && !reconnecting && (
-          <div className="notice-strip" role="status">
-            自动重连未成功。
-            <button className="secondary" onClick={reconnect}>
-              重新尝试连接
-            </button>
-          </div>
-        )}
-        {problem && (
-          <div className="alert error">
-            <ErrorMessage error={problem} />
-          </div>
-        )}
-        {status?.error && (
-          <div className="alert error">
-            <ErrorMessage error={status.error} />
-          </div>
-        )}
-        {inputBlocked && !ended && (
-          <div className="notice-strip" role="alert">
-            <p>
-              {status?.input?.message ?? "鼠标键盘控制已暂停，画面连接仍保留。"}
-            </p>
-            <button
-              className="secondary"
-              disabled={retryingInput}
-              onClick={() => {
-                setRetryingInput(true);
-                generation.current++;
-                void invoke("remote_input", {
-                  id,
-                  input: { kind: "resume_control" },
-                })
-                  .catch((e) => setProblem(errorText(e)))
-                  .finally(() => setRetryingInput(false));
-              }}
-            >
-              {retryingInput ? "正在请求重试…" : "重试控制"}
-            </button>
-          </div>
-        )}
-        {status?.mouse?.rejected && !ended && !inputBlocked && (
-          <div className="notice-strip" role="alert">
-            <p>
-              鼠标位置与被控端当前屏幕布局不一致，操作未执行；键盘和画面连接仍保留。
-            </p>
-            <button className="secondary" onClick={recoverMouse}>
-              恢复鼠标控制
-            </button>
-          </div>
-        )}
+        <FailureDialog
+          error={!reconnecting ? problem : ""}
+          message={
+            /transport timeout/i.test(problem)
+              ? "当前操作未能发送到远程电脑。你可以稍后重试。"
+              : undefined
+          }
+          onDismiss={() => setProblem("")}
+          action={
+            reconnectFailed
+              ? {
+                  title: "暂时无法恢复远程连接",
+                  retry: reconnect,
+                  retryLabel: "重新尝试连接",
+                }
+              : /transport timeout/i.test(problem)
+                ? { title: "远程操作超时" }
+                : undefined
+          }
+        />
+        <FailureDialog
+          error={
+            inputBlocked &&
+            !ended &&
+            !problem &&
+            dismissedInput !== status?.input?.generation
+              ? (status?.input?.message ??
+                "系统暂时无法执行鼠标键盘操作，画面连接仍保留。")
+              : ""
+          }
+          onDismiss={() => setDismissedInput(status?.input?.generation ?? 0)}
+          action={{
+            title: "控制已暂停",
+            retry: resumeControl,
+            retryLabel: "重试控制",
+          }}
+        />
+        <FailureDialog
+          error={
+            mouseFailure !== null &&
+            mouseFailure !== dismissedMouse &&
+            !ended &&
+            !inputBlocked &&
+            !problem
+              ? "自动刷新后仍未能恢复鼠标定位。画面连接保持，你可以再次恢复鼠标控制。"
+              : ""
+          }
+          onDismiss={() => setDismissedMouse(mouseFailure)}
+          action={{
+            title: "鼠标控制暂时不可用",
+            retry: recoverMouse,
+            retryLabel: "恢复鼠标控制",
+          }}
+        />
         <div
           className="remote-screen"
           ref={screen}
@@ -3182,11 +3320,16 @@ function Viewer({
               }}
             />
           ) : (
-            <span>
-              {ended
-                ? "会话已结束，远端画面已清除"
-                : "等待远端 JPEG 画面；点击画面后使用键盘"}
-            </span>
+            <div className="viewer-empty-state">
+              <p>
+                {ended ? "会话已结束，远端画面已清除" : "正在等待远端画面…"}
+              </p>
+              {reconnectFailed && !reconnecting && (
+                <button className="primary" onClick={reconnect}>
+                  重新尝试连接
+                </button>
+              )}
+            </div>
           )}
         </div>
       </div>
@@ -3225,11 +3368,11 @@ function Security({
   }, [me.id]);
   return (
     <div className="stack">
-      {loadError && (
-        <div className="alert error" role="alert">
-          <ErrorMessage error={loadError} />
-        </div>
-      )}
+      <FailureDialog
+        error={loadError}
+        onDismiss={() => setLoadError("")}
+        action={{ title: "无法加载登录记录" }}
+      />
       <div className="two-col">
         <div className="card">
           <div className="eyebrow">PASSWORD</div>
@@ -3462,9 +3605,11 @@ function Admin({
   return (
     <div className="stack">
       {loadError && (
-        <div className="alert error" role="alert">
-          <ErrorMessage error={loadError} />
-        </div>
+        <FailureDialog
+          error={loadError}
+          onDismiss={() => setLoadError("")}
+          action={{ title: "无法加载管理数据" }}
+        />
       )}
       <div className="notice-strip">
         管理账号、设备和注册方式。即使是管理员，连接他人电脑也需要对方批准。

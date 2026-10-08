@@ -582,15 +582,33 @@ const fs = require("node:fs");
   await page.evaluate(() => {
     window.fixture.mouse = { generation: 1, rejected: true };
   });
-  const mouseWarning = page.getByText(
-    "鼠标位置与被控端当前屏幕布局不一致，操作未执行；键盘和画面连接仍保留。",
-    { exact: true },
-  );
+  const mouseWarning = page.getByRole("alertdialog", {
+    name: "鼠标控制暂时不可用",
+  });
   await mouseWarning.waitFor();
-  await page.locator(".remote-screen").focus();
   const beforeMouseRecovery = await page.evaluate(
     () => window.fixture.calls.length,
   );
+  const beforeDialogKeys = await page.evaluate(
+    () => window.fixture.calls.filter((c) => c.cmd === "remote_input").length,
+  );
+  await page.keyboard.press("G");
+  assert.equal(
+    await page.evaluate(
+      () => window.fixture.calls.filter((c) => c.cmd === "remote_input").length,
+    ),
+    beforeDialogKeys,
+    "dialog keys must not leak into remote input",
+  );
+  assert(await page.getByAltText("远端桌面").isVisible());
+  await mouseWarning
+    .getByRole("button", { name: "恢复鼠标控制", exact: true })
+    .click();
+  await mouseWarning.waitFor({ state: "hidden" });
+  await page.waitForFunction(
+    () => window.fixture.deliveredLayout === window.fixture.layout,
+  );
+  await page.getByAltText("远端桌面").click();
   await page.keyboard.press("G");
   await page.waitForFunction(
     (start) =>
@@ -604,16 +622,6 @@ const fs = require("node:fs");
         ),
     beforeMouseRecovery,
   );
-  assert(await page.getByAltText("远端桌面").isVisible());
-  await page
-    .getByRole("alert")
-    .getByRole("button", { name: "恢复鼠标控制", exact: true })
-    .click();
-  await mouseWarning.waitFor({ state: "hidden" });
-  await page.waitForFunction(
-    () => window.fixture.deliveredLayout === window.fixture.layout,
-  );
-  await page.getByAltText("远端桌面").click();
   await page.waitForFunction(
     (start) =>
       window.fixture.calls
@@ -638,7 +646,6 @@ const fs = require("node:fs");
   const blockedBefore = await page.evaluate(
     () => window.fixture.calls.filter((c) => c.cmd === "remote_input").length,
   );
-  await page.getByAltText("远端桌面").click();
   await page.keyboard.press("Z");
   assert.equal(
     await page.evaluate(
@@ -726,7 +733,7 @@ const fs = require("node:fs");
     window.fixture.reconnectFailure =
       "自动重连未成功，请检查网络并重新发起连接";
   });
-  const retryButton = page.getByRole("button", {
+  const retryButton = page.getByRole("alertdialog").getByRole("button", {
     name: "重新尝试连接",
     exact: true,
   });
