@@ -25,6 +25,14 @@ const fs = require("node:fs");
       mouse: { generation: 0, rejected: false },
       reconnectFailure: null,
       reconnectSuccess: false,
+      recovery: {
+        cycle: 0,
+        phase: "idle",
+        attempt: 0,
+        maxAttempts: 3,
+        retryInMs: null,
+        manualRetryAllowed: false,
+      },
       video: { profile: 1, generation: 0, supported: true, max_profile: 3 },
       heartbeat: true,
       lastFrame: 0,
@@ -88,7 +96,16 @@ const fs = require("node:fs");
             mouse: f.mouse,
             rtt_ms: 23,
             displays: [
-              { id: 1, name: "Display", width: 3840, height: 2160, dpi: 96 },
+              {
+                id: 1,
+                name: "Display",
+                x: 0,
+                y: 0,
+                width: 3840,
+                height: 2160,
+                dpi: 96,
+                rotation: 0,
+              },
             ],
             error: f.closed ? "会话已结束，画面与输入已停止" : null,
             retryable: f.retryable,
@@ -127,14 +144,30 @@ const fs = require("node:fs");
           return {};
         }
         if (cmd === "viewer_reconnect") {
-          if (f.reconnectFailure) throw Error(f.reconnectFailure);
+          f.recovery = {
+            cycle: f.recovery.cycle + 1,
+            phase: "awaiting_approval",
+            attempt: 1,
+            maxAttempts: 3,
+            retryInMs: null,
+            manualRetryAllowed: false,
+          };
+          if (f.reconnectFailure) {
+            const exhausted = f.reconnectFailure.includes("自动重连未成功");
+            f.recovery.phase = exhausted ? "failed" : "cancelled";
+            f.recovery.attempt = exhausted ? 3 : 1;
+            f.recovery.manualRetryAllowed = exhausted;
+            throw Error(f.reconnectFailure);
+          }
           if (f.reconnectSuccess) {
             f.closed = false;
             f.retryable = false;
+            f.recovery.phase = "connected";
             return { id: "recovered" };
           }
           return new Promise(() => {});
         }
+        if (cmd === "viewer_recovery_status") return { ...f.recovery };
         if (cmd === "media_profile") {
           f.video.profile = args.profile;
           f.video.generation++;

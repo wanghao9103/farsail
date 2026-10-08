@@ -6,6 +6,15 @@ import type { Device, Me, Pending, Remote, User } from "@farsail/ui";
 import "./style.css";
 import "./desktop-theme.css";
 import { RefreshFailureGate } from "./feedback-policy";
+import {
+  ViewerDisplayGate,
+  recoveryStageText,
+  dispatchViewerInput,
+  type RemoteDisplay,
+  type DisplaySnapshot,
+  type DisplayTicket,
+  type RecoveryStatus,
+} from "./viewer-display-policy";
 import { FailureDialog, failureMessage, type FailureAction } from "./feedback";
 import {
   Home20Regular,
@@ -2443,16 +2452,6 @@ function Requests({
     </div>
   );
 }
-type RemoteDisplay = {
-  id: number;
-  name: string;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  dpi: number;
-  rotation: number;
-};
 type RemoteStatus = {
   video?: {
     profile: number;
@@ -2481,11 +2480,53 @@ type Picture = {
 };
 function ViewerWindow({ initialId }: { initialId: string }) {
   const [id, setId] = useState(initialId);
+  const currentId = useRef(id);
+  currentId.current = id;
+  const displayChoice = useRef<RemoteDisplay | null>(null);
+  const [restoring, setRestoring] = useState(false);
+  const [recoveryNotice, setRecoveryNotice] = useState("");
+  const noticeTimer = useRef<number | undefined>(undefined);
+  const clearRecoveryNotice = useCallback(() => {
+    window.clearTimeout(noticeTimer.current);
+    setRecoveryNotice("");
+  }, []);
+  const reconnected = useCallback(
+    (nextId: string) => {
+      clearRecoveryNotice();
+      setRestoring(true);
+      setId(nextId);
+    },
+    [clearRecoveryNotice],
+  );
+  const restored = useCallback(
+    (sessionId: string, display: RemoteDisplay | null) => {
+      if (currentId.current !== sessionId) return;
+      setRestoring(false);
+      window.clearTimeout(noticeTimer.current);
+      setRecoveryNotice(
+        display ? `连接已恢复，继续显示 ${display.name}` : "连接与画面已恢复",
+      );
+      noticeTimer.current = window.setTimeout(
+        () => setRecoveryNotice(""),
+        4000,
+      );
+    },
+    [],
+  );
+  useEffect(() => () => window.clearTimeout(noticeTimer.current), []);
   return (
     <Viewer
       key={id}
       id={id}
-      onReconnect={setId}
+      onReconnect={reconnected}
+      rememberedDisplay={displayChoice.current}
+      resuming={restoring}
+      onDisplayIntent={(display) => {
+        displayChoice.current = { ...display };
+      }}
+      onRestored={restored}
+      onRecoveryStart={clearRecoveryNotice}
+      recoveryNotice={recoveryNotice}
       onStop={() => void invoke("viewer_window_action", { action: "close" })}
     />
   );
@@ -2494,10 +2535,22 @@ function Viewer({
   id,
   onStop,
   onReconnect,
+  rememberedDisplay,
+  resuming,
+  onDisplayIntent,
+  onRestored,
+  onRecoveryStart,
+  recoveryNotice,
 }: {
   id: string;
   onStop: () => void;
   onReconnect: (id: string) => void;
+  rememberedDisplay: RemoteDisplay | null;
+  resuming: boolean;
+  onDisplayIntent: (display: RemoteDisplay) => void;
+  onRestored: (id: string, display: RemoteDisplay | null) => void;
+  onRecoveryStart: () => void;
+  recoveryNotice: string;
 }) {
   const [status, setStatus] = useState<RemoteStatus | null>(null);
   const [picture, setPicture] = useState<Picture | null>(null);
@@ -2525,6 +2578,23 @@ function Viewer({
   const [ended, setEnded] = useState(false);
   const [reconnecting, setReconnecting] = useState(false);
   const [reconnectFailed, setReconnectFailed] = useState(false);
+  const [recoveryStatus, setRecoveryStatus] = useState<RecoveryStatus | null>(
+    null,
+  );
+  const recoveryCycle = useRef(0);
+  const minimumRecoveryCycle = useRef(0);
+  const viewerLease = useRef({ active: true });
+  const displayGate = useRef(
+    new ViewerDisplayGate(rememberedDisplay, resuming),
+  );
+  const [displaySnapshot, setDisplaySnapshot] = useState<DisplaySnapshot>(() =>
+    displayGate.current.snapshot(),
+  );
+  const [restoringConnection, setRestoringConnection] = useState(resuming);
+  const resumePending = useRef(resuming);
+  const receivedDisplay = useRef<number | null>(null);
+  const currentDisplays = useRef<RemoteDisplay[]>([]);
+  const displayBusy = displaySnapshot.stage !== "ready";
   const [retryingInput, setRetryingInput] = useState(false);
   const [dismissedInput, setDismissedInput] = useState<number | null>(null);
   const [dismissedMouse, setDismissedMouse] = useState<number | null>(null);
@@ -2591,7 +2661,8 @@ function Viewer({
     window.addEventListener("resize", refresh);
     return () => window.removeEventListener("resize", refresh);
   }, []);
-  const showToolbar = toolbarVisible || toolsOpen || toolbarPinned;
+  const showToolbar =
+    toolbarVisible || toolsOpen || toolbarPinned || reconnecting || displayBusy;
   const scheduleHide = () => {
     window.clearTimeout(toolbarTimer.current);
     if (!toolbarPinned && !toolsOpen && !toolbarHovered.current)
@@ -2642,7 +2713,7 @@ function Viewer({
     };
   }, []);
   const selectedDisplay = status?.displays.find(
-    (d) => d.id === (picture?.display ?? 1),
+    (d) => d.id === (displaySnapshot.target ?? picture?.display ?? 1),
   );
   const sourceEdge = selectedDisplay
     ? Math.max(selectedDisplay.width, selectedDisplay.height)
@@ -2651,6 +2722,8 @@ function Viewer({
     if (
       !autoQuality ||
       ended ||
+      displayBusy ||
+      !picture ||
       !status?.video?.supported ||
       !viewportEdge ||
       !sourceEdge ||
@@ -2667,6 +2740,8 @@ function Viewer({
   }, [
     autoQuality,
     ended,
+    displayBusy,
+    picture?.display,
     viewportEdge,
     sourceEdge,
     status?.video?.supported,
@@ -2679,12 +2754,14 @@ function Viewer({
   const control =
     !ended &&
     !inputBlocked &&
+    !displayBusy &&
+    !!picture &&
     status?.state !== "closed" &&
     status?.permission === "control";
   const controlRef = useRef(control);
   controlRef.current = control;
   const send = (input: Record<string, unknown> | null) => {
-    if (!controlRef.current) return;
+    if (!controlRef.current || !displayGate.current.canControl()) return;
     if (input?.kind === "move") {
       if (performance.now() - lastMove.current < 30 || inputPending.current > 0)
         return;
@@ -2700,25 +2777,33 @@ function Viewer({
       return;
     }
     const epoch = generation.current;
+    const lease = viewerLease.current;
     const observedInputGeneration = inputGeneration.current;
     inputPending.current++;
     inputQueue.current = inputQueue.current
-      .then(() => {
-        if (epoch === generation.current && controlRef.current)
-          return invoke("remote_input", {
-            id,
-            input,
-            generation: observedInputGeneration,
-          });
-      })
-      .catch((e) => {
-        generation.current++;
-        controlRef.current = false;
-        setEnded(true);
-        setPicture(null);
-        setProblem(errorText(e));
-        void invoke("transport_close", { id }).catch(() => {});
-      })
+      .then(() =>
+        dispatchViewerInput(
+          () =>
+            invoke("remote_input", {
+              id,
+              input,
+              generation: observedInputGeneration,
+            }),
+          () =>
+            lease.active &&
+            epoch === generation.current &&
+            controlRef.current &&
+            displayGate.current.canControl(),
+          (e) => {
+            generation.current++;
+            controlRef.current = false;
+            setEnded(true);
+            setPicture(null);
+            setProblem(errorText(e));
+            void invoke("transport_close", { id }).catch(() => {});
+          },
+        ),
+      )
       .finally(() => {
         inputPending.current--;
       });
@@ -2757,20 +2842,136 @@ function Viewer({
       .catch((e) => setProblem(errorText(e)))
       .finally(() => setRetryingInput(false));
   };
-  const reconnect = () => {
+  const beginReconnect = (manual: boolean) => {
+    const lease = viewerLease.current;
+    onRecoveryStart();
     setReconnectFailed(false);
+    setRecoveryStatus(null);
+    minimumRecoveryCycle.current = recoveryCycle.current + 1;
     setReconnecting(true);
-    void invoke<{ id: string }>("viewer_reconnect", { manual: true })
-      .then((r) => onReconnect(r.id))
-      .catch((e) => {
+    setToolbarVisible(true);
+    void invoke<{ id: string }>("viewer_reconnect", { manual })
+      .then((r) => {
+        if (lease.active) onReconnect(r.id);
+      })
+      .catch(async (e) => {
+        if (!lease.active) return;
         const message = errorText(e);
         setProblem(message);
-        setReconnectFailed(message.includes("自动重连未成功"));
+        try {
+          const recovery = await invoke<RecoveryStatus>(
+            "viewer_recovery_status",
+          );
+          if (!lease.active) return;
+          setRecoveryStatus(recovery);
+          setReconnectFailed(recovery.manualRetryAllowed);
+        } catch {
+          if (lease.active) setReconnectFailed(false);
+        }
+        if (!lease.active) return;
         setReconnecting(false);
       });
   };
+  const reconnect = () => beginReconnect(true);
+  useEffect(() => {
+    if (!reconnecting && !restoringConnection) return;
+    let active = true;
+    let inFlight = false;
+    const poll = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const next = await invoke<RecoveryStatus>("viewer_recovery_status");
+        if (
+          active &&
+          next.cycle >= minimumRecoveryCycle.current &&
+          next.cycle >= recoveryCycle.current
+        ) {
+          recoveryCycle.current = next.cycle;
+          setRecoveryStatus(next);
+        }
+      } catch {
+        /* Closing the window cancels this scoped status poll. */
+      } finally {
+        inFlight = false;
+      }
+    };
+    void poll();
+    const timer = window.setInterval(() => void poll(), 300);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [reconnecting, restoringConnection]);
+  const requestDisplay = (gate: ViewerDisplayGate, ticket: DisplayTicket) => {
+    generation.current++;
+    controlRef.current = false;
+    clearPointer();
+    setPicture(null);
+    setFps(0);
+    frameTimes.current = [];
+    setText("");
+    setToolbarVisible(true);
+    setDisplaySnapshot(gate.snapshot());
+    const intent = gate.intent();
+    if (intent) onDisplayIntent(intent);
+    void (async () => {
+      try {
+        if (status?.permission === "control")
+          await invoke("remote_input", { id, input: null });
+        if (!gate.current(ticket)) return;
+        await invoke("media_select", { id, display: ticket.display });
+        if (gate.requested(ticket)) setDisplaySnapshot(gate.snapshot());
+      } catch (e) {
+        if (gate.fail(ticket, "request")) {
+          setDisplaySnapshot(gate.snapshot());
+          setProblem(errorText(e));
+        }
+      }
+    })();
+  };
+  useEffect(() => {
+    const gate = displayGate.current;
+    const list = status?.displays ?? [];
+    currentDisplays.current = list;
+    const ticket = gate.resolve(list);
+    if (ticket) requestDisplay(gate, ticket);
+    else {
+      if (
+        receivedDisplay.current != null &&
+        gate.observeInitial(receivedDisplay.current, list)
+      ) {
+        const intent = gate.intent();
+        if (intent) onDisplayIntent(intent);
+      }
+      setDisplaySnapshot(gate.snapshot());
+    }
+  }, [status?.displays, id]);
+  useEffect(() => {
+    if (
+      displaySnapshot.stage !== "awaiting_frame" ||
+      displaySnapshot.target == null
+    )
+      return;
+    const gate = displayGate.current;
+    const ticket = {
+      epoch: displaySnapshot.epoch,
+      display: displaySnapshot.target,
+    };
+    const timer = window.setTimeout(() => {
+      if (gate.fail(ticket, "timeout")) setDisplaySnapshot(gate.snapshot());
+    }, 10000);
+    return () => window.clearTimeout(timer);
+  }, [displaySnapshot.stage, displaySnapshot.epoch, displaySnapshot.target]);
   useEffect(() => {
     let live = true;
+    const lease = { active: true };
+    viewerLease.current = lease;
+    // StrictMode replays effect setup/cleanup. Each setup needs its own gate;
+    // callbacks from a stopped setup must never mutate the new one.
+    const gate = new ViewerDisplayGate(rememberedDisplay, resuming);
+    displayGate.current = gate;
+    setDisplaySnapshot(gate.snapshot());
     last.current = 0;
     let receiving = true;
     let terminal = false;
@@ -2778,6 +2979,7 @@ function Viewer({
       if (!live || terminal) return;
       terminal = true;
       receiving = false;
+      gate.stop();
       generation.current++;
       controlRef.current = false;
       clearPointer();
@@ -2793,18 +2995,7 @@ function Viewer({
         s?.error || (error ? errorText(error) : "会话已结束，画面与输入已停止"),
       );
       if (s?.retryable) {
-        setReconnecting(true);
-        void invoke<{ id: string }>("viewer_reconnect")
-          .then((r) => {
-            if (live) onReconnect(r.id);
-          })
-          .catch((e) => {
-            if (live) {
-              setProblem(errorText(e));
-              setReconnectFailed(errorText(e).includes("自动重连未成功"));
-              setReconnecting(false);
-            }
-          });
+        beginReconnect(false);
       }
     };
     const pollStatus = () =>
@@ -2878,17 +3069,31 @@ function Viewer({
             continue;
           const sequence = Number(view.getBigUint64(17));
           if (sequence <= last.current) continue;
+          last.current = sequence;
+          const display = view.getUint32(5);
+          const pending = !gate.canControl();
+          if (!gate.acceptFrame(display)) continue;
+          receivedDisplay.current = display;
+          if (gate.observeInitial(display, currentDisplays.current)) {
+            const intent = gate.intent();
+            if (intent) onDisplayIntent(intent);
+          }
+          if (pending) setDisplaySnapshot(gate.snapshot());
+          if (resumePending.current) {
+            resumePending.current = false;
+            setRestoringConnection(false);
+            onRestored(id, gate.intent());
+          }
           const next = URL.createObjectURL(
             new Blob([data.slice(49)], { type: "image/jpeg" }),
           );
           const old = url.current;
           url.current = next;
-          last.current = sequence;
           frameTimes.current.push(performance.now());
           if (frameTimes.current.length > 240) frameTimes.current.shift();
           setPicture({
             url: next,
-            display: view.getUint32(5),
+            display,
             layout: Number(view.getBigUint64(9)),
             sequence,
             width: view.getUint32(33),
@@ -2912,6 +3117,8 @@ function Viewer({
     window.addEventListener("blur", release);
     return () => {
       live = false;
+      lease.active = false;
+      gate.stop();
       window.clearInterval(statusTimer);
       window.clearInterval(fpsTimer);
       window.removeEventListener("blur", release);
@@ -3039,13 +3246,17 @@ function Viewer({
         >
           <div className="viewer-status">
             <strong>
-              {ended
-                ? "会话已结束"
-                : inputBlocked
-                  ? "控制已暂停"
-                  : status?.permission === "control"
-                    ? "远程控制"
-                    : "仅查看"}
+              {reconnecting
+                ? "正在恢复连接"
+                : displayBusy && !ended
+                  ? "正在恢复屏幕"
+                  : ended
+                    ? "会话已结束"
+                    : inputBlocked
+                      ? "控制已暂停"
+                      : status?.permission === "control"
+                        ? "远程控制"
+                        : "仅查看"}
             </strong>
             <span className="muted">
               {pathLabel(status?.state, status?.discovery)} ·{" "}
@@ -3057,15 +3268,30 @@ function Viewer({
             <span className="sr-only">对方的显示器</span>
             <select
               aria-label="对方的显示器"
-              disabled={ended || !status?.displays.length}
-              value={picture?.display ?? 1}
-              onChange={(e) =>
-                void invoke("media_select", {
-                  id,
-                  display: Number(e.target.value),
-                }).catch((err) => setProblem(errorText(err)))
+              disabled={
+                ended ||
+                !status?.displays.length ||
+                displaySnapshot.stage === "selecting" ||
+                displaySnapshot.stage === "awaiting_frame"
               }
+              value={
+                displaySnapshot.stage === "unavailable"
+                  ? ""
+                  : (displaySnapshot.target ?? picture?.display ?? "")
+              }
+              onChange={(e) => {
+                const display = status?.displays.find(
+                  (d) => d.id === Number(e.target.value),
+                );
+                if (!display) return;
+                const gate = displayGate.current;
+                const ticket = gate.choose(display);
+                if (ticket) requestDisplay(gate, ticket);
+              }}
             >
+              <option value="" disabled>
+                选择要显示的屏幕
+              </option>
               {status?.displays.map((d) => (
                 <option key={d.id} value={d.id}>
                   {d.name} · {d.width}×{d.height} · {d.dpi} DPI
@@ -3239,9 +3465,21 @@ function Viewer({
             正在切换画面分辨率…
           </div>
         )}
-        {reconnecting && (
-          <div className="notice-strip" role="status">
-            正在重连（最多 3 次）；等待新的授权批准…
+        {(reconnecting || (displayBusy && !ended) || recoveryNotice) && (
+          <div
+            className="viewer-session-notice"
+            role="status"
+            aria-live="polite"
+          >
+            {reconnecting
+              ? recoveryStageText(recoveryStatus)
+              : displayBusy
+                ? displaySnapshot.stage === "unavailable"
+                  ? displaySnapshot.issue === "timeout"
+                    ? "暂未收到所选屏幕的画面，请重新选择屏幕。"
+                    : "原选中屏幕暂不可用或布局已变化，请选择要显示的屏幕。"
+                  : "连接已建立，正在恢复所选屏幕…"
+                : recoveryNotice}
           </div>
         )}
         <FailureDialog
@@ -3268,6 +3506,7 @@ function Viewer({
           error={
             inputBlocked &&
             !ended &&
+            !displayBusy &&
             !problem &&
             dismissedInput !== status?.input?.generation
               ? (status?.input?.message ??
@@ -3363,8 +3602,23 @@ function Viewer({
           ) : (
             <div className="viewer-empty-state">
               <p>
-                {ended ? "会话已结束，远端画面已清除" : "正在等待远端画面…"}
+                {reconnecting
+                  ? recoveryStageText(recoveryStatus)
+                  : ended
+                    ? "会话已结束，远端画面已清除"
+                    : displaySnapshot.stage === "unavailable"
+                      ? "请在上方选择要显示的屏幕，画面恢复前不会发送鼠标键盘操作。"
+                      : restoringConnection
+                        ? "正在恢复原选中的屏幕…"
+                        : displayBusy
+                          ? "正在切换屏幕…"
+                          : "正在等待远端画面…"}
               </p>
+              {reconnecting && (
+                <button className="secondary" onClick={onStop}>
+                  取消重连并关闭
+                </button>
+              )}
               {reconnectFailed && !reconnecting && (
                 <button className="primary" onClick={reconnect}>
                   重新尝试连接

@@ -1,6 +1,7 @@
 use crate::remote::RemoteRuntime;
 use farsail_client::NativeClient;
 use farsail_core::RemotePermission;
+use serde::Serialize;
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
@@ -8,9 +9,33 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU32, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tauri::Manager;
+
+const MAX_RECOVERY_ATTEMPTS: u32 = 3;
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum RecoveryPhase {
+    #[default]
+    Idle,
+    Backoff,
+    Requesting,
+    AwaitingApproval,
+    Connecting,
+    Connected,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Default)]
+struct RecoveryProgress {
+    cycle: u64,
+    phase: RecoveryPhase,
+    attempt: u32,
+    retry_at: Option<Instant>,
+}
 
 pub struct Binding {
     pub id: Mutex<String>,
@@ -21,9 +46,11 @@ pub struct Binding {
     retrying: AtomicBool,
     attempts: AtomicU32,
     recovery_allowed: AtomicBool,
+    progress: Mutex<RecoveryProgress>,
 }
 impl Binding {
     fn begin_recovery(&self, manual: bool, retryable: bool) -> Result<(), String> {
+        let mut progress = self.progress.lock().unwrap();
         if self.cancelled.load(Ordering::SeqCst)
             || (manual && !self.recovery_allowed.load(Ordering::SeqCst))
             || (!manual && !retryable)
@@ -32,7 +59,84 @@ impl Binding {
         }
         self.recovery_allowed.store(true, Ordering::SeqCst);
         self.attempts.store(0, Ordering::SeqCst);
+        *progress = RecoveryProgress {
+            cycle: progress.cycle.saturating_add(1),
+            phase: RecoveryPhase::Backoff,
+            attempt: 0,
+            retry_at: None,
+        };
         Ok(())
+    }
+    fn update_progress(
+        &self,
+        phase: RecoveryPhase,
+        attempt: Option<u32>,
+        retry_at: Option<Instant>,
+    ) {
+        let mut progress = self.progress.lock().unwrap();
+        if self.cancelled.load(Ordering::SeqCst) {
+            progress.phase = RecoveryPhase::Cancelled;
+            progress.retry_at = None;
+            return;
+        }
+        progress.phase = phase;
+        if let Some(attempt) = attempt {
+            progress.attempt = attempt;
+        }
+        progress.retry_at = retry_at;
+    }
+    fn next_attempt(&self, now: Instant) -> Option<Duration> {
+        if self.cancelled.load(Ordering::SeqCst) {
+            return None;
+        }
+        let attempt = self
+            .attempts
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |previous| {
+                if previous < MAX_RECOVERY_ATTEMPTS {
+                    Some(previous + 1)
+                } else {
+                    None
+                }
+            })
+            .ok()?
+            + 1;
+        let delay = Duration::from_secs(u64::from(attempt) * 2);
+        self.update_progress(RecoveryPhase::Backoff, Some(attempt), Some(now + delay));
+        Some(delay)
+    }
+    fn set_phase(&self, phase: RecoveryPhase) {
+        self.update_progress(phase, None, None);
+    }
+    fn finish_recovery(&self, connected: bool, exhausted: bool) {
+        let mut progress = self.progress.lock().unwrap();
+        self.retrying.store(false, Ordering::SeqCst);
+        progress.retry_at = None;
+        let cancelled = self.cancelled.load(Ordering::SeqCst);
+        self.recovery_allowed
+            .store(!cancelled && !connected && exhausted, Ordering::SeqCst);
+        progress.phase = if cancelled {
+            RecoveryPhase::Cancelled
+        } else if connected {
+            RecoveryPhase::Connected
+        } else {
+            RecoveryPhase::Failed
+        };
+    }
+    fn cancel_recovery(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+        self.set_phase(RecoveryPhase::Cancelled);
+    }
+    fn recovery_status(&self, now: Instant) -> Value {
+        let progress = self.progress.lock().unwrap();
+        let cancelled = self.cancelled.load(Ordering::SeqCst);
+        json!({
+            "cycle": progress.cycle,
+            "phase": if cancelled { RecoveryPhase::Cancelled } else { progress.phase },
+            "attempt": progress.attempt,
+            "maxAttempts": MAX_RECOVERY_ATTEMPTS,
+            "retryInMs": if cancelled { None } else { progress.retry_at.map(|deadline| deadline.saturating_duration_since(now).as_millis() as u64) },
+            "manualRetryAllowed": !cancelled && !self.retrying.load(Ordering::SeqCst) && self.recovery_allowed.load(Ordering::SeqCst),
+        })
     }
     async fn wait_cancelled(&self) {
         while !self.cancelled.load(Ordering::SeqCst) {
@@ -138,6 +242,7 @@ pub async fn viewer_open(window: tauri::WebviewWindow, id: String) -> Result<(),
         retrying: AtomicBool::new(false),
         attempts: AtomicU32::new(0),
         recovery_allowed: AtomicBool::new(false),
+        progress: Mutex::new(RecoveryProgress::default()),
     });
     {
         let windows = app.state::<Windows>();
@@ -192,6 +297,7 @@ pub fn smoke_setup(app: &tauri::AppHandle) -> tauri::Result<()> {
             retrying: AtomicBool::new(false),
             attempts: AtomicU32::new(0),
             recovery_allowed: AtomicBool::new(false),
+            progress: Mutex::new(RecoveryProgress::default()),
         }),
     );
     tauri::WebviewWindowBuilder::new(
@@ -260,22 +366,37 @@ pub fn ipc_viewer_state(window: tauri::WebviewWindow) -> Result<Value, String> {
 }
 pub fn cancel(app: &tauri::AppHandle, label: &str) -> Option<String> {
     let binding = app.state::<Windows>().0.lock().unwrap().remove(label)?;
-    binding.cancelled.store(true, Ordering::SeqCst);
+    binding.cancel_recovery();
     Some(binding.id.lock().unwrap().clone())
 }
 pub fn cancel_all(app: &tauri::AppHandle) {
     let bindings = app.state::<Windows>();
     for b in bindings.0.lock().unwrap().values() {
-        b.cancelled.store(true, Ordering::SeqCst);
+        b.cancel_recovery();
     }
 }
 pub fn cancel_session(app: &tauri::AppHandle, id: &str) {
     let bindings = app.state::<Windows>();
     for (label, binding) in bindings.0.lock().unwrap().iter() {
         if label == &format!("viewer-{id}") || *binding.id.lock().unwrap() == id {
-            binding.cancelled.store(true, Ordering::SeqCst);
+            binding.cancel_recovery();
         }
     }
+}
+#[tauri::command]
+pub fn viewer_recovery_status(window: tauri::WebviewWindow) -> Result<Value, String> {
+    if !window.label().starts_with("viewer-") {
+        return Err("不是查看窗口".into());
+    }
+    let binding = window
+        .state::<Windows>()
+        .0
+        .lock()
+        .unwrap()
+        .get(window.label())
+        .cloned()
+        .ok_or("查看窗口已关闭")?;
+    Ok(binding.recovery_status(Instant::now()))
 }
 #[tauri::command]
 pub async fn viewer_reconnect(
@@ -297,6 +418,7 @@ pub async fn viewer_reconnect(
     let remote = app.state::<Arc<RemoteRuntime>>().inner().clone();
     let client = app.state::<Arc<NativeClient>>().inner().clone();
     let old = binding.id.lock().unwrap().clone();
+    let mut exhausted = false;
     let result = async {
         if manual.unwrap_or(false) {
             binding.begin_recovery(true, false)?;
@@ -304,13 +426,13 @@ pub async fn viewer_reconnect(
             let status = remote.status(&old).await?;
             binding.begin_recovery(false, status["retryable"] == true)?;
         }
-        for _ in 0..3 {
-            let attempt = binding.attempts.fetch_add(1, Ordering::SeqCst) as u64 + 1;
-            if attempt > 3 { break; }
-            tokio::time::sleep(Duration::from_secs(attempt * 2)).await;
+        for _ in 0..MAX_RECOVERY_ATTEMPTS {
+            let Some(delay) = binding.next_attempt(Instant::now()) else { break; };
+            tokio::time::sleep(delay).await;
             if binding.cancelled.load(Ordering::SeqCst) { return Err("重连已取消".into()); }
             let state = client.public_state().await;
             if state["deviceId"].as_str() != Some(&binding.source) || state["signedIn"] != true { return Err("登录或设备身份已改变".into()); }
+            binding.set_phase(RecoveryPhase::Requesting);
             // Fresh coordinator decision; no grant or approval from the old session is reused.
             let request = match client.call("request", json!({"source_device_id":binding.source,"target_device_id":binding.target,"permission":binding.permission})).await {
                 Ok(r) => r,
@@ -319,6 +441,7 @@ pub async fn viewer_reconnect(
             };
             let id = request["id"].as_str().ok_or("invalid request")?.to_owned();
             *binding.id.lock().unwrap() = id.clone();
+            binding.set_phase(RecoveryPhase::AwaitingApproval);
             let mut connected = false;
             for _ in 0..20 {
                 if binding.cancelled.load(Ordering::SeqCst) { break; }
@@ -326,6 +449,7 @@ pub async fn viewer_reconnect(
                 match client.call("remote_status", json!({"id":id})).await {
                     Ok(r) if r["state"] == "approved" => {
                         if binding.cancelled.load(Ordering::SeqCst) { break; }
+                        binding.set_phase(RecoveryPhase::Connecting);
                         connected = tokio::select! {
                             biased;
                             _ = binding.wait_cancelled() => false,
@@ -335,23 +459,23 @@ pub async fn viewer_reconnect(
                     }
                     Ok(r) if r["state"] != "pending" => {
                         // Explicit refusal/revocation/expiry ends this recovery cycle.
-                        binding.cancelled.store(true, Ordering::SeqCst);
+                        binding.cancel_recovery();
                         break;
                     }
                     _ => (),
                 }
             }
             if connected && !binding.cancelled.load(Ordering::SeqCst) {
-                binding.recovery_allowed.store(false, Ordering::SeqCst);
                 return Ok(json!({"id":id}));
             }
             remote.stop(&id).await;
             let _ = client.call("revoke_remote", json!({"id":id})).await;
             if binding.cancelled.load(Ordering::SeqCst) { return Err("重连已取消或授权已结束".into()); }
         }
+        exhausted = binding.attempts.load(Ordering::SeqCst) == MAX_RECOVERY_ATTEMPTS;
         Err("自动重连未成功，请检查网络并重新发起连接".into())
     }.await;
-    binding.retrying.store(false, Ordering::SeqCst);
+    binding.finish_recovery(result.is_ok(), exhausted);
     result
 }
 
@@ -368,6 +492,7 @@ mod tests {
             retrying: AtomicBool::new(false),
             attempts: AtomicU32::new(0),
             recovery_allowed: AtomicBool::new(false),
+            progress: Mutex::new(RecoveryProgress::default()),
         }
     }
     #[test]
@@ -382,5 +507,114 @@ mod tests {
         binding.cancelled.store(true, Ordering::SeqCst);
         assert!(binding.begin_recovery(true, false).is_err());
         assert!(binding.begin_recovery(false, true).is_err());
+    }
+    #[test]
+    fn progress_follows_attempt_stages_and_the_real_backoff_deadline() {
+        let binding = binding();
+        let now = Instant::now();
+        assert_eq!(binding.recovery_status(now)["phase"], "idle");
+        binding.retrying.store(true, Ordering::SeqCst);
+        binding.begin_recovery(false, true).unwrap();
+        assert_eq!(binding.next_attempt(now), Some(Duration::from_secs(2)));
+        let backoff = binding.recovery_status(now + Duration::from_millis(500));
+        assert_eq!(backoff["cycle"], 1);
+        assert_eq!(backoff["attempt"], 1);
+        assert_eq!(backoff["maxAttempts"], 3);
+        assert_eq!(backoff["phase"], "backoff");
+        assert_eq!(backoff["retryInMs"], 1500);
+        assert_eq!(backoff["manualRetryAllowed"], false);
+        assert_eq!(
+            binding.recovery_status(now + Duration::from_secs(3))["retryInMs"],
+            0
+        );
+        for (phase, expected) in [
+            (RecoveryPhase::Requesting, "requesting"),
+            (RecoveryPhase::AwaitingApproval, "awaiting_approval"),
+            (RecoveryPhase::Connecting, "connecting"),
+        ] {
+            binding.set_phase(phase);
+            let status = binding.recovery_status(now);
+            assert_eq!(status["phase"], expected);
+            assert_eq!(status["attempt"], 1);
+            assert_eq!(status["cycle"], 1);
+            assert!(status["retryInMs"].is_null());
+        }
+        binding.finish_recovery(true, false);
+        assert_eq!(binding.recovery_status(now)["phase"], "connected");
+        assert_eq!(binding.recovery_status(now)["manualRetryAllowed"], false);
+        assert!(binding.begin_recovery(true, false).is_err());
+    }
+    #[test]
+    fn only_exhausted_recoverable_attempts_offer_a_fresh_manual_cycle() {
+        let binding = binding();
+        let now = Instant::now();
+        binding.retrying.store(true, Ordering::SeqCst);
+        binding.begin_recovery(false, true).unwrap();
+        for attempt in 1..=MAX_RECOVERY_ATTEMPTS {
+            assert_eq!(
+                binding.next_attempt(now),
+                Some(Duration::from_secs(u64::from(attempt) * 2))
+            );
+        }
+        assert!(binding.next_attempt(now).is_none());
+        assert_eq!(binding.attempts.load(Ordering::SeqCst), 3);
+        assert_eq!(binding.recovery_status(now)["manualRetryAllowed"], false);
+        binding.finish_recovery(false, true);
+        assert_eq!(binding.recovery_status(now)["phase"], "failed");
+        assert_eq!(binding.recovery_status(now)["manualRetryAllowed"], true);
+        binding.retrying.store(true, Ordering::SeqCst);
+        binding.begin_recovery(true, false).unwrap();
+        assert_eq!(binding.recovery_status(now)["cycle"], 2);
+        assert_eq!(binding.recovery_status(now)["attempt"], 0);
+        assert_eq!(binding.recovery_status(now)["manualRetryAllowed"], false);
+        assert_eq!(binding.next_attempt(now), Some(Duration::from_secs(2)));
+    }
+    #[test]
+    fn early_identity_or_authorisation_failure_cannot_offer_manual_recovery() {
+        let binding = binding();
+        let now = Instant::now();
+        binding.retrying.store(true, Ordering::SeqCst);
+        binding.begin_recovery(false, true).unwrap();
+        binding.next_attempt(now).unwrap();
+        binding.set_phase(RecoveryPhase::Requesting);
+        binding.finish_recovery(false, false);
+        let status = binding.recovery_status(now);
+        assert_eq!(status["phase"], "failed");
+        assert_eq!(status["attempt"], 1);
+        assert_eq!(status["manualRetryAllowed"], false);
+        assert!(binding.begin_recovery(true, false).is_err());
+        // A later independently eligible network failure still starts its own cycle.
+        binding.begin_recovery(false, true).unwrap();
+        assert_eq!(binding.recovery_status(now)["cycle"], 2);
+    }
+    #[test]
+    fn cancellation_overrides_late_phase_and_connection_results() {
+        let binding = binding();
+        let now = Instant::now();
+        binding.retrying.store(true, Ordering::SeqCst);
+        binding.begin_recovery(false, true).unwrap();
+        binding.next_attempt(now).unwrap();
+        binding.cancel_recovery();
+        binding.set_phase(RecoveryPhase::AwaitingApproval);
+        binding.set_phase(RecoveryPhase::Connecting);
+        binding.finish_recovery(true, true);
+        let status = binding.recovery_status(now);
+        assert_eq!(status["phase"], "cancelled");
+        assert_eq!(status["manualRetryAllowed"], false);
+        assert!(status["retryInMs"].is_null());
+        assert!(binding.next_attempt(now).is_none());
+        assert!(binding.begin_recovery(true, false).is_err());
+        assert!(binding.begin_recovery(false, true).is_err());
+    }
+    #[test]
+    fn progress_is_preserved_while_a_fresh_request_replaces_the_session_id() {
+        let binding = binding();
+        let now = Instant::now();
+        binding.begin_recovery(false, true).unwrap();
+        binding.next_attempt(now).unwrap();
+        binding.set_phase(RecoveryPhase::AwaitingApproval);
+        let before = binding.recovery_status(now);
+        *binding.id.lock().unwrap() = "fresh-request".into();
+        assert_eq!(binding.recovery_status(now), before);
     }
 }

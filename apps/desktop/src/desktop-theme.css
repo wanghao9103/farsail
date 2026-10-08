@@ -768,6 +768,24 @@ td {
 .viewer-empty-state p {
   margin: 0;
 }
+.viewer-session-notice {
+  position: absolute;
+  z-index: 41;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: calc(100% - 32px);
+  padding: 10px 16px;
+  border: 1px solid #456a63;
+  border-radius: 6px;
+  background: #20332fef;
+  color: #c0eee2;
+  font-size: 13px;
+  text-align: center;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+}
 .failure-dialog,
 .login-error-dialog {
   width: min(460px, calc(100vw - 32px));
