@@ -514,12 +514,14 @@ function App() {
               </span>
             </div>
           )}
-          <div
-            className={`status-dot ${publicState.sharing ? "is-sharing" : ""}`}
-          />
-          {publicState.sharing ? "本机屏幕共享中" : "本机未共享"}
-          <br />
-          <small>远程桌面预览版</small>
+          <div className="sidebar-status">
+            <span
+              className={`status-dot ${publicState.sharing ? "is-sharing" : ""}`}
+              aria-hidden="true"
+            />
+            <span>{publicState.sharing ? "本机屏幕共享中" : "本机未共享"}</span>
+            <small>远程桌面预览版</small>
+          </div>
         </div>
       </aside>
       <main>
@@ -569,7 +571,7 @@ function App() {
           <div className="alert success" role="status">
             <span>{notice}</span>
             <button onClick={() => setNotice("")} aria-label="关闭提示">
-              ×
+              <Dismiss16Regular aria-hidden="true" />
             </button>
           </div>
         )}
@@ -716,13 +718,13 @@ function App() {
                         onChange={(e) => setBindAddr(e.target.value)}
                       />
                     </label>
-                    <label>
+                    <label className="checkbox-row">
                       <input
                         type="checkbox"
                         checked={forceRelay}
                         onChange={(e) => setForceRelay(e.target.checked)}
-                      />{" "}
-                      始终通过中继连接（排查直连问题时使用）
+                      />
+                      <span>始终通过中继连接（排查直连问题时使用）</span>
                     </label>
                     <button
                       className="primary"
@@ -1441,7 +1443,7 @@ function Devices({
     <section className="device-workspace">
       <div className="device-list-pane">
         <div className="section-heading">
-          <h2>
+          <h2 className="heading-with-count">
             我的设备 <span className="count">{devices.length}</span>
           </h2>
           <button
@@ -1616,7 +1618,7 @@ function Devices({
                     {watchChoice(state) ? "关闭远程值守" : "开启远程值守"}
                   </button>
                 </div>
-                <h3>
+                <h3 className="heading-with-count">
                   等待批准的连接 <span className="count">{pending.length}</span>
                 </h3>
                 {pending.map((p) => (

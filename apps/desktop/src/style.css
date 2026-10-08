@@ -573,39 +573,6 @@ select:focus {
   color: #32785a;
 }
 @media (max-width: 850px) {
-  .sidebar {
-    width: 72px;
-    padding: 24px 10px;
-  }
-  .brand {
-    padding: 0 6px 28px;
-  }
-  .brand div,
-  .side-label,
-  nav button:not(.active),
-  .sidebar-foot {
-    display: none;
-  }
-  .brand img {
-    width: 38px;
-  }
-  .sidebar nav button {
-    font-size: 0;
-    justify-content: center;
-    padding: 12px;
-  }
-  .sidebar nav button span {
-    font-size: 18px;
-  }
-  .sidebar nav {
-    display: grid;
-  }
-  .sidebar nav button:not(.active) {
-    display: flex;
-  }
-  .sidebar nav button:not(.active) {
-    font-size: 0;
-  }
   main {
     padding: 26px 24px;
   }
@@ -1609,13 +1576,6 @@ main > .alert {
   .page-overview .metrics {
     grid-column: 1 / -1;
   }
-  .page-overview .local-device {
-    display: block;
-  }
-  .page-overview .local-device .stack {
-    justify-items: start;
-    gap: 10px;
-  }
   .page-overview .attention {
     display: block;
   }
@@ -1677,38 +1637,6 @@ main > .alert {
 }
 
 @media (min-width: 581px) and (max-width: 1050px) {
-  .sidebar {
-    width: 72px;
-    padding: 20px 10px;
-  }
-  .brand {
-    padding: 0 6px 26px;
-  }
-  .brand div,
-  .side-label {
-    display: none;
-  }
-  .sidebar-foot {
-    display: block;
-    padding: 14px 0;
-    text-align: center;
-    font-size: 0;
-  }
-  .sidebar-foot small {
-    display: none;
-  }
-  .sidebar-foot .status-dot {
-    margin: 0;
-  }
-  .sidebar nav button,
-  .sidebar nav button:not(.active) {
-    font-size: 0;
-    padding: 12px;
-    justify-content: center;
-  }
-  .sidebar nav button span {
-    font-size: 18px;
-  }
   main {
     padding: 16px;
   }

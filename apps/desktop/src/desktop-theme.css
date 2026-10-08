@@ -28,6 +28,7 @@ button {
   gap: 8px;
 }
 button svg {
+  display: block;
   flex-shrink: 0;
 }
 .sidebar {
@@ -68,6 +69,10 @@ nav button {
 }
 nav button span {
   display: inline-flex;
+  width: 20px;
+  flex: 0 0 20px;
+  align-items: center;
+  justify-content: center;
   color: var(--muted);
 }
 nav button.active {
@@ -82,6 +87,7 @@ nav button:hover {
   background: #263039;
 }
 .sidebar-foot {
+  padding: 19px 12px 0;
   border-color: var(--line);
   color: var(--muted);
   font-size: 12px;
@@ -127,8 +133,9 @@ h3 {
   font-size: 12px;
 }
 .sidebar-account {
-  display: flex;
-  gap: 10px;
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  column-gap: 12px;
   align-items: center;
   margin-bottom: 14px;
 }
@@ -141,11 +148,27 @@ h3 {
   overflow: hidden;
   text-overflow: ellipsis;
   font-size: 11px;
+  white-space: nowrap;
 }
 .sidebar-account small {
   display: block;
   margin-top: 3px;
   color: var(--muted);
+}
+.sidebar-status {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  column-gap: 12px;
+  row-gap: 4px;
+  text-align: left;
+}
+.sidebar-status .status-dot {
+  margin: 0;
+  justify-self: center;
+  align-self: center;
+}
+.sidebar-status small {
+  grid-column: 2;
 }
 .avatar {
   background: #254d61;
@@ -203,6 +226,7 @@ select {
   color: var(--text);
   border-radius: 4px;
   min-height: 36px;
+  font-weight: 400;
 }
 input::placeholder {
   color: #8696a4;
@@ -216,11 +240,36 @@ input[type="checkbox"] {
   accent-color: var(--accent);
   min-height: auto;
 }
+.form label.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.checkbox-row input[type="checkbox"] {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  padding: 0;
+}
 .tag,
 .count {
   background: #2b3540;
   color: var(--muted);
   font-weight: 400;
+}
+.count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 24px;
+  line-height: 1;
+}
+.heading-with-count {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 .tag.ready {
   background: #213b33;
@@ -256,6 +305,15 @@ input[type="checkbox"] {
 .local-device {
   min-height: 136px;
   padding: 24px;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+.local-device > div:first-child {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+.local-device h2 {
+  overflow-wrap: anywhere;
 }
 .local-device-icon {
   font-size: 32px;
@@ -266,6 +324,9 @@ input[type="checkbox"] {
   margin-bottom: 0;
 }
 .local-device .stack {
+  flex: 0 1 250px;
+  min-width: 0;
+  margin-inline-start: auto;
   justify-items: end;
   align-content: center;
   gap: 10px;
@@ -440,6 +501,7 @@ input[type="checkbox"] {
   color: #f09c9c;
 }
 .alert.success {
+  align-items: center;
   background: #22392f;
   border: 1px solid #365a47;
   color: #b7e4cc;
@@ -447,6 +509,13 @@ input[type="checkbox"] {
   border-radius: 4px;
   margin: 0 0 12px;
   padding: 8px 12px;
+}
+.alert.success > button {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  line-height: 1;
 }
 .notice-strip {
   background: #252e36;
@@ -669,9 +738,19 @@ td {
   border-radius: 4px;
 }
 .viewer-more > summary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   background: #27313b;
   border-color: #465560;
   color: var(--text);
+}
+.viewer-display-selector select,
+.viewer-quality-selector select,
+.viewer-toolbar-actions > button,
+.viewer-more > summary {
+  min-height: 36px;
+  height: 36px;
 }
 .viewer-reveal {
   background: #242d35ed;
@@ -787,6 +866,7 @@ td {
   }
   .brand {
     padding: 0 4px 20px;
+    justify-content: center;
   }
   .brand > div,
   .sidebar-foot {
@@ -794,6 +874,7 @@ td {
   }
   nav button {
     justify-content: center;
+    gap: 0;
     font-size: 0;
     padding: 10px;
   }
@@ -859,6 +940,8 @@ td {
     flex-wrap: wrap;
   }
   .local-device .stack {
+    flex-basis: 100%;
+    margin-inline-start: 0;
     justify-items: start;
   }
   .local-device small {
@@ -875,7 +958,10 @@ td {
     min-height: 48px;
     padding-bottom: 10px;
   }
-  h1 {
+  .topbar h1 {
     font-size: 21px;
+  }
+  .device-workspace {
+    grid-template-columns: 1fr;
   }
 }
