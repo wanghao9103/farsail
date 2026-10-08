@@ -25,6 +25,8 @@ const fs = require("node:fs");
       video: { profile: 1, generation: 0, supported: true, max_profile: 3 },
       heartbeat: true,
       lastFrame: 0,
+      layout: 1,
+      deliveredLayout: 0,
       fullscreen: false,
       calls: [],
       delay: false,
@@ -96,6 +98,8 @@ const fs = require("node:fs");
             (f.heartbeat && Date.now() - f.lastFrame >= 1000)
           ) {
             v.setBigUint64(17, BigInt(args.after + 1));
+            v.setBigUint64(9, BigInt(f.layout));
+            f.deliveredLayout = f.layout;
             f.lastFrame = Date.now();
             return packet.buffer.slice(0);
           }
@@ -141,15 +145,23 @@ const fs = require("node:fs");
       window.fixture.path = "relay";
       window.fixture.discovery = discovery;
     }, discovery);
-    await page.waitForFunction((label) =>
-      document.querySelector(".viewer-status").textContent.includes(label), label);
-    assert(await page.getByAltText("远端桌面").isVisible(), "discovery states preserve the live picture");
+    await page.waitForFunction(
+      (label) =>
+        document.querySelector(".viewer-status").textContent.includes(label),
+      label,
+    );
+    assert(
+      await page.getByAltText("远端桌面").isVisible(),
+      "discovery states preserve the live picture",
+    );
   }
   await page.evaluate(() => {
     window.fixture.path = "direct";
     window.fixture.discovery = "direct";
   });
-  await page.waitForFunction(() => document.querySelector(".viewer-status").textContent.includes("已直连"));
+  await page.waitForFunction(() =>
+    document.querySelector(".viewer-status").textContent.includes("已直连"),
+  );
   if (!(await page.locator(".viewer-toolbar").isVisible())) {
     await page.getByRole("button", { name: "显示工具栏", exact: true }).click();
   }
@@ -412,6 +424,141 @@ const fs = require("node:fs");
     ),
   );
   fs.mkdirSync(".local/ui-verification", { recursive: true });
+  // A click sequence must retain control and never leave a remote button down.
+  const mouseStart = await page.evaluate(() => window.fixture.calls.length);
+  const inside = await page.getByAltText("远端桌面").boundingBox();
+  const cx = inside.x + inside.width / 2,
+    cy = inside.y + inside.height / 2;
+  for (let n = 0; n < 20; n++)
+    await page.mouse.click(cx + n, cy, { button: n % 2 ? "right" : "left" });
+  await page.waitForFunction(
+    (start) =>
+      window.fixture.calls
+        .slice(start)
+        .filter(
+          (c) => c.cmd === "remote_input" && c.args.input?.kind === "button",
+        ).length >= 40,
+    mouseStart,
+  );
+  const pairs = await page.evaluate(
+    (start) =>
+      window.fixture.calls
+        .slice(start)
+        .filter(
+          (c) => c.cmd === "remote_input" && c.args.input?.kind === "button",
+        )
+        .map((c) => c.args.input),
+    mouseStart,
+  );
+  assert.equal(pairs.length, 40);
+  for (let n = 0; n < pairs.length; n += 2) {
+    assert(pairs[n].down);
+    assert(!pairs[n + 1].down);
+    assert.equal(pairs[n].button, pairs[n + 1].button);
+  }
+  const released = async (start) => {
+    await page.waitForFunction((start) => {
+      const pressed = { left: false, right: false };
+      const inputs = window.fixture.calls
+        .slice(start)
+        .filter((c) => c.cmd === "remote_input")
+        .map((c) => c.args.input);
+      for (const input of inputs) {
+        if (input === null) {
+          pressed.left = false;
+          pressed.right = false;
+        } else if (input.kind === "button") pressed[input.button] = input.down;
+      }
+      return (
+        inputs.some((i) => i?.kind === "button" && i.down) &&
+        !pressed.left &&
+        !pressed.right
+      );
+    }, start);
+  };
+  // Pointer capture covers release outside the image and simultaneous mouse buttons.
+  let start = await page.evaluate(() => window.fixture.calls.length);
+  await page.mouse.move(cx, cy);
+  await page.mouse.down();
+  await page.mouse.move(inside.x + inside.width + 40, cy, { steps: 4 });
+  await page.mouse.up();
+  await released(start);
+  start = await page.evaluate(() => window.fixture.calls.length);
+  await page.mouse.move(cx, cy);
+  await page.mouse.down();
+  await page.mouse.down({ button: "right" });
+  await page.mouse.up();
+  await page.mouse.up({ button: "right" });
+  await released(start);
+  const combo = await page.evaluate(
+    (start) =>
+      window.fixture.calls
+        .slice(start)
+        .filter(
+          (c) => c.cmd === "remote_input" && c.args.input?.kind === "button",
+        )
+        .map((c) => c.args.input),
+    start,
+  );
+  assert(combo.some((i) => i.button === "right" && i.down));
+  assert(combo.some((i) => i.button === "right" && !i.down));
+  // A changed frame must not detach capture or swallow the final release.
+  start = await page.evaluate(() => window.fixture.calls.length);
+  await page.mouse.down();
+  await page.evaluate(() => {
+    window.fixture.layout++;
+    window.fixture.lastFrame = 0;
+  });
+  await page.waitForFunction(
+    () => window.fixture.deliveredLayout === window.fixture.layout,
+  );
+  await page.evaluate(() => new Promise(requestAnimationFrame));
+  await page.mouse.up();
+  await released(start);
+  const layoutUp = await page.evaluate(
+    (start) =>
+      window.fixture.calls
+        .slice(start)
+        .find(
+          (c) =>
+            c.cmd === "remote_input" &&
+            c.args.input?.kind === "button" &&
+            !c.args.input.down,
+        )?.args.input.layout,
+    start,
+  );
+  assert.equal(
+    layoutUp,
+    2,
+    "changed frame must be rendered into the new release metadata",
+  );
+  // Losing focus/capture while a button is held releases it without reconnecting.
+  start = await page.evaluate(() => window.fixture.calls.length);
+  await page.mouse.down();
+  await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+  await page.mouse.move(cx + 40, cy);
+  await page.mouse.up();
+  await released(start);
+  start = await page.evaluate(() => window.fixture.calls.length);
+  await page.mouse.down();
+  await page.getByAltText("远端桌面").evaluate((img) => {
+    if (img.hasPointerCapture(1)) img.releasePointerCapture(1);
+  });
+  await page.mouse.move(cx + 10, cy);
+  await page.mouse.up();
+  await released(start);
+  await page.mouse.click(cx, cy);
+  await page.keyboard.press("F");
+  await page.waitForFunction(() =>
+    window.fixture.calls.some(
+      (c) =>
+        c.cmd === "remote_input" &&
+        c.args.input?.kind === "key" &&
+        c.args.input.vk === 70,
+    ),
+  );
+  assert(await page.getByAltText("远端桌面").isVisible());
+  assert.equal(await page.getByText("控制已暂停", { exact: true }).count(), 0);
   await page.screenshot({ path: ".local/ui-verification/viewer.png" });
   await page.evaluate(() => {
     window.fixture.inputBlocked = true;
@@ -534,7 +681,7 @@ const fs = require("node:fs");
   assert.deepEqual(errors, []);
   await browser.close();
   console.log(
-    "PASS screenshot corner coverage in fill mode for wide/tall/fullscreen/restored windows; fill and letterbox coordinates/blank rejection; fit preference retention; custom titlebar/fullscreen; adaptive 2K/4K; FPS/pause/terminal/read-only regressions. Synthetic IPC only.",
+    "PASS repeated left/right pairs, multi-button capture, outside drag release, frame-layout change, blur/lost-capture and continued control; fit/quality/FPS/pause/terminal/read-only and screenshot coverage. Synthetic IPC only.",
   );
 })().catch((e) => {
   console.error(e);

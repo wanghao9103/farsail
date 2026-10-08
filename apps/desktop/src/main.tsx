@@ -2365,6 +2365,17 @@ function Viewer({
   const [text, setText] = useState("");
   const [problem, setProblem] = useState("");
   const image = useRef<HTMLImageElement>(null);
+  const pointer = useRef<{
+    id: number | null;
+    buttons: number;
+    point: { display: number; layout: number; x: number; y: number } | null;
+  }>({ id: null, buttons: 0, point: null });
+  const clearPointer = () => {
+    const id = pointer.current.id;
+    pointer.current = { id: null, buttons: 0, point: null };
+    if (id != null && image.current?.hasPointerCapture(id))
+      image.current.releasePointerCapture(id);
+  };
   const last = useRef(0);
   const frameTimes = useRef<number[]>([]);
   const url = useRef<string | null>(null);
@@ -2565,6 +2576,11 @@ function Viewer({
     if (e.key === "Shift") return 0xa0;
     return e.keyCode;
   };
+  const releaseInputs = () => {
+    generation.current++;
+    clearPointer();
+    send(null);
+  };
   useEffect(() => {
     let live = true;
     last.current = 0;
@@ -2576,6 +2592,7 @@ function Viewer({
       receiving = false;
       generation.current++;
       controlRef.current = false;
+      clearPointer();
       setEnded(true);
       setPicture(null);
       setFps(0);
@@ -2615,6 +2632,7 @@ function Viewer({
             if (s.input?.blocked && !inputBlockedRef.current) {
               generation.current++;
               controlRef.current = false;
+              clearPointer();
               setText("");
               setToolbarVisible(true);
             }
@@ -2698,10 +2716,7 @@ function Viewer({
       }
     };
     void receive();
-    const release = () => {
-      generation.current++;
-      send(null);
-    };
+    const release = releaseInputs;
     window.addEventListener("blur", release);
     return () => {
       live = false;
@@ -2710,10 +2725,11 @@ function Viewer({
       window.removeEventListener("blur", release);
       generation.current++;
       controlRef.current = false;
+      clearPointer();
       if (url.current) URL.revokeObjectURL(url.current);
     };
   }, [id]);
-  const point = (e: { clientX: number; clientY: number }) => {
+  const point = (e: { clientX: number; clientY: number }, clamp = false) => {
     if (!picture || !image.current) return null;
     const rect = image.current.getBoundingClientRect();
     const scale = Math.min(
@@ -2724,7 +2740,42 @@ function Viewer({
       h = fitMode === "fill" ? rect.height : picture.height * scale;
     const x = (e.clientX - rect.left - (rect.width - w) / 2) / w;
     const y = (e.clientY - rect.top - (rect.height - h) / 2) / h;
+    if (clamp)
+      return { x: Math.max(0, Math.min(1, x)), y: Math.max(0, Math.min(1, y)) };
     return x >= 0 && x <= 1 && y >= 0 && y <= 1 ? { x, y } : null;
+  };
+  const pointerInput = (e: React.PointerEvent<HTMLImageElement>) => {
+    if (!controlRef.current || !picture || e.pointerType !== "mouse") return;
+    const held = pointer.current;
+    if (held.id != null && held.id !== e.pointerId) return;
+    const p = point(e, held.buttons !== 0);
+    const next = e.buttons & 3;
+    // Hovering into the image with a button already held outside is not a new click.
+    if (held.buttons === 0 && next !== 0 && e.type !== "pointerdown") return;
+    if (held.buttons === 0 && next !== 0 && !p) return;
+    if (p)
+      held.point = { ...p, display: picture.display, layout: picture.layout };
+    if (!held.point) return;
+    if (next !== 0) {
+      e.preventDefault();
+      screen.current?.focus({ preventScroll: true });
+      if (held.id == null) {
+        held.id = e.pointerId;
+        e.currentTarget.setPointerCapture(e.pointerId);
+      }
+    }
+    const changed = held.buttons ^ next;
+    for (const [mask, button] of [
+      [1, "left"],
+      [2, "right"],
+    ] as const) {
+      if (changed & mask)
+        send({ kind: "button", ...held.point, button, down: !!(next & mask) });
+    }
+    held.buttons = next;
+    if (e.type === "pointermove" && p) send({ kind: "move", ...held.point });
+    // Clear our bookkeeping before implicit lost-capture, so a normal UP stays queued.
+    if (held.id != null && next === 0) clearPointer();
   };
   return (
     <section
@@ -2914,8 +2965,7 @@ function Viewer({
                         className={fitMode === mode ? "active" : ""}
                         aria-pressed={fitMode === mode}
                         onClick={() => {
-                          generation.current++;
-                          send(null);
+                          releaseInputs();
                           setFitMode(mode);
                         }}
                       >
@@ -3030,10 +3080,7 @@ function Viewer({
         <div
           className="remote-screen"
           ref={screen}
-          onBlur={() => {
-            generation.current++;
-            send(null);
-          }}
+          onBlur={releaseInputs}
           tabIndex={control ? 0 : -1}
           onKeyDown={(e) => {
             if (!control) return;
@@ -3060,47 +3107,15 @@ function Viewer({
                     : "仅查看画面"
               }
               draggable={false}
-              onMouseMove={(e) => {
-                const p = point(e);
-                if (p)
-                  send({
-                    kind: "move",
-                    display: picture.display,
-                    layout: picture.layout,
-                    ...p,
-                  });
+              onPointerDown={pointerInput}
+              onPointerMove={pointerInput}
+              onPointerUp={pointerInput}
+              onPointerCancel={releaseInputs}
+              onLostPointerCapture={() => {
+                if (pointer.current.buttons) releaseInputs();
               }}
-              onMouseDown={(e) => {
-                e.preventDefault();
-                screen.current?.focus({ preventScroll: true });
-                if (e.button !== 0 && e.button !== 2) return;
-                const p = point(e);
-                if (p)
-                  send({
-                    kind: "button",
-                    display: picture.display,
-                    layout: picture.layout,
-                    ...p,
-                    button: e.button === 2 ? "right" : "left",
-                    down: true,
-                  });
-              }}
-              onMouseUp={(e) => {
-                if (e.button !== 0 && e.button !== 2) return;
-                const p = point(e);
-                if (p)
-                  send({
-                    kind: "button",
-                    display: picture.display,
-                    layout: picture.layout,
-                    ...p,
-                    button: e.button === 2 ? "right" : "left",
-                    down: false,
-                  });
-              }}
-              onMouseLeave={() => {
-                generation.current++;
-                send(null);
+              onPointerLeave={() => {
+                if (!pointer.current.buttons) releaseInputs();
               }}
               onContextMenu={(e) => e.preventDefault()}
               onWheel={(e) => {

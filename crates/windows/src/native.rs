@@ -290,10 +290,64 @@ fn send(inputs: &[INPUT]) -> Result<()> {
     Ok(())
 }
 fn send_raw(inputs: &[INPUT]) -> (u32, u32) {
+    #[cfg(test)]
+    if let Some(result) = test_injection::record(inputs) {
+        return result;
+    }
     unsafe {
         SetLastError(WIN32_ERROR(0));
         let inserted = SendInput(inputs, size_of::<INPUT>() as i32);
         (inserted, GetLastError().0)
+    }
+}
+// Thread-local test recorder: ordinary regressions never inject into the user's desktop.
+#[cfg(test)]
+mod test_injection {
+    use super::*;
+    use std::{cell::RefCell, collections::VecDeque};
+    #[derive(Default)]
+    struct Recorder {
+        flags: Vec<u32>,
+        results: VecDeque<(u32, u32)>,
+    }
+    thread_local! { static RECORDER: RefCell<Option<Recorder>> = const { RefCell::new(None) }; }
+    pub struct Guard;
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            RECORDER.with(|r| {
+                r.borrow_mut().take();
+            });
+        }
+    }
+    pub fn start(results: impl IntoIterator<Item = (u32, u32)>) -> Guard {
+        RECORDER.with(|r| {
+            assert!(r.borrow().is_none());
+            *r.borrow_mut() = Some(Recorder {
+                flags: vec![],
+                results: results.into_iter().collect(),
+            });
+        });
+        Guard
+    }
+    pub fn flags() -> Vec<u32> {
+        RECORDER.with(|r| r.borrow().as_ref().unwrap().flags.clone())
+    }
+    pub fn record(inputs: &[INPUT]) -> Option<(u32, u32)> {
+        RECORDER.with(|r| {
+            let mut r = r.borrow_mut();
+            let recorder = r.as_mut()?;
+            for input in inputs {
+                if input.r#type == INPUT_MOUSE {
+                    recorder.flags.push(unsafe { input.Anonymous.mi.dwFlags.0 });
+                }
+            }
+            Some(
+                recorder
+                    .results
+                    .pop_front()
+                    .unwrap_or((inputs.len() as u32, 0)),
+            )
+        })
     }
 }
 fn absolute_axis(pixel: i32, origin: i32, extent: i32) -> Result<i32> {
@@ -370,11 +424,25 @@ impl InputSink {
                 button,
                 down,
             } => {
-                move_to(display, layout, id, expected, x, y)?;
                 let (slot, down_flag, up_flag) = match button {
                     Button::Left => (&mut self.left, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP),
                     Button::Right => (&mut self.right, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP),
                 };
+                // A release is owed only for this session's own injected button.
+                // A stale/missing layout cannot prevent it or reposition the cursor.
+                if !down {
+                    if !*slot {
+                        return Ok(());
+                    }
+                    let positioned = move_to(display, layout, id, expected, x, y);
+                    send(&[mouse(up_flag, 0)])?;
+                    *slot = false;
+                    return match positioned {
+                        Err(Error::Geometry) => Ok(()),
+                        other => other,
+                    };
+                }
+                move_to(display, layout, id, expected, x, y)?;
                 if *slot == down {
                     return Ok(());
                 }
@@ -529,6 +597,58 @@ fn move_to(
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn stale_up(button: Button) -> Input {
+        Input::Button {
+            display: 1,
+            layout: 7,
+            x: 0.5,
+            y: 0.5,
+            button,
+            down: false,
+        }
+    }
+    #[test]
+    fn owned_mouse_up_after_layout_switch_releases_without_moving_cursor() {
+        let _recording = test_injection::start([]);
+        let mut sink = InputSink::default();
+        sink.left = true;
+        sink.right = true;
+        sink.apply(stale_up(Button::Left), None, 8).unwrap();
+        sink.apply(stale_up(Button::Right), None, 8).unwrap();
+        assert!(!sink.left && !sink.right);
+        assert_eq!(
+            test_injection::flags(),
+            vec![MOUSEEVENTF_LEFTUP.0, MOUSEEVENTF_RIGHTUP.0]
+        );
+    }
+    #[test]
+    fn unowned_mouse_up_does_not_inject_or_move() {
+        let _recording = test_injection::start([]);
+        let mut sink = InputSink::default();
+        sink.apply(stale_up(Button::Left), None, 8).unwrap();
+        assert!(test_injection::flags().is_empty());
+    }
+    #[test]
+    fn rejected_stale_release_remains_owned_until_cleanup_succeeds() {
+        let _recording = test_injection::start([(0, 5)]);
+        let mut sink = InputSink::default();
+        sink.left = true;
+        assert!(matches!(
+            sink.apply(stale_up(Button::Left), None, 8),
+            Err(Error::Injection {
+                inserted: 0,
+                expected: 1,
+                code: 5
+            })
+        ));
+        assert!(sink.left);
+        sink.release_all().unwrap();
+        assert!(!sink.left);
+        assert_eq!(
+            test_injection::flags(),
+            vec![MOUSEEVENTF_LEFTUP.0, MOUSEEVENTF_LEFTUP.0]
+        );
+    }
     #[test]
     fn noisy_4k_compresses_within_limit_and_legacy_hd_stays_compatible() {
         let mut seed = 17u32;
@@ -966,5 +1086,149 @@ mod tests {
         )
         .unwrap();
         sink.release_all().unwrap();
+        // Continue controlling after repeated clicks, including UP after a new layout.
+        for n in 0..20 {
+            let mut pid = 0;
+            unsafe { GetWindowThreadProcessId(GetForegroundWindow(), Some(&mut pid)) };
+            assert_eq!(
+                pid,
+                std::process::id(),
+                "foreground changed; no click injected"
+            );
+            assert_eq!(unsafe { GetForegroundWindow() }, hwnd);
+            sink.apply(
+                Input::Button {
+                    display: display.id,
+                    layout: 7,
+                    x,
+                    y,
+                    button: Button::Left,
+                    down: true,
+                },
+                Some(&display),
+                7,
+            )
+            .unwrap();
+            sink.apply(
+                Input::Button {
+                    display: display.id,
+                    layout: 7,
+                    x,
+                    y,
+                    button: Button::Left,
+                    down: false,
+                },
+                if n % 2 == 0 { None } else { Some(&display) },
+                if n % 2 == 0 { 8 } else { 7 },
+            )
+            .unwrap();
+            for _ in 0..4 {
+                let mut msg = MSG::default();
+                while unsafe { PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE) }.as_bool() {
+                    unsafe {
+                        let _ = TranslateMessage(&msg);
+                        DispatchMessageW(&msg);
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            assert!(!sink.left);
+            assert_eq!(
+                unsafe { GetAsyncKeyState(1) } & i16::MIN,
+                0,
+                "injected mouse button remained down"
+            );
+        }
+        let second = unsafe {
+            CreateWindowExW(
+                Default::default(),
+                w!("EDIT"),
+                w!(""),
+                WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+                display.x + 260,
+                display.y + 100,
+                300,
+                200,
+                None,
+                None,
+                None,
+                None,
+            )
+        }
+        .unwrap();
+        let _second_window = TestWindow(second);
+        for target in [second, hwnd, second, hwnd] {
+            let _ = unsafe {
+                SetWindowPos(
+                    target,
+                    Some(HWND_TOPMOST),
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+                )
+            };
+            let _ = unsafe { SetForegroundWindow(target) };
+            let _ = unsafe { SetFocus(Some(target)) };
+            let mut pid = 0;
+            unsafe { GetWindowThreadProcessId(GetForegroundWindow(), Some(&mut pid)) };
+            assert_eq!(
+                pid,
+                std::process::id(),
+                "foreground changed before owned-window focus test"
+            );
+            assert_eq!(unsafe { GetForegroundWindow() }, target);
+            let px = if target == second { 310.0 } else { 150.0 };
+            let nx = (px / display.width as f64).min(0.99);
+            sink.apply(
+                Input::Button {
+                    display: display.id,
+                    layout: 7,
+                    x: nx,
+                    y,
+                    button: Button::Left,
+                    down: true,
+                },
+                Some(&display),
+                7,
+            )
+            .unwrap();
+            sink.apply(
+                Input::Button {
+                    display: display.id,
+                    layout: 7,
+                    x: nx,
+                    y,
+                    button: Button::Left,
+                    down: false,
+                },
+                Some(&display),
+                7,
+            )
+            .unwrap();
+            assert_eq!(unsafe { GetForegroundWindow() }, target);
+            sink.apply(
+                Input::Key {
+                    vk: 0x41,
+                    down: true,
+                    repeat: false,
+                },
+                None,
+                0,
+            )
+            .unwrap();
+            sink.apply(
+                Input::Key {
+                    vk: 0x41,
+                    down: false,
+                    repeat: false,
+                },
+                None,
+                0,
+            )
+            .unwrap();
+            sink.release_all().unwrap();
+        }
     }
 }
