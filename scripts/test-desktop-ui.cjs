@@ -51,6 +51,7 @@ const fs = require("node:fs");
       clipboard: "",
       failClipboard: false,
       connected: {},
+      viewerInstances: {},
       requests: [],
       calls: [],
       devices: [local, remote, offline],
@@ -108,6 +109,13 @@ const fs = require("node:fs");
           delete f.connected[args.id];
           return {};
         }
+        if (cmd === "viewer_open") {
+          const instance = `viewer-instance-${args.id}`;
+          f.viewerInstances[instance] = true;
+          return instance;
+        }
+        if (cmd === "viewer_window_active")
+          return f.viewerInstances[args.instance] === true;
         if (cmd === "share_enable") {
           f.sharing = true;
           f.sharePreferences = {

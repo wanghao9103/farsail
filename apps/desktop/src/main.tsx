@@ -7,6 +7,11 @@ import "./style.css";
 import "./desktop-theme.css";
 import { RefreshFailureGate } from "./feedback-policy";
 import {
+  ViewerNoticeLease,
+  inspectViewerNotice,
+  publishViewerNotice,
+} from "./viewer-notice-policy";
+import {
   ViewerDisplayGate,
   recoveryStageText,
   dispatchViewerInput,
@@ -212,6 +217,39 @@ const pathLabel = (value?: string, discovery?: string) => {
 const deviceLabel = (id: string, devices: Device[], localId: string | null) =>
   `${devices.find((d) => d.id === id)?.name ?? `设备 ${short(id)}`}${id === localId ? "（本机）" : ""}`;
 const dateLabel = (value: string) => new Date(value).toLocaleString();
+type OperationNotice = { message: string; viewer?: ViewerNoticeLease };
+
+const readViewerWindow = (instance: string) =>
+  invoke<boolean>("viewer_window_active", { instance });
+function useViewerNoticePresent(lease: ViewerNoticeLease | null) {
+  const [closed, setClosed] = useState<ViewerNoticeLease | null>(null);
+  useEffect(() => {
+    if (!lease) return;
+    let current = true;
+    let inFlight = false;
+    const inspect = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        await inspectViewerNotice(
+          lease,
+          readViewerWindow,
+          () => current,
+          setClosed,
+        );
+      } finally {
+        inFlight = false;
+      }
+    };
+    void inspect();
+    const timer = window.setInterval(() => void inspect(), 500);
+    return () => {
+      current = false;
+      window.clearInterval(timer);
+    };
+  }, [lease]);
+  return !lease || (closed !== lease && lease.isPresent());
+}
 
 function App() {
   const [publicState, setPublicState] = useState<PublicState>({
@@ -223,7 +261,22 @@ function App() {
   const [me, setMe] = useState<Me | null>(null);
   const [tab, setTab] = useState<Tab>("overview");
   const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState("");
+  const [notice, setNotice] = useState<OperationNotice | null>(null);
+  const actionVersion = useRef(0);
+  const noticePresent = useViewerNoticePresent(notice?.viewer ?? null);
+  useEffect(() => {
+    if (!noticePresent)
+      setNotice((current) =>
+        current?.viewer === notice?.viewer ? null : current,
+      );
+  }, [noticePresent, notice]);
+  const openViewer = useCallback(async (id: string) => {
+    const lease = new ViewerNoticeLease(
+      await invoke<string>("viewer_open", { id }),
+    );
+    await lease.check(readViewerWindow);
+    return lease;
+  }, []);
   const [problem, setProblem] = useState("");
   const [failureAction, setFailureAction] = useState<FailureAction>();
   const [devices, setDevices] = useState<Device[]>([]);
@@ -373,21 +426,30 @@ function App() {
     reload = true,
     failureAction?: FailureAction,
   ) => {
+    const version = ++actionVersion.current;
+    const current = () => version === actionVersion.current;
     setBusy(true);
     setProblem("");
     setFailureAction(undefined);
-    setNotice("");
+    setNotice(null);
     try {
-      if ((await work()) === HANDLED_FAILURE) return;
-      setNotice(message);
-      if (reload) await refresh();
+      const result = await work();
+      if (result === HANDLED_FAILURE) return;
+      if (result instanceof ViewerNoticeLease) {
+        await publishViewerNotice(result, readViewerWindow, current, (viewer) =>
+          setNotice(viewer ? { message, viewer } : null),
+        );
+      } else if (current()) setNotice(message ? { message } : null);
+      if (reload && current()) await refresh();
     } catch (e) {
       // Failed mutations may still stop sharing or clear local credentials.
-      if (reload) await refresh().catch(() => {});
-      setProblem(errorText(e));
-      setFailureAction(failureAction);
+      if (reload && current()) await refresh().catch(() => {});
+      if (current()) {
+        setProblem(errorText(e));
+        setFailureAction(failureAction);
+      }
     } finally {
-      setBusy(false);
+      if (current()) setBusy(false);
     }
   };
   const resetConnection = () => {
@@ -576,10 +638,10 @@ function App() {
           }}
           action={failureAction}
         />
-        {notice && (
+        {notice && noticePresent && (
           <div className="alert success" role="status">
-            <span>{notice}</span>
-            <button onClick={() => setNotice("")} aria-label="关闭提示">
+            <span>{notice.message}</span>
+            <button onClick={() => setNotice(null)} aria-label="关闭提示">
               <Dismiss16Regular aria-hidden="true" />
             </button>
           </div>
@@ -764,9 +826,7 @@ function App() {
               requests={requests}
               prepareTransport={prepareTransport}
               onConnectionReset={resetConnection}
-              onView={async (id) => {
-                await invoke("viewer_open", { id });
-              }}
+              onView={openViewer}
               onNavigate={setTab}
               devices={devices}
               state={publicState}
@@ -787,9 +847,7 @@ function App() {
               prepareTransport={prepareTransport}
               onRefresh={refresh}
               onNavigate={setTab}
-              onView={async (id) => {
-                await invoke("viewer_open", { id });
-              }}
+              onView={openViewer}
             />
           ) : tab === "security" ? (
             <Security
@@ -1292,7 +1350,7 @@ function Devices({
   pending: Pending[];
   prepareTransport: () => Promise<void>;
   onConnectionReset: () => void;
-  onView: (id: string) => Promise<void>;
+  onView: (id: string) => Promise<ViewerNoticeLease>;
   onRefresh: (foreground?: boolean) => Promise<void>;
   onNavigate: (tab: Tab) => void;
   devices: Device[];
@@ -1306,7 +1364,18 @@ function Devices({
   const [waiting, setWaiting] = useState<{ id: string; target: string } | null>(
     null,
   );
-  const [connectionNote, setConnectionNote] = useState("");
+  const [connectionNote, setConnectionNotice] =
+    useState<OperationNotice | null>(null);
+  const setConnectionNote = (message: string, viewer?: ViewerNoticeLease) =>
+    setConnectionNotice(message ? { message, viewer } : null);
+  const openedWindow = connectionNote?.viewer ?? null;
+  const openedWindowPresent = useViewerNoticePresent(openedWindow);
+  useEffect(() => {
+    if (!openedWindowPresent)
+      setConnectionNotice((current) =>
+        current?.viewer === openedWindow ? null : current,
+      );
+  }, [openedWindowPresent, openedWindow]);
   const [connecting, setConnecting] = useState(false);
   const inFlight = useRef(false);
   const [editing, setEditing] = useState(false);
@@ -1357,8 +1426,12 @@ function Devices({
               id: request.id,
               permission: request.permission,
             });
-            await onView(request.id);
-            setConnectionNote("已在独立窗口打开，可继续管理设备。");
+            const opened = await onView(request.id);
+            setConnectionNote(
+              opened.isPresent() ? "已在独立窗口打开，可继续管理设备。" : "",
+              opened,
+            );
+            return opened;
           } catch (e) {
             setConnectionNote("");
             void api("revoke_remote", { id: request.id }).catch(() => {});
@@ -1718,9 +1791,11 @@ function Devices({
                 </div>
                 <p className="muted">此版本暂不支持文件传输。</p>
                 <p className="muted">{blocked}</p>
-                {(waiting || connecting || connectionNote) && (
+                {(waiting ||
+                  connecting ||
+                  (connectionNote && openedWindowPresent)) && (
                   <div className="notice-strip" role="status">
-                    {connectionNote}
+                    {connectionNote?.message}
                     {waiting && (
                       <button
                         className="danger-text"
@@ -1879,7 +1954,7 @@ function Requests({
     React.SetStateAction<ConnectionInvitation | null>
   >;
   onNavigate: (tab: Tab) => void;
-  onView: (id: string) => Promise<void>;
+  onView: (id: string) => Promise<ViewerNoticeLease>;
 }) {
   const [paths, setPaths] = useState<
     Record<
@@ -2367,7 +2442,7 @@ function Requests({
                                     id: r.id,
                                     permission: r.permission,
                                   });
-                                  await onView(r.id);
+                                  return await onView(r.id);
                                 } catch (e) {
                                   void api("revoke_remote", { id: r.id }).catch(
                                     () => {},

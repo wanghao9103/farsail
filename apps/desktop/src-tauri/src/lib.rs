@@ -11,7 +11,10 @@ use fs2::FileExt;
 use remote::RemoteRuntime;
 #[cfg(debug_assertions)]
 use viewer::ipc_viewer_state;
-use viewer::{viewer_open, viewer_reconnect, viewer_recovery_status, viewer_window_action};
+use viewer::{
+    viewer_open, viewer_reconnect, viewer_recovery_status, viewer_window_action,
+    viewer_window_active,
+};
 #[cfg(debug_assertions)]
 static IPC_SMOKE_STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -447,6 +450,7 @@ pub fn run() {
     let builder = builder.invoke_handler(tauri::generate_handler![
         viewer_window_action,
         viewer_open,
+        viewer_window_active,
         viewer_reconnect,
         viewer_recovery_status,
         remote_watch,
@@ -473,6 +477,7 @@ pub fn run() {
     let builder = builder.invoke_handler(tauri::generate_handler![
         viewer_window_action,
         viewer_open,
+        viewer_window_active,
         viewer_reconnect,
         viewer_recovery_status,
         remote_watch,

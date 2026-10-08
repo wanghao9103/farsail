@@ -7,13 +7,23 @@ use std::{
     collections::HashMap,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
 use tauri::Manager;
 
 const MAX_RECOVERY_ATTEMPTS: u32 = 3;
+
+fn next_window_instance() -> String {
+    static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(1);
+    NEXT_INSTANCE
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |previous| {
+            previous.checked_add(1)
+        })
+        .expect("viewer instance counter exhausted")
+        .to_string()
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -39,6 +49,8 @@ struct RecoveryProgress {
 
 pub struct Binding {
     pub id: Mutex<String>,
+    instance: String,
+    opened: AtomicBool,
     source: String,
     target: String,
     permission: RemotePermission,
@@ -49,6 +61,12 @@ pub struct Binding {
     progress: Mutex<RecoveryProgress>,
 }
 impl Binding {
+    fn window_active(&self, native_exists: bool) -> bool {
+        native_exists
+            && self.opened.load(Ordering::SeqCst)
+            && !self.cancelled.load(Ordering::SeqCst)
+    }
+
     fn begin_recovery(&self, manual: bool, retryable: bool) -> Result<(), String> {
         let mut progress = self.progress.lock().unwrap();
         if self.cancelled.load(Ordering::SeqCst)
@@ -202,16 +220,62 @@ pub fn scoped(window: &tauri::WebviewWindow, id: &str) -> Result<(), String> {
     }
     Ok(())
 }
+fn focus_existing(
+    app: &tauri::AppHandle,
+    label: &str,
+    binding: &Binding,
+) -> Result<String, String> {
+    if !binding.opened.load(Ordering::SeqCst) {
+        return Err("查看窗口正在打开，请稍后再试".into());
+    }
+    let viewer = app.get_webview_window(label).ok_or("查看窗口已关闭")?;
+    if !binding.window_active(true) {
+        return Err("查看窗口正在关闭，请重新连接".into());
+    }
+    viewer.set_focus().map_err(|e| e.to_string())?;
+    if !binding.window_active(app.get_webview_window(label).is_some()) {
+        return Err("查看窗口已关闭".into());
+    }
+    Ok(binding.instance.clone())
+}
+
 #[tauri::command]
-pub async fn viewer_open(window: tauri::WebviewWindow, id: String) -> Result<(), String> {
+pub fn viewer_window_active(
+    window: tauri::WebviewWindow,
+    instance: String,
+) -> Result<bool, String> {
+    main_only(&window)?;
+    let app = window.app_handle();
+    let windows = app.state::<Windows>();
+    let tracked = {
+        let map = windows.0.lock().unwrap();
+        map.iter()
+            .find(|(_, binding)| binding.instance == instance)
+            .map(|(label, binding)| (label.clone(), binding.clone()))
+    };
+    Ok(tracked.is_some_and(|(label, binding)| {
+        binding.window_active(app.get_webview_window(&label).is_some())
+    }))
+}
+
+#[tauri::command]
+pub async fn viewer_open(window: tauri::WebviewWindow, id: String) -> Result<String, String> {
     main_only(&window)?;
     if id.len() != 36 || !id.bytes().all(|c| c.is_ascii_hexdigit() || c == b'-') {
         return Err("invalid session".into());
     }
     let app = window.app_handle();
     let label = format!("viewer-{id}");
-    if let Some(viewer) = app.get_webview_window(&label) {
-        return viewer.set_focus().map_err(|e| e.to_string());
+    if app.get_webview_window(&label).is_some() {
+        let binding = app
+            .state::<Windows>()
+            .0
+            .lock()
+            .unwrap()
+            .get(&label)
+            .cloned()
+            .ok_or("查看窗口正在关闭，请重新连接")?;
+        return focus_existing(app, &label, &binding);
     }
     let client = app.state::<Arc<NativeClient>>();
     let row = client
@@ -229,6 +293,8 @@ pub async fn viewer_open(window: tauri::WebviewWindow, id: String) -> Result<(),
     };
     let binding = Arc::new(Binding {
         id: Mutex::new(id.clone()),
+        instance: next_window_instance(),
+        opened: AtomicBool::new(false),
         source: row["source_device_id"]
             .as_str()
             .ok_or("source missing")?
@@ -247,10 +313,11 @@ pub async fn viewer_open(window: tauri::WebviewWindow, id: String) -> Result<(),
     {
         let windows = app.state::<Windows>();
         let mut map = windows.0.lock().unwrap();
-        if map.contains_key(&label) {
-            return Ok(());
+        if let Some(existing) = map.get(&label).cloned() {
+            drop(map);
+            return focus_existing(app, &label, &existing);
         }
-        map.insert(label.clone(), binding);
+        map.insert(label.clone(), binding.clone());
     }
     let result = tauri::WebviewWindowBuilder::new(
         app,
@@ -273,11 +340,24 @@ pub async fn viewer_open(window: tauri::WebviewWindow, id: String) -> Result<(),
     })
     .build();
     if let Err(e) = result {
-        app.state::<Windows>().0.lock().unwrap().remove(&label);
+        {
+            let windows = app.state::<Windows>();
+            let mut map = windows.0.lock().unwrap();
+            if map
+                .get(&label)
+                .is_some_and(|tracked| Arc::ptr_eq(tracked, &binding))
+            {
+                map.remove(&label);
+            }
+        }
+        binding.cancel_recovery();
         app.state::<Arc<RemoteRuntime>>().stop(&id).await;
         return Err(e.to_string());
     }
-    Ok(())
+    binding.opened.store(true, Ordering::SeqCst);
+    // Creation succeeded even if the user immediately closed the new window.
+    // The main page checks this instance before publishing its success notice.
+    Ok(binding.instance.clone())
 }
 
 #[cfg(debug_assertions)]
@@ -286,20 +366,24 @@ pub fn smoke_setup(app: &tauri::AppHandle) -> tauri::Result<()> {
         return Ok(());
     }
     let id = "00000000-0000-0000-0000-000000000001";
-    app.state::<Windows>().0.lock().unwrap().insert(
-        "viewer-smoke".into(),
-        Arc::new(Binding {
-            id: Mutex::new(id.into()),
-            source: "synthetic".into(),
-            target: "synthetic".into(),
-            permission: RemotePermission::View,
-            cancelled: AtomicBool::new(false),
-            retrying: AtomicBool::new(false),
-            attempts: AtomicU32::new(0),
-            recovery_allowed: AtomicBool::new(false),
-            progress: Mutex::new(RecoveryProgress::default()),
-        }),
-    );
+    let binding = Arc::new(Binding {
+        id: Mutex::new(id.into()),
+        instance: next_window_instance(),
+        opened: AtomicBool::new(false),
+        source: "synthetic".into(),
+        target: "synthetic".into(),
+        permission: RemotePermission::View,
+        cancelled: AtomicBool::new(false),
+        retrying: AtomicBool::new(false),
+        attempts: AtomicU32::new(0),
+        recovery_allowed: AtomicBool::new(false),
+        progress: Mutex::new(RecoveryProgress::default()),
+    });
+    app.state::<Windows>()
+        .0
+        .lock()
+        .unwrap()
+        .insert("viewer-smoke".into(), binding.clone());
     tauri::WebviewWindowBuilder::new(
         app,
         "viewer-smoke",
@@ -310,6 +394,7 @@ pub fn smoke_setup(app: &tauri::AppHandle) -> tauri::Result<()> {
     .maximized(true)
     .decorations(false)
     .build()?;
+    binding.opened.store(true, Ordering::SeqCst);
     Ok(())
 }
 
@@ -485,6 +570,8 @@ mod tests {
     fn binding() -> Binding {
         Binding {
             id: Mutex::new("synthetic".into()),
+            instance: next_window_instance(),
+            opened: AtomicBool::new(true),
             source: "source".into(),
             target: "target".into(),
             permission: RemotePermission::Control,
@@ -494,6 +581,38 @@ mod tests {
             recovery_allowed: AtomicBool::new(false),
             progress: Mutex::new(RecoveryProgress::default()),
         }
+    }
+    #[test]
+    fn window_instance_survives_fresh_session_recovery() {
+        let binding = binding();
+        let instance = binding.instance.clone();
+        binding.begin_recovery(false, true).unwrap();
+        binding.next_attempt(Instant::now()).unwrap();
+        *binding.id.lock().unwrap() = "fresh-request".into();
+        binding.finish_recovery(true, false);
+        assert_eq!(binding.instance, instance);
+        assert!(binding.window_active(true));
+    }
+    #[test]
+    fn only_a_built_present_uncancelled_window_is_active() {
+        let binding = binding();
+        assert!(binding.window_active(true));
+        assert!(!binding.window_active(false));
+        binding.opened.store(false, Ordering::SeqCst);
+        assert!(!binding.window_active(true));
+        binding.opened.store(true, Ordering::SeqCst);
+        binding.cancel_recovery();
+        assert!(!binding.window_active(true));
+    }
+    #[test]
+    fn replacement_window_never_reuses_the_old_instance() {
+        let old = binding();
+        old.cancel_recovery();
+        let replacement = binding();
+        assert_eq!(*old.id.lock().unwrap(), *replacement.id.lock().unwrap());
+        assert_ne!(old.instance, replacement.instance);
+        assert!(!old.window_active(true));
+        assert!(replacement.window_active(true));
     }
     #[test]
     fn exhausted_recovery_can_restart_but_refusal_or_stop_cannot() {
