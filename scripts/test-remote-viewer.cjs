@@ -22,6 +22,9 @@ const fs = require("node:fs");
       inputBlocked: false,
       inputGeneration: 0,
       staleInput: null,
+      mouse: { generation: 0, rejected: false },
+      reconnectFailure: null,
+      reconnectSuccess: false,
       video: { profile: 1, generation: 0, supported: true, max_profile: 3 },
       heartbeat: true,
       lastFrame: 0,
@@ -82,6 +85,7 @@ const fs = require("node:fs");
             permission: f.permission,
             video: f.video,
             input: reportedInput,
+            mouse: f.mouse,
             rtt_ms: 23,
             displays: [
               { id: 1, name: "Display", width: 3840, height: 2160, dpi: 96 },
@@ -116,7 +120,21 @@ const fs = require("node:fs");
           f.inputGeneration++;
           return {};
         }
-        if (cmd === "viewer_reconnect") return new Promise(() => {});
+        if (cmd === "remote_input" && args.input?.kind === "resume_mouse") {
+          f.layout++;
+          f.lastFrame = 0;
+          f.mouse = { generation: f.mouse.generation + 1, rejected: false };
+          return {};
+        }
+        if (cmd === "viewer_reconnect") {
+          if (f.reconnectFailure) throw Error(f.reconnectFailure);
+          if (f.reconnectSuccess) {
+            f.closed = false;
+            f.retryable = false;
+            return { id: "recovered" };
+          }
+          return new Promise(() => {});
+        }
         if (cmd === "media_profile") {
           f.video.profile = args.profile;
           f.video.generation++;
@@ -560,6 +578,54 @@ const fs = require("node:fs");
   assert(await page.getByAltText("远端桌面").isVisible());
   assert.equal(await page.getByText("控制已暂停", { exact: true }).count(), 0);
   await page.screenshot({ path: ".local/ui-verification/viewer.png" });
+  // Geometry rejection affects mouse only; explicit recovery obtains a new layout.
+  await page.evaluate(() => {
+    window.fixture.mouse = { generation: 1, rejected: true };
+  });
+  const mouseWarning = page.getByText(
+    "鼠标位置与被控端当前屏幕布局不一致，操作未执行；键盘和画面连接仍保留。",
+    { exact: true },
+  );
+  await mouseWarning.waitFor();
+  await page.locator(".remote-screen").focus();
+  const beforeMouseRecovery = await page.evaluate(
+    () => window.fixture.calls.length,
+  );
+  await page.keyboard.press("G");
+  await page.waitForFunction(
+    (start) =>
+      window.fixture.calls
+        .slice(start)
+        .some(
+          (c) =>
+            c.cmd === "remote_input" &&
+            c.args.input?.kind === "key" &&
+            c.args.input.vk === 71,
+        ),
+    beforeMouseRecovery,
+  );
+  assert(await page.getByAltText("远端桌面").isVisible());
+  await page
+    .getByRole("alert")
+    .getByRole("button", { name: "恢复鼠标控制", exact: true })
+    .click();
+  await mouseWarning.waitFor({ state: "hidden" });
+  await page.waitForFunction(
+    () => window.fixture.deliveredLayout === window.fixture.layout,
+  );
+  await page.getByAltText("远端桌面").click();
+  await page.waitForFunction(
+    (start) =>
+      window.fixture.calls
+        .slice(start)
+        .some(
+          (c) =>
+            c.cmd === "remote_input" &&
+            c.args.input?.kind === "button" &&
+            c.args.input.layout === window.fixture.layout,
+        ),
+    beforeMouseRecovery,
+  );
   await page.evaluate(() => {
     window.fixture.inputBlocked = true;
     window.fixture.inputGeneration++;
@@ -652,6 +718,64 @@ const fs = require("node:fs");
     (await page.evaluate(() => window.fixture.calls)).some(
       (c) => c.cmd === "viewer_window_action" && c.args.action === "close",
     ),
+  );
+  await load();
+  await page.evaluate(() => {
+    window.fixture.retryable = true;
+    window.fixture.closed = true;
+    window.fixture.reconnectFailure =
+      "自动重连未成功，请检查网络并重新发起连接";
+  });
+  const retryButton = page.getByRole("button", {
+    name: "重新尝试连接",
+    exact: true,
+  });
+  await retryButton.waitFor();
+  await retryButton.click();
+  await retryButton.waitFor();
+  assert.equal(
+    await page.evaluate(
+      () =>
+        window.fixture.calls.filter((c) => c.cmd === "viewer_reconnect").length,
+    ),
+    2,
+  );
+  assert.equal(
+    await page.evaluate(
+      () =>
+        window.fixture.calls.filter((c) => c.cmd === "viewer_reconnect").at(-1)
+          .args.manual,
+    ),
+    true,
+  );
+  await page.evaluate(() => {
+    window.fixture.reconnectFailure = null;
+    window.fixture.reconnectSuccess = true;
+  });
+  await retryButton.click();
+  await page.getByAltText("远端桌面").waitFor();
+  assert.equal(await retryButton.count(), 0);
+  await page.getByAltText("远端桌面").click();
+  await page.keyboard.press("H");
+  await page.waitForFunction(() =>
+    window.fixture.calls.some(
+      (c) =>
+        c.cmd === "remote_input" &&
+        c.args.id === "recovered" &&
+        c.args.input?.vk === 72,
+    ),
+  );
+  await load();
+  await page.evaluate(() => {
+    window.fixture.retryable = true;
+    window.fixture.closed = true;
+    window.fixture.reconnectFailure = "重连已取消或授权已结束";
+  });
+  await page.getByText("重连已取消或授权已结束", { exact: true }).waitFor();
+  assert.equal(
+    await retryButton.count(),
+    0,
+    "authorization refusal must not offer another recovery cycle",
   );
   await load();
   await page.evaluate(() => (window.fixture.permission = "view"));

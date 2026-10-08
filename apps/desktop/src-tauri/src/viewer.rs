@@ -20,8 +20,20 @@ pub struct Binding {
     cancelled: AtomicBool,
     retrying: AtomicBool,
     attempts: AtomicU32,
+    recovery_allowed: AtomicBool,
 }
 impl Binding {
+    fn begin_recovery(&self, manual: bool, retryable: bool) -> Result<(), String> {
+        if self.cancelled.load(Ordering::SeqCst)
+            || (manual && !self.recovery_allowed.load(Ordering::SeqCst))
+            || (!manual && !retryable)
+        {
+            return Err("会话已结束，请手动发起新连接".into());
+        }
+        self.recovery_allowed.store(true, Ordering::SeqCst);
+        self.attempts.store(0, Ordering::SeqCst);
+        Ok(())
+    }
     async fn wait_cancelled(&self) {
         while !self.cancelled.load(Ordering::SeqCst) {
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -125,6 +137,7 @@ pub async fn viewer_open(window: tauri::WebviewWindow, id: String) -> Result<(),
         cancelled: AtomicBool::new(false),
         retrying: AtomicBool::new(false),
         attempts: AtomicU32::new(0),
+        recovery_allowed: AtomicBool::new(false),
     });
     {
         let windows = app.state::<Windows>();
@@ -178,6 +191,7 @@ pub fn smoke_setup(app: &tauri::AppHandle) -> tauri::Result<()> {
             cancelled: AtomicBool::new(false),
             retrying: AtomicBool::new(false),
             attempts: AtomicU32::new(0),
+            recovery_allowed: AtomicBool::new(false),
         }),
     );
     tauri::WebviewWindowBuilder::new(
@@ -264,7 +278,10 @@ pub fn cancel_session(app: &tauri::AppHandle, id: &str) {
     }
 }
 #[tauri::command]
-pub async fn viewer_reconnect(window: tauri::WebviewWindow) -> Result<Value, String> {
+pub async fn viewer_reconnect(
+    window: tauri::WebviewWindow,
+    manual: Option<bool>,
+) -> Result<Value, String> {
     let app = window.app_handle();
     let binding = app
         .state::<Windows>()
@@ -281,8 +298,12 @@ pub async fn viewer_reconnect(window: tauri::WebviewWindow) -> Result<Value, Str
     let client = app.state::<Arc<NativeClient>>().inner().clone();
     let old = binding.id.lock().unwrap().clone();
     let result = async {
-        let status = remote.status(&old).await?;
-        if status["retryable"] != true { return Err("会话已结束，请手动发起新连接".into()); }
+        if manual.unwrap_or(false) {
+            binding.begin_recovery(true, false)?;
+        } else {
+            let status = remote.status(&old).await?;
+            binding.begin_recovery(false, status["retryable"] == true)?;
+        }
         for _ in 0..3 {
             let attempt = binding.attempts.fetch_add(1, Ordering::SeqCst) as u64 + 1;
             if attempt > 3 { break; }
@@ -320,7 +341,10 @@ pub async fn viewer_reconnect(window: tauri::WebviewWindow) -> Result<Value, Str
                     _ => (),
                 }
             }
-            if connected && !binding.cancelled.load(Ordering::SeqCst) { return Ok(json!({"id":id})); }
+            if connected && !binding.cancelled.load(Ordering::SeqCst) {
+                binding.recovery_allowed.store(false, Ordering::SeqCst);
+                return Ok(json!({"id":id}));
+            }
             remote.stop(&id).await;
             let _ = client.call("revoke_remote", json!({"id":id})).await;
             if binding.cancelled.load(Ordering::SeqCst) { return Err("重连已取消或授权已结束".into()); }
@@ -329,4 +353,34 @@ pub async fn viewer_reconnect(window: tauri::WebviewWindow) -> Result<Value, Str
     }.await;
     binding.retrying.store(false, Ordering::SeqCst);
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn binding() -> Binding {
+        Binding {
+            id: Mutex::new("synthetic".into()),
+            source: "source".into(),
+            target: "target".into(),
+            permission: RemotePermission::Control,
+            cancelled: AtomicBool::new(false),
+            retrying: AtomicBool::new(false),
+            attempts: AtomicU32::new(0),
+            recovery_allowed: AtomicBool::new(false),
+        }
+    }
+    #[test]
+    fn exhausted_recovery_can_restart_but_refusal_or_stop_cannot() {
+        let binding = binding();
+        assert!(binding.begin_recovery(true, false).is_err());
+        assert!(binding.begin_recovery(false, false).is_err());
+        binding.begin_recovery(false, true).unwrap();
+        binding.attempts.store(3, Ordering::SeqCst);
+        binding.begin_recovery(true, false).unwrap();
+        assert_eq!(binding.attempts.load(Ordering::SeqCst), 0);
+        binding.cancelled.store(true, Ordering::SeqCst);
+        assert!(binding.begin_recovery(true, false).is_err());
+        assert!(binding.begin_recovery(false, true).is_err());
+    }
 }

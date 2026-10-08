@@ -22,6 +22,104 @@ struct InputState {
     blocked: bool,
     message: Option<String>,
 }
+
+// Separate from FSB1 so older peers still understand global input refusal.
+#[derive(Clone, Copy, Default, Serialize)]
+struct MouseState {
+    generation: u64,
+    rejected: bool,
+}
+
+fn activate_capture(
+    current: &StdMutex<Option<(Display, u64)>>,
+    layout: &AtomicU64,
+    display: &Display,
+) -> u64 {
+    let mut current = current.lock().unwrap();
+    if let Some((active, version)) = current.as_ref()
+        && active == display
+    {
+        return *version;
+    }
+    let version = layout.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
+    *current = Some((display.clone(), version));
+    version
+}
+
+#[derive(Default)]
+struct MouseRecovery {
+    first_failure: Option<std::time::Instant>,
+    failures: u32,
+    refreshed: bool,
+    last_refresh: Option<std::time::Instant>,
+}
+impl MouseRecovery {
+    fn observe(&mut self, rejected: bool, now: std::time::Instant) -> bool {
+        if !rejected {
+            self.first_failure = None;
+            self.failures = 0;
+            self.refreshed = false;
+            return false;
+        }
+        self.failures = self.failures.saturating_add(1);
+        let first = *self.first_failure.get_or_insert(now);
+        if !self.refreshed
+            && self.failures >= 3
+            && now.duration_since(first) >= Duration::from_millis(500)
+            && self
+                .last_refresh
+                .is_none_or(|last| now.duration_since(last) >= Duration::from_secs(30))
+        {
+            self.refreshed = true;
+            self.last_refresh = Some(now);
+            return true;
+        }
+        false
+    }
+}
+
+fn recoverable_mouse(input: &Input, selected: u32) -> bool {
+    let (display, x, y) = match input {
+        Input::Move { display, x, y, .. }
+        | Input::Button {
+            display,
+            x,
+            y,
+            down: true,
+            ..
+        }
+        | Input::Wheel { display, x, y, .. } => (*display, *x, *y),
+        _ => return false,
+    };
+    display == selected
+        && x.is_finite()
+        && y.is_finite()
+        && (0.0..=1.0).contains(&x)
+        && (0.0..=1.0).contains(&y)
+}
+impl MouseState {
+    fn update(&mut self, rejected: bool) -> Option<Vec<u8>> {
+        if self.rejected == rejected {
+            return None;
+        }
+        self.generation = self.generation.saturating_add(1);
+        self.rejected = rejected;
+        let mut bytes = b"FSG1".to_vec();
+        bytes.extend_from_slice(&self.generation.to_be_bytes());
+        bytes.push(u8::from(rejected));
+        Some(bytes)
+    }
+    fn accept(&mut self, bytes: &[u8]) {
+        if bytes.len() != 13 || !bytes.starts_with(b"FSG1") || bytes[12] > 1 {
+            return;
+        }
+        let generation = u64::from_be_bytes(bytes[4..12].try_into().unwrap());
+        if generation > self.generation {
+            self.generation = generation;
+            self.rejected = bytes[12] == 1;
+        }
+    }
+}
 #[derive(Clone, Copy)]
 struct VideoProfile {
     profile: u8,
@@ -135,6 +233,8 @@ struct Live {
     current: Arc<StdMutex<Option<(Display, u64)>>>,
     input: Arc<StdMutex<InputSink>>,
     input_state: Arc<StdMutex<InputState>>,
+    mouse_state: Arc<StdMutex<MouseState>>,
+    capture_revision: Arc<AtomicU64>,
     video_profile: Arc<StdMutex<VideoProfile>>,
     video_request: AtomicU64,
     video_supported: AtomicBool,
@@ -204,6 +304,8 @@ impl RemoteRuntime {
             current: Arc::new(StdMutex::new(None)),
             input: Arc::new(StdMutex::new(InputSink::default())),
             input_state: Arc::new(StdMutex::new(InputState::default())),
+            mouse_state: Arc::new(StdMutex::new(MouseState::default())),
+            capture_revision: Arc::new(AtomicU64::new(0)),
             video_profile: Arc::new(StdMutex::new(VideoProfile::default())),
             video_request: AtomicU64::new(0),
             video_supported: AtomicBool::new(false),
@@ -309,24 +411,32 @@ impl RemoteRuntime {
         let worker_failed = capture_failed.clone();
         let layout = live.layout.clone();
         let video_profile = live.video_profile.clone();
+        let capture_revision = live.capture_revision.clone();
         tokio::task::spawn_blocking(move || {
             let mut capture: Option<Capture> = None;
             let mut last_id = 0;
             let mut last_profile = u8::MAX;
+            let mut last_revision = 0;
             let mut sequence = 0;
             let mut last_frame: Option<JpegFrame> = None;
             let mut last_emit = std::time::Instant::now();
             while alive.load(Ordering::SeqCst) {
                 let id = selected.load(Ordering::SeqCst);
                 let profile = video_profile.lock().unwrap().profile;
-                if id != last_id || profile != last_profile || capture.is_none() {
-                    *current.lock().unwrap() = None;
-                    let version = layout.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
+                let revision = capture_revision.load(Ordering::SeqCst);
+                if id != last_id
+                    || profile != last_profile
+                    || revision != last_revision
+                    || capture.is_none()
+                {
+                    if id != last_id || revision != last_revision {
+                        *current.lock().unwrap() = None;
+                    }
                     drop(capture.take());
                     last_frame = None;
                     capture = match Capture::new_with_profile(id, profile) {
                         Ok(c) => {
-                            *current.lock().unwrap() = Some((c.display().clone(), version));
+                            activate_capture(&current, &layout, c.display());
                             Some(c)
                         }
                         Err(e) => {
@@ -337,6 +447,7 @@ impl RemoteRuntime {
                     };
                     last_id = id;
                     last_profile = profile;
+                    last_revision = revision;
                 }
                 if let Some(c) = capture.as_mut() {
                     sequence += 1;
@@ -449,6 +560,7 @@ impl RemoteRuntime {
         let mut input_window = std::time::Instant::now();
         let mut input_count = 0u32;
         let mut move_count = 0u32;
+        let mut mouse_recovery = MouseRecovery::default();
         loop {
             if !live.alive.load(Ordering::SeqCst)
                 || !self.client.hosting_enabled()
@@ -552,8 +664,14 @@ impl RemoteRuntime {
                             {
                                 break;
                             }
-                            if &payload == b"FSR2" {
+                            if &payload == b"FSR2" || &payload == b"FSR3" {
                                 let result = sink.release_all();
+                                if &payload == b"FSR3" && result.is_ok() {
+                                    // No reuse of stale geometry or held buttons. The worker
+                                    // rebuilds even if the selected monitor/profile is unchanged.
+                                    *live.current.lock().unwrap() = None;
+                                    live.capture_revision.fetch_add(1, Ordering::SeqCst);
+                                }
                                 let mut state = live.input_state.lock().unwrap();
                                 state.update(result.as_ref().err());
                                 notice = Some(state.packet());
@@ -574,22 +692,53 @@ impl RemoteRuntime {
                                     }
                                 }
                                 let current = live.current.lock().unwrap().clone();
-                                if let Err(e) = sink.apply(
+                                let mouse = matches!(
+                                    &input,
+                                    Input::Move { .. }
+                                        | Input::Button { down: true, .. }
+                                        | Input::Wheel { .. }
+                                );
+                                let recoverable =
+                                    recoverable_mouse(&input, live.selected.load(Ordering::SeqCst));
+                                let result = sink.apply(
                                     input,
                                     current.as_ref().map(|x| &x.0),
                                     current.as_ref().map_or(0, |x| x.1),
-                                ) {
-                                    if matches!(
-                                        e,
-                                        farsail_windows::Error::Geometry
-                                            | farsail_windows::Error::UnsupportedInput
-                                    ) {
+                                );
+                                if mouse
+                                    && (result.is_ok()
+                                        || matches!(&result, Err(farsail_windows::Error::Geometry)))
+                                {
+                                    notice =
+                                        live.mouse_state.lock().unwrap().update(result.is_err());
+                                    if recoverable
+                                        && mouse_recovery
+                                            .observe(result.is_err(), std::time::Instant::now())
+                                    {
+                                        match sink.release_all() {
+                                            Ok(()) => {
+                                                *live.current.lock().unwrap() = None;
+                                                live.capture_revision
+                                                    .fetch_add(1, Ordering::SeqCst);
+                                            }
+                                            Err(e) => {
+                                                let mut state = live.input_state.lock().unwrap();
+                                                state.update(Some(&e));
+                                                notice = Some(state.packet());
+                                            }
+                                        }
+                                    }
+                                }
+                                if let Err(e) = result {
+                                    if matches!(e, farsail_windows::Error::UnsupportedInput) {
                                         continue;
                                     }
-                                    let _ = sink.release_all();
-                                    let mut state = live.input_state.lock().unwrap();
-                                    state.update(Some(&e));
-                                    notice = Some(state.packet());
+                                    if !matches!(e, farsail_windows::Error::Geometry) {
+                                        let _ = sink.release_all();
+                                        let mut state = live.input_state.lock().unwrap();
+                                        state.update(Some(&e));
+                                        notice = Some(state.packet());
+                                    }
                                 }
                             }
                         }
@@ -632,6 +781,7 @@ impl RemoteRuntime {
                 && live.session.permission() == RemotePermission::Control
             {
                 live.input_state.lock().unwrap().accept(&frame.bytes);
+                live.mouse_state.lock().unwrap().accept(&frame.bytes);
                 continue;
             }
             if frame.channel != Channel::Media {
@@ -702,7 +852,7 @@ impl RemoteRuntime {
         let discovery = self.client.transport_discovery_state(path).await;
         let profile = *live.video_profile.lock().unwrap();
         Ok(
-            json!({"id":id,"state":path,"rtt_ms":rtt,"discovery":discovery,"permission":live.session.permission(),"sharing":live.host,"verification_code":live.session.verification_code().map_err(|e|e.to_string())?,"displays":*live.displays.lock().unwrap(),"error":*live.error.lock().unwrap(),"input":*live.input_state.lock().unwrap(),"video":{"profile":profile.profile,"generation":profile.generation,"supported":live.video_supported.load(Ordering::SeqCst),"max_profile":live.video_max_profile.load(Ordering::SeqCst)}}),
+            json!({"id":id,"state":path,"rtt_ms":rtt,"discovery":discovery,"permission":live.session.permission(),"sharing":live.host,"verification_code":live.session.verification_code().map_err(|e|e.to_string())?,"displays":*live.displays.lock().unwrap(),"error":*live.error.lock().unwrap(),"input":*live.input_state.lock().unwrap(),"mouse":*live.mouse_state.lock().unwrap(),"video":{"profile":profile.profile,"generation":profile.generation,"supported":live.video_supported.load(Ordering::SeqCst),"max_profile":live.video_max_profile.load(Ordering::SeqCst)}}),
         )
     }
     pub async fn next_frame(&self, id: &str, after: u64) -> Result<Vec<u8>, String> {
@@ -809,7 +959,12 @@ impl RemoteRuntime {
         let resume = value.as_ref().and_then(Value::as_object).is_some_and(|v| {
             v.len() == 1 && v.get("kind").and_then(Value::as_str) == Some("resume_control")
         });
-        let payload = if resume {
+        let recover_mouse = value.as_ref().and_then(Value::as_object).is_some_and(|v| {
+            v.len() == 1 && v.get("kind").and_then(Value::as_str) == Some("resume_mouse")
+        });
+        let payload = if recover_mouse {
+            b"FSR3".to_vec()
+        } else if resume {
             b"FSR2".to_vec()
         } else if let Some(value) = value {
             let input: Input = serde_json::from_value(value).map_err(|_| "invalid input")?;
@@ -838,7 +993,11 @@ impl RemoteRuntime {
         if !live.alive.load(Ordering::SeqCst) || !live.session.is_open().await {
             return Err("会话已结束，输入已停止".into());
         }
-        if live.input_state.lock().unwrap().blocked && payload != b"FSR1" && payload != b"FSR2" {
+        if live.input_state.lock().unwrap().blocked
+            && payload != b"FSR1"
+            && payload != b"FSR2"
+            && payload != b"FSR3"
+        {
             return Ok(());
         }
         let mut bytes = b"FSI1".to_vec();
@@ -897,6 +1056,153 @@ impl RemoteRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn synthetic_display(id: u32) -> Display {
+        Display {
+            id,
+            name: "synthetic".into(),
+            x: -1920,
+            y: 0,
+            width: 1920,
+            height: 1080,
+            dpi: 144,
+            rotation: 0,
+        }
+    }
+    #[test]
+    fn quality_recreation_does_not_invalidate_mouse_coordinates() {
+        let current = StdMutex::new(None);
+        let layout = AtomicU64::new(100);
+        let display = synthetic_display(1);
+        let initial = activate_capture(&current, &layout, &display);
+        // Capture profiles change encoded size, not the normalized physical desktop.
+        for _profile in [0, 1, 2, 3, 1, 0] {
+            assert_eq!(activate_capture(&current, &layout, &display), initial);
+            assert_eq!(current.lock().unwrap().as_ref().unwrap().1, initial);
+        }
+    }
+    #[test]
+    fn persistent_mouse_geometry_failure_refreshes_once_without_replaying_input() {
+        let mut recovery = MouseRecovery::default();
+        let start = std::time::Instant::now();
+        assert!(!recovery.observe(true, start));
+        assert!(!recovery.observe(true, start + Duration::from_millis(300)));
+        assert!(recovery.observe(true, start + Duration::from_millis(600)));
+        assert!(
+            !recovery.observe(true, start + Duration::from_secs(60)),
+            "same failed streak must not keep rebuilding capture"
+        );
+        assert!(!recovery.observe(false, start + Duration::from_secs(61)));
+        assert!(!recovery.observe(true, start + Duration::from_secs(62)));
+        assert!(!recovery.observe(true, start + Duration::from_millis(62300)));
+        assert!(recovery.observe(true, start + Duration::from_millis(62600)));
+    }
+    #[test]
+    fn transient_failure_and_invalid_coordinates_cannot_trigger_refresh_storm() {
+        let start = std::time::Instant::now();
+        let mut recovery = MouseRecovery::default();
+        for n in 0..10 {
+            assert!(!recovery.observe(true, start + Duration::from_secs(n)));
+            assert!(!recovery.observe(false, start + Duration::from_secs(n)));
+        }
+        assert!(!recoverable_mouse(
+            &Input::Move {
+                display: 2,
+                layout: 7,
+                x: 0.5,
+                y: 0.5
+            },
+            1
+        ));
+        assert!(!recoverable_mouse(
+            &Input::Move {
+                display: 1,
+                layout: 7,
+                x: f64::NAN,
+                y: 0.5
+            },
+            1
+        ));
+        assert!(!recoverable_mouse(
+            &Input::Move {
+                display: 1,
+                layout: 7,
+                x: 1.1,
+                y: 0.5
+            },
+            1
+        ));
+        assert!(!recoverable_mouse(
+            &Input::Key {
+                vk: 65,
+                down: true,
+                repeat: false
+            },
+            1
+        ));
+        assert!(
+            !recoverable_mouse(
+                &Input::Button {
+                    display: 1,
+                    layout: 7,
+                    x: 0.5,
+                    y: 0.5,
+                    button: farsail_windows::Button::Left,
+                    down: false,
+                },
+                1
+            ),
+            "releasing an unowned/stale button does not prove that mouse positioning recovered"
+        );
+    }
+    #[test]
+    fn successful_mouse_position_does_not_bypass_refresh_cooldown() {
+        let start = std::time::Instant::now();
+        let mut recovery = MouseRecovery::default();
+        recovery.observe(true, start);
+        recovery.observe(true, start + Duration::from_millis(300));
+        assert!(recovery.observe(true, start + Duration::from_millis(600)));
+        recovery.observe(false, start + Duration::from_secs(1));
+        for seconds in 2..=30 {
+            assert!(!recovery.observe(true, start + Duration::from_secs(seconds)));
+        }
+        assert!(recovery.observe(true, start + Duration::from_secs(31)));
+    }
+    #[test]
+    fn actual_display_change_and_explicit_reset_invalidate_old_coordinates() {
+        let current = StdMutex::new(None);
+        let layout = AtomicU64::new(100);
+        let mut display = synthetic_display(1);
+        let first = activate_capture(&current, &layout, &display);
+        display.x = 0;
+        assert!(activate_capture(&current, &layout, &display) > first);
+        let second = layout.load(Ordering::SeqCst);
+        display.id = 2;
+        assert!(activate_capture(&current, &layout, &display) > second);
+        let third = layout.load(Ordering::SeqCst);
+        *current.lock().unwrap() = None;
+        assert!(activate_capture(&current, &layout, &display) > third);
+    }
+    #[test]
+    fn mouse_geometry_feedback_is_bounded_and_does_not_change_keyboard_permission() {
+        let mut host = MouseState::default();
+        let mut viewer = MouseState::default();
+        let keyboard = InputState::default();
+        let rejected = host.update(true).unwrap();
+        assert_eq!(rejected.len(), 13);
+        assert!(host.update(true).is_none());
+        viewer.accept(&rejected);
+        assert!(viewer.rejected);
+        viewer.accept(&host.update(false).unwrap());
+        viewer.accept(&rejected);
+        assert!(!viewer.rejected);
+        assert!(!keyboard.blocked);
+        let generation = viewer.generation;
+        viewer.accept(b"FSG1");
+        let mut invalid = rejected;
+        invalid[12] = 2;
+        viewer.accept(&invalid);
+        assert_eq!(viewer.generation, generation);
+    }
     #[test]
     fn video_profile_wire_is_bounded_and_rejects_unknown_presets() {
         let profile = VideoProfile {

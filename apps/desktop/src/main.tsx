@@ -2322,6 +2322,7 @@ type RemoteStatus = {
     max_profile?: number;
   };
   input?: { generation: number; blocked: boolean; message: string | null };
+  mouse?: { generation: number; rejected: boolean };
   retryable?: boolean;
   state: string;
   rtt_ms: number | null;
@@ -2384,6 +2385,7 @@ function Viewer({
   const lastMove = useRef(0);
   const [ended, setEnded] = useState(false);
   const [reconnecting, setReconnecting] = useState(false);
+  const [reconnectFailed, setReconnectFailed] = useState(false);
   const [retryingInput, setRetryingInput] = useState(false);
   const [toolbarVisible, setToolbarVisible] = useState(true);
   const [toolsOpen, setToolsOpen] = useState(false);
@@ -2581,6 +2583,23 @@ function Viewer({
     clearPointer();
     send(null);
   };
+  const recoverMouse = () => {
+    generation.current++;
+    clearPointer();
+    send({ kind: "resume_mouse" });
+  };
+  const reconnect = () => {
+    setReconnectFailed(false);
+    setReconnecting(true);
+    void invoke<{ id: string }>("viewer_reconnect", { manual: true })
+      .then((r) => onReconnect(r.id))
+      .catch((e) => {
+        const message = errorText(e);
+        setProblem(message);
+        setReconnectFailed(message.includes("自动重连未成功"));
+        setReconnecting(false);
+      });
+  };
   useEffect(() => {
     let live = true;
     last.current = 0;
@@ -2613,6 +2632,7 @@ function Viewer({
           .catch((e) => {
             if (live) {
               setProblem(errorText(e));
+              setReconnectFailed(errorText(e).includes("自动重连未成功"));
               setReconnecting(false);
             }
           });
@@ -2998,6 +3018,11 @@ function Viewer({
                   </p>
                 </div>{" "}
                 {control && (
+                  <button type="button" onClick={recoverMouse}>
+                    恢复鼠标控制
+                  </button>
+                )}
+                {control && (
                   <form
                     className="inline-form"
                     onSubmit={(e) => {
@@ -3044,6 +3069,14 @@ function Viewer({
             正在重连（最多 3 次）；等待新的授权批准…
           </div>
         )}
+        {reconnectFailed && !reconnecting && (
+          <div className="notice-strip" role="status">
+            自动重连未成功。
+            <button className="secondary" onClick={reconnect}>
+              重新尝试连接
+            </button>
+          </div>
+        )}
         {problem && (
           <div className="alert error">
             <ErrorMessage error={problem} />
@@ -3074,6 +3107,16 @@ function Viewer({
               }}
             >
               {retryingInput ? "正在请求重试…" : "重试控制"}
+            </button>
+          </div>
+        )}
+        {status?.mouse?.rejected && !ended && !inputBlocked && (
+          <div className="notice-strip" role="alert">
+            <p>
+              鼠标位置与被控端当前屏幕布局不一致，操作未执行；键盘和画面连接仍保留。
+            </p>
+            <button className="secondary" onClick={recoverMouse}>
+              恢复鼠标控制
             </button>
           </div>
         )}
