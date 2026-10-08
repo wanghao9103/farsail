@@ -1,10 +1,12 @@
+**English** | [简体中文](design-qa.zh-CN.md)
+
 # DESIGN-023 visual comparison
 
 final result: blocked
 
 Selected source: `docs/design/desktop-dark-selected.png`, the second displayed generated-image result. Source board inspected; it contains nine related graphite/teal desktop views. Production implementation is the existing React/Tauri client, not a separate mock website. Branding is reused, icons come from Fluent System Icons, remote imagery remains live session content rather than a hardcoded reference wallpaper.
 
-The user explicitly chose “先实现，不使用浏览器自动化” on 2026-10-08. No browser automation, native WebView interaction fixture, screenshot capture or screenshot comparison was run for DESIGN-023. Accordingly no pixel-fidelity, responsive-layout, modal-focus, keyboard-flow or end-to-end UI success is claimed. Build/type checks are not visual evidence.
+The user explicitly chose “Implement first, without browser automation” on 2026-10-08. No browser automation, native WebView interaction fixture, screenshot capture or screenshot comparison was run for DESIGN-023. Accordingly no pixel-fidelity, responsive-layout, modal-focus, keyboard-flow or end-to-end UI success is claimed. Build/type checks are not visual evidence.
 
 Implementation intended for manual review: global graphite palette; compact navigation/controls; overview current device and activity; split device workspace; tabbed connection lists; settings with accessible sharing/watch switches and actual endpoint configuration; standalone authentication; security/admin surfaces; overlay viewer tools; operation error and removal confirmation dialogs. Technical errors are collapsed. Progress/state messages remain nonmodal. Generated mock features without an existing production API (such as direct admin user creation) are not added.
 

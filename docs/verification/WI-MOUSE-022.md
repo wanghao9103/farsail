@@ -1,3 +1,5 @@
+**English** | [简体中文](WI-MOUSE-022.zh-CN.md)
+
 # MOUSE-022 — mouse-only failure with working keyboard
 
 Baseline: `f7d7ddb` (published 0.1.11), isolated branch/worktree. Both peers reportedly run 0.1.11; keyboard still works while all desktop mouse control fails. The physical cause is not yet established. Do not treat Task Manager or UIPI as proven causes.
@@ -8,7 +10,7 @@ Confirmed defect: Capture reconstruction for a quality change unconditionally cl
 
 Persistent valid-coordinate geometry failures (at least 3 over 500ms) automatically release session-owned input and reconstruct the selected capture/layout. One refresh per uninterrupted failure streak, with a 30s cooldown across streaks; successful mouse positioning re-arms recovery. Wrong monitor, out-of-range/nonfinite coordinates and keyboard messages cannot trigger refresh. Button UP is excluded from proof of positioning success because an unowned or stale UP can intentionally return success solely to release tracked buttons. No old click is replayed. Cleanup failure pauses input through the existing FSB1 path. Separate 13-byte FSG1 feedback preserves compatibility with the original input-pause schema and never disables keyboard/media for Geometry alone. Explicit mouse recovery remains a fallback in More actions.
 
-After 3 failed connection attempts, the viewer shows “重新尝试连接”. Manual recovery starts a new 3-attempt cycle using fresh requests/approval/grants, without querying a revoked intermediate request as if it were still the original failed session. A successful recovery permits a fresh automatic budget for a later independent network failure. Refusal/revocation, explicit stop, identity changes and unavailable targets keep their existing terminal checks; closing cancels pending recovery. Synthetic UI verifies exhausted/manual/recovered/authorization-ended states.
+After 3 failed connection attempts, the viewer shows “Retry connection”. Manual recovery starts a new 3-attempt cycle using fresh requests/approval/grants, without querying a revoked intermediate request as if it were still the original failed session. A successful recovery permits a fresh automatic budget for a later independent network failure. Refusal/revocation, explicit stop, identity changes and unavailable targets keep their existing terminal checks; closing cancels pending recovery. Synthetic UI verifies exhausted/manual/recovered/authorization-ended states.
 
 Validation: bounded/order-aware mouse feedback tests, physical capture layout invariants, automatic refresh/cooldown and recovery authorization gates; synthetic browser rejection/recovery/keyboard/media and existing pointer/readonly/cancellation regressions; frontend build, desktop/Windows/media Rust tests, fmt and Clippy. Synthetic/loopback evidence must not be described as physical two-machine verification. No privilege changes or old-grant reuse.
 

@@ -1,3 +1,5 @@
+**English** | [简体中文](WI-NOTICE-027.zh-CN.md)
+
 # NOTICE-027 — remove viewer-open notices when that window closes
 
 Baseline `fd66061`, managed mouse-control-022 worktree. User marks the main-page “opened independent viewer” success banner after closing the viewer. Interpret the screenshot's target as remote-window notice lifecycle, not a request to operate network ports. Main App.act stores success until the next operation; Devices also retains a separate connectionNote. Both need scoped cleanup.

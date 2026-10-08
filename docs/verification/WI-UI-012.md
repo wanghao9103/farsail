@@ -1,12 +1,16 @@
+**English** | [简体中文](WI-UI-012.zh-CN.md)
+
 # UI-012 — Desktop workspace and readable connections
 
 ## Baseline and scope
+
 - Baseline: `024eb05` (2026-09-29). Existing file-transfer Rust/Cargo changes are unrelated WIP and must be preserved.
 - Write set: `apps/desktop/src/main.tsx`, `apps/desktop/src/style.css`, `scripts/test-desktop-ui.cjs`, this document.
 - Runtime: existing npm dependencies; loopback Vite on 1420; synthetic IPC/browser fixtures and screenshots in ignored `.local/ui-verification/`. No native account configuration or remote service changes.
 - Acceptance: `npm run build`; browser regression covering fixed shell, local scrolling with many devices/requests, readable connection states, invitation permissions, account login records and compact viewports.
 
 ## Implementation and evidence
+
 - The shell keeps navigation, title and notifications fixed. Device panes, remote-connection lists and overview activity own their scroll areas. The remote screen takes the remaining height. Settings use two columns; account login records sit beside account/password controls. Small windows retain an accessible scroll area rather than clipping their content.
 - “Remote connections” separates current requests, incoming approval, past requests, connecting to others and invitations. Device names and Chinese permission/status labels replace raw IDs/enums; full identifiers remain expandable. Approval and transport connectivity are displayed separately. Account login records explain what signing out another client does.
 - Invitation permission is explicit and independent of outgoing-request permission. Generated invitation metadata is snapshotted so changing a selector cannot relabel a previously generated code.

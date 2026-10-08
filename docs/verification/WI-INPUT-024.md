@@ -1,3 +1,5 @@
+**English** | [简体中文](WI-INPUT-024.zh-CN.md)
+
 # INPUT-024 — clipped primary action and Task Manager input failure
 
 Baseline `6414249`, existing managed branch/worktree. User screenshot shows primary action SVG/text stacked and clipped. Independent CSS review confirmed the old class-specific `display:grid` beats the new element-level `button` flex rule, while theme fixes the height at38px. Override the same class to horizontal flex and retain an intrinsic height with a38px minimum. No redesign or unrelated styling changes.

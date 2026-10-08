@@ -1,12 +1,18 @@
-# Windows x64 预览安装与双机联调
+**English** | [简体中文](WINDOWS_INSTALL.zh-CN.md)
 
-FarSail 0.1.11 是支持自动适配与 720p/1080p/2K/4K 档位的 JPEG 查看/鼠标键盘控制预览。远程窗口默认最大化，使用与客户端一致的深色标题栏，全屏时隐藏；工具栏自动隐藏，移到顶部或点击显示入口可展开，并可固定显示。默认完整画面铺满可用区域，比例不同时会拉伸；“更多操作 → 画面显示”可选择保持比例（有意留边），选择会保留，鼠标坐标同步。编码不放大源显示器、不修改远端系统分辨率。需要 Windows 10/11 x64 的普通交互桌面；不需要安装 Rust、Node 或开发工具。文件传输、HEVC、自适应视频码率和手机端尚未交付。安全桌面、UAC 和无人登录桌面不支持。
+<a id="windows-x64-预览安装与双机联调"></a>
 
-新连接前主动刷新发现，中继会话定时重试直连，地址变化及时上报；刷新保留原会话和画面。窗口会显示正在尝试直连、定时重试或强制中继。真实回环 QAD 失败→恢复和持续认证传帧通过；两台物理电脑在网络修复后同一会话中继→直连仍需现场验收，不能保证所有 NAT 可直连。
+# Windows x64 preview installation and two-computer integration
 
-## 下载与安装
+FarSail 0.1.11 is a JPEG viewing/mouse-and-keyboard control preview supporting automatic fitting and 720p/1080p/2K/4K presets. The remote window starts maximized, uses the same dark title bar as the client and hides it in fullscreen. The toolbar hides automatically, can be opened by moving to the top or clicking its reveal control, and can be pinned. By default, the complete screen fills the available area and stretches if aspect ratios differ. “More actions → Screen display” offers aspect-ratio preservation (intentional borders); the choice is retained and mouse coordinates stay synchronized. Encoding does not upscale the source monitor or change the remote system resolution. An ordinary interactive desktop on Windows 10/11 x64 is required; Rust, Node and development tools are not needed. File transfer, HEVC, adaptive video bitrate and mobile clients have not been delivered. The secure desktop, UAC and logged-out desktop are unsupported.
 
-当前固定预发布：[下载安装包](https://github.com/wanghao9103/farsail/releases/download/windows-preview-0.1.11-70d9393/FarSail_0.1.11_x64-setup.exe)、[SHA256SUMS.txt](https://github.com/wanghao9103/farsail/releases/download/windows-preview-0.1.11-70d9393/SHA256SUMS.txt)，其余元数据见 [发布页](https://github.com/wanghao9103/farsail/releases/tag/windows-preview-0.1.11-70d9393)。源码 SHA、安装包 SHA256 和安装验证证据见 [INPUT-021](verification/WI-INPUT-021.md)。同时下载 `FarSail_0.1.11_x64-setup.exe`、`SHA256SUMS.txt`、`release-metadata.json`。PowerShell 在下载目录执行：
+Discovery is actively refreshed before new connections, relayed sessions periodically retry direct connections, and address changes are reported promptly; refresh preserves the existing session and screen. The window shows direct-connection attempts, periodic retries or forced relay. Real loopback QAD failure → recovery and continuous authenticated frame transmission passed. Migrating the same session from relay → direct on two physical computers after network repair still requires on-site acceptance testing; direct connections cannot be guaranteed for every NAT.
+
+<a id="下载与安装"></a>
+
+## Download and installation
+
+Current pinned prerelease: [download installer](https://github.com/wanghao9103/farsail/releases/download/windows-preview-0.1.11-70d9393/FarSail_0.1.11_x64-setup.exe), [SHA256SUMS.txt](https://github.com/wanghao9103/farsail/releases/download/windows-preview-0.1.11-70d9393/SHA256SUMS.txt); other metadata is on the [release page](https://github.com/wanghao9103/farsail/releases/tag/windows-preview-0.1.11-70d9393). For the source SHA, installer SHA256 and installation-verification evidence, see [INPUT-021](verification/WI-INPUT-021.md). Download `FarSail_0.1.11_x64-setup.exe`, `SHA256SUMS.txt` and `release-metadata.json` together. In the download directory, run PowerShell:
 
 ```powershell
 $expected = ((Get-Content ./SHA256SUMS.txt -Raw).Trim() -split '\s+')[0]
@@ -14,37 +20,44 @@ $actual = (Get-FileHash ./FarSail_0.1.11_x64-setup.exe -Algorithm SHA256).Hash
 if ($actual -ine $expected) { throw 'SHA256 mismatch: do not install' }
 ```
 
-双击安装，选择简体中文或英语。安装包**未进行 Authenticode 签名**，Windows 可能显示未知发布者或 SmartScreen 提示；摘要证明下载一致性，不等于受信任签名。不要关闭系统防护。组织策略阻止未签名程序时，应按组织流程处理。
+Double-click to install and choose Simplified Chinese or English. The installer **has no Authenticode signature**. Windows may display an unknown publisher or SmartScreen warning; a digest proves download consistency, not a trusted signature. Do not disable system protection. If organizational policy blocks unsigned programs, follow the organization's procedure.
 
-安装采用当前用户模式，默认用户本地应用目录，不安装系统服务、不设置开机共享。包内包含 Microsoft WebView2 Evergreen 引导器；若电脑没有 WebView2，需要联网下载并安装运行时，完成后再启动。已有兼容运行时时复用系统运行时。此包不是离线 WebView2 全量安装包。官方机制见 [Tauri Windows 安装文档](https://v2.tauri.app/distribute/windows-installer/)。
+Installation is per-user, defaults to the user's local application directory, installs no system service and does not enable sharing at startup. The package includes the Microsoft WebView2 Evergreen bootstrapper. If WebView2 is absent, an internet connection is needed to download and install the runtime before launching. A compatible existing runtime is reused. This package is not a full offline WebView2 installer. For the official mechanism, see [Tauri's Windows installer documentation](https://v2.tauri.app/distribute/windows-installer/).
 
-## 两台 Windows 首次连接
+<a id="两台-windows-首次连接"></a>
 
-1. 两台电脑安装同一预览。首次启动处于未登录、未共享状态。在“设置”填入自己的有效 HTTPS API 地址，例如 `https://<公网IPv4>`，点“保存地址”。不要把 relay 的8443端口填进 API 字段；不提供跳过证书校验选项。
-2. 服务器先按 [部署说明](DEPLOYMENT.md) 成功启动。若使用首次联调 Mailpit，在有 SSH 权限的电脑保留以下转发终端，然后浏览器打开 `http://127.0.0.1:18025`：
+## First connection between two Windows computers
+
+1. Install the same preview on both computers. First launch is logged out with sharing disabled. In “Settings”, enter your own valid HTTPS API address, such as `https://<公网IPv4>`, and click “Save address”. Do not put the relay's port 8443 in the API field; there is no option to skip certificate validation.
+2. First start the server successfully using the [deployment instructions](DEPLOYMENT.md). If using Mailpit for initial integration, keep this forwarding terminal open on a computer with SSH access, then open `http://127.0.0.1:18025` in a browser:
 
    ```sh
    ssh -N -L 18025:127.0.0.1:8025 <SSH用户>@<公网IPv4>
    ```
 
-   在客户端注册，读取对应测试邮件的验证令牌，在“验证邮箱”提交，然后正常登录。测试邮箱不会发到真实邮箱，不要把收件箱端口暴露公网。已配置正式 TLS SMTP 时直接到自己的邮箱收信。第二台电脑可使用同一已验证账号登录，无需重复注册。
-3. 两台电脑登录后均添加本机，默认读取 Windows 计算机名称，也可自行修改。旧的“这台 Windows 电脑”由每台新版客户端各自更新，手动名称保留。连接服务会在开启共享或连接时自动准备；管理员要求修改网络参数时，展开高级连接设置。本机 UDP 监听保持 `0.0.0.0:0`，中继填 `https://<公网IPv4>:8443/`，默认不勾选“始终通过中继连接”，优先尝试 P2P，直连不可用时回退中继；仅排查直连问题时勾选强制中继。传输配置为当前运行期间设置。
-4. 被控电脑点“开启本机共享”，等待显示已共享。控制电脑在“我的设备”刷新，向在线目标发起查看或控制请求。默认由目标端核对申请账号、设备和权限后逐次批准；管理员身份不能代替批准。若希望同账号直接连接，在被控端“我的设备”的本机面板显式开启“远程值守”。0.1.10 起这两个开关会记住选择，首次默认关闭；普通应用重启后，登录、设备、传输和 Windows 普通桌面检查全部通过才恢复。检查期间或失败时不会显示已共享，可取消或重试。手动停止共享记住两项关闭；关闭值守记住值守关闭并结束入站连接。退出登录会清除开启偏好。高级连接参数仍只在当前运行有效，自动恢复使用默认传输参数；需要自建中继的环境仍需本次运行重新填写并应用连接设置。
-5. 设备面板的请求获批后自动打开独立远程窗口；“远程连接”页也可根据批准权限点“连接并查看”或“连接并控制”。核对窗口实际链路为 P2P 或中继，在折叠的连接详情比较双方校验码；单纯填写 relay URL 不证明实际走中继。窗口显示实际接收 FPS、网络 RTT 和显示器选择。点击远端画面后获得键盘焦点，可使用最大化、全屏；关闭查看窗口会结束该会话并保留主设备管理窗口。先查看，再在获批 control 会话中对自己准备的无敏感内容窗口测试鼠标键盘。
-6. 任一端停止会话；被控端关闭本机共享，确认画面与控制停止。关闭窗口或退出也会先停止本地采集和输入。不要把真实桌面截图、验证令牌或账号密码作为公开问题附件。
+   Register in the client, read the verification token from the corresponding test email, submit it in “Verify email” and log in normally. Test email is not delivered to a real mailbox; do not expose the inbox port publicly. If production TLS SMTP is configured, retrieve email from your own mailbox. The second computer can log in with the same verified account without registering again.
 
-画质默认“自动适配”，按窗口物理像素和 Windows 缩放选择档位；也可手动切换。2K/4K 需要两端升级且源显示器有相应像素，当前实际接收尺寸见“更多操作”。帧率按近四秒接收间隔统计，静止画面定期保活，没有更新时明确提示。采集循环约 15 FPS 上限不包含编码与网络开销，不保证实际达到该值。两端无画面时先检查账号/设备在线、目标已共享与已批准，再检查有效证书和两端 relay 配置。网络 RTT 不等于画面延迟；JPEG 基线不代表后续视频性能。
+3. After logging in on both computers, add each local computer. The Windows computer name is used by default and can be changed. Each newer client updates its own old “This Windows computer” name while retaining manual names. Connection services are prepared automatically when enabling sharing or connecting. If an administrator requires network-parameter changes, expand advanced connection settings. Keep the local UDP listener at `0.0.0.0:0`, set relay to `https://<公网IPv4>:8443/`, and leave “Always connect through relay” unchecked by default. P2P is attempted first, falling back to relay when direct connection is unavailable; enable forced relay only to investigate direct-connection problems. Transport configuration applies to the current run.
+4. On the host computer, click “Enable local sharing” and wait for the shared state. On the controlling computer, refresh “My devices” and send a viewing or control request to the online target. By default, the target checks the requesting account, device and permission and approves each request; administrator status cannot substitute for approval. To allow direct connection under the same account, explicitly enable “Remote standby” in the host's local-computer panel under “My devices”. Since 0.1.10, these two switches remember choices and are initially off. After an ordinary application restart, they are restored only after all login, device, transport and ordinary Windows desktop checks pass. During checks or on failure, the interface does not show sharing as active; restoration can be cancelled or retried. Manually stopping sharing remembers both switches as off; disabling standby remembers it as off and ends inbound connections. Logging out clears enabled preferences. Advanced connection parameters still apply only to the current run, and automatic restoration uses default transport parameters. Environments requiring a self-hosted relay must still re-enter and apply connection settings during this run.
+5. After approval, the device-panel request automatically opens a separate remote window. The “Remote connection” page also offers “Connect and view” or “Connect and control” according to approved permission. Check whether the window's actual path is P2P or relay and compare both sides' verification codes in the collapsed connection details; merely entering a relay URL does not prove relay use. The window shows actual received FPS, network RTT and monitor selection. Clicking the remote screen gives it keyboard focus; maximize and fullscreen are available. Closing the viewing window ends that session while retaining the main device-management window. View first, then test mouse and keyboard in an approved control session against a non-sensitive window you prepared yourself.
+6. Stop the session at either end. Disable local sharing on the host and confirm that screen and control stop. Closing the window or logging out also stops local capture and input first. Do not attach actual desktop screenshots, verification tokens or account passwords to public issues.
 
-## 升级、卸载与凭据
+Quality defaults to “Automatic fit”, selecting a preset based on window physical pixels and Windows scaling; manual switching is also available. 2K/4K require upgrades on both ends and corresponding pixels on the source monitor. “More actions” shows the actual received dimensions. Frame rate is calculated from receive intervals over about four seconds; static screens send periodic keepalives, and the interface explicitly indicates when there are no updates. The capture loop's approximate 15 FPS cap excludes encoding and network overhead and does not guarantee that rate in practice. If neither end shows a screen, first check account/device online status, target sharing and approval, then valid certificates and relay configuration at both ends. Network RTT does not equal screen latency; the JPEG baseline does not represent future video performance.
 
-建议两端升级到 0.1.9，使双方都能主动、有界刷新发现；后续网络恢复不需为重新发现而重启客户端。查看端至少 0.1.8 可使用铺满/保持比例显示；2K/4K 档位和静止画面保活仍需两端至少 0.1.7，较旧端仅有 720p/1080p 档位。已部署的 4252 服务端兼容此客户端，无需重新部署、初始化或重置密钥。先关闭 FarSail 再安装新版本。应用标识维持 `app.farsail.desktop`；原生配置和 DPAPI 加密凭据保存在当前 Windows 用户的 `%LOCALAPPDATA%\app.farsail.desktop`。重装和默认卸载保留该目录。卸载界面若显示删除应用数据选项，请保持未勾选以保留凭据。若希望撤销登录，先在应用内退出；卸载本身不等于服务端撤销会话。不要把该目录复制给其他人或上传。
+<a id="升级卸载与凭据"></a>
 
-## 开发者复现
+## Upgrades, uninstallation and credentials
 
-干净的固定提交上使用 Windows x64 MSVC Rust 1.93 和 Node 22+：
+Upgrading both ends to 0.1.9 is recommended so both can actively refresh discovery within bounds; subsequent network recovery no longer requires restarting the client for rediscovery. A viewer at least at 0.1.8 can use fill/aspect-ratio-preserving display. 2K/4K presets and static-screen keepalives still require both ends to be at least 0.1.7; older endpoints offer only 720p/1080p. The deployed 4252 server is compatible with this client, without redeployment, initialization or key reset. Close FarSail before installing a new version. The application identifier remains `app.farsail.desktop`; native configuration and DPAPI-encrypted credentials are stored in `%LOCALAPPDATA%\app.farsail.desktop` for the current Windows user. Reinstallation and default uninstallation retain that directory. If the uninstaller shows a delete-application-data option, leave it unchecked to retain credentials. To revoke login, log out in the application first; uninstalling alone does not revoke the server session. Do not copy this directory to others or upload it.
+
+<a id="开发者复现"></a>
+
+## Developer reproduction
+
+On a clean pinned commit, use Windows x64 MSVC Rust 1.93 and Node 22+:
 
 ```powershell
 pwsh -File scripts/package-windows.ps1
 ```
 
-脚本用锁文件安装、类型检查、生产前端构建、Tauri release/NSIS 打包，检查 AMD64/GUI PE、debug探针缺席、v2图标和摘要。输出在忽略的 `.local/windows-package/artifacts`。安装测试 `scripts/test-windows-package.ps1` 限制为一次性 GitHub-hosted Windows runner，避免本机用户配置/注册表被覆盖。工作流手动在固定 ref 执行，验证通过后才发布该 run 的附件；不把本机另一份非同摘要构建替换进去。
+The script installs from lockfiles, type-checks, builds the production frontend, packages Tauri release/NSIS, and checks AMD64/GUI PE, absence of debug probes, the v2 icon and digests. Output is in the ignored `.local/windows-package/artifacts`. Installation testing with `scripts/test-windows-package.ps1` is restricted to a disposable GitHub-hosted Windows runner to avoid overwriting local user configuration/registry. The workflow runs manually at a pinned ref and publishes that run's attachments only after validation passes; it does not substitute another local build with a different digest.

@@ -1,12 +1,18 @@
-# 公网 IP 联调部署：Ubuntu 24.04 / amd64
+**English** | [简体中文](DEPLOYMENT.zh-CN.md)
 
-服务器只导入预构建镜像，不编译 Rust。发布包包括 coordinator、固定 iroh-relay 1.2.0、Nginx、PostgreSQL 17、Mailpit、Certbot 5.4.0 六个镜像。当前客户端是低帧率 JPEG，有 payload 带宽和帧期限；文件、HEVC和手机端未交付。公网签证、用户服务器与第二台电脑仍需独立验收，范围见 [WI-008A](verification/WI-008A.md)。
+<a id="公网-ip-联调部署ubuntu-2404--amd64"></a>
 
-## 初始准备
+# Public-IP integration deployment: Ubuntu 24.04 / amd64
 
-用户自行安装官方Docker Engine/Compose。准备root、至少4GiB空闲磁盘。1.6GiB内存适合轻量联调，不承诺并发容量。常驻内存上限：协调384MiB、relay256MiB、数据库256MiB、Nginx96MiB、Mailpit128MiB；系统/Docker/临时Certbot还需余量。日志每容器3×10MB。
+The server imports prebuilt images only and does not compile Rust. The release bundle includes six images: coordinator, pinned iroh-relay 1.2.0, Nginx, PostgreSQL 17, Mailpit and Certbot 5.4.0. The current client uses low-frame-rate JPEG with payload bandwidth limits and frame deadlines; files, HEVC and mobile clients have not been delivered. Public certificate issuance, the user's server and a second computer still require independent acceptance testing; see the scope in [WI-008A](verification/WI-008A.md).
 
-下面每个代码块分别执行，尖括号须替换。脚本使用Bash/jq/openssl/标准工具，没有项目自编Python依赖。
+<a id="初始准备"></a>
+
+## Initial preparation
+
+Install official Docker Engine/Compose yourself. Prepare root access and at least 4 GiB of free disk space. 1.6 GiB of memory is suitable for light integration testing, with no concurrency-capacity promise. Resident memory limits: coordinator 384 MiB, relay 256 MiB, database 256 MiB, Nginx 96 MiB and Mailpit 128 MiB. The system/Docker/temporary Certbot also need headroom. Logs are limited to 3×10 MB per container.
+
+Execute each code block below separately and replace angle-bracket placeholders. The scripts use Bash/jq/openssl/standard utilities, without a project-authored Python dependency.
 
 ```sh
 apt-get update
@@ -16,7 +22,7 @@ apt-get update
 apt-get install -y git curl jq openssl ca-certificates util-linux iproute2
 ```
 
-未克隆时执行（已有目录则跳过）：
+Run this if not yet cloned (skip if the directory already exists):
 
 ```sh
 git clone https://github.com/wanghao9103/farsail.git /home/data/farsail
@@ -26,13 +32,13 @@ git clone https://github.com/wanghao9103/farsail.git /home/data/farsail
 cd /home/data/farsail
 ```
 
-从验证记录取得完整固定提交，不能使用latest：
+Obtain the complete pinned commit from the verification record; do not use latest:
 
 ```sh
 DEPLOY_SHA='51e131f0bf60a3a8fa15cddd869a8b97d3db79a0'
 ```
 
-运行镜像使用已验证的原4252归档，加载器为仅修复跨Docker存储校验的新提交，两者明确分开：
+Runtime images use the original verified 4252 archive. The loader is a newer commit that fixes only verification across Docker storage implementations; the two are explicitly separate:
 
 ```sh
 RELEASE_SHA='4252e9d901e3022175772f563be45df967c3e9cc'
@@ -50,53 +56,57 @@ git checkout --detach "$DEPLOY_SHA"
 bash scripts/deploy/farsail.sh init '<公网IPv4>' '<ACME联系邮箱>'
 ```
 
-随机数据库密码和准入bearer写入忽略的 `.local/production`，不打印、不覆盖已有状态。根目录700，env文件600；挂载私钥640/group10001供非root relay读取。API和relay运行用户10001。首次Mailpit测试模式仍需正常验证邮箱。不要公开此目录、Docker inspect完整环境或数据库备份。
+Random database passwords and admission Bearer tokens are written to the ignored `.local/production`, without printing them or overwriting existing state. The root directory has mode 700 and env files 600; the mounted private key uses 640/group 10001 for the non-root relay to read. API and relay run as user 10001. Initial Mailpit test mode still requires ordinary email verification. Do not expose this directory, complete Docker inspect environments or database backups.
 
-已在4252版本完成init的用户必须跳过init，保留整个state。等旧load进程退出后再fetch/checkout上述加载器，重新load-release同一4252即可复用完整缓存文件；旧ID检查失败不会提交新的运行配置。新加载器只对该已审计的manifest/归档SHA组合允许跨源码ref兼容，不是忽略版本或内容检查。
+Users who already completed init on version 4252 must skip init and retain the entire state. Wait for the old load process to exit, then fetch/checkout the loader above. Loading the same 4252 release again reuses complete cached files. Failure of the old ID check does not commit new runtime configuration. The new loader permits cross-source-ref compatibility only for this audited manifest/archive SHA combination; it does not ignore version or content checks.
 
 ```sh
 bash scripts/deploy/farsail.sh preflight
 ```
 
-安全组放行TCP80/443/8443，不开放5432/8787/8788/8025/1025。公网IP只用于URL/证书，本地监听0.0.0.0兼容EIP/NAT映射。协调服务仍只监听共享namespace内的127.0.0.1，不修改全局Docker网络/代理。
+Allow TCP 80/443/8443 in the security group. Do not expose 5432/8787/8788/8025/1025. The public IP is used only in URLs/certificates; local listening on 0.0.0.0 supports EIP/NAT mappings. The coordinator still listens only on 127.0.0.1 within the shared namespace, without changing global Docker networking/proxies.
 
-## 六镜像离线包
+<a id="六镜像离线包"></a>
 
-阿里云按实际产品选择ECS安全组或轻量应用服务器防火墙。初始化在创建state前检查依赖；若磁盘/权限错误中断，保留并重命名尚未投入使用的半初始化目录后重试，不覆盖已投用的秘密。Linux变更操作共用state旁的operation.lock，避免续期、导入与升级并发。除上述4252精确兼容例外外，load-release要求当前代码HEAD与制品revision一致。
+## Six-image offline bundle
 
-固定发布页包含 `farsail-linux-amd64-images.tar.gz`、`manifest.json`、`SHA256SUMS`。脚本核验附件SHA256、revision、六个image ID和linux/amd64，再更新Compose。依赖源按registry digest锁定；归档使用完整image-ID派生tag，避免save/load不保留RepoDigest。所有服务pull_policy=never，启动显式--pull never。
+On Alibaba Cloud, choose an ECS security group or a Simple Application Server firewall according to the actual product. Initialization checks dependencies before creating state. If a disk/permission error interrupts it, retain and rename the partly initialized directory that has not yet been put into use before retrying; do not overwrite secrets already in use. Linux mutations share operation.lock next to state to prevent concurrent renewal, import and upgrade. Apart from the exact 4252 compatibility exception above, load-release requires the current code HEAD to match the artifact revision.
 
-镜像内容身份以manifest中的 `config_digest` 为准，配置SHA同时绑定rootfs diffIDs。classic/containerd存储的docker inspect .Id可能分别代表config或manifest，不能直接跨机器比较；加载后流式重新导出Docker元数据校验配置SHA，仍不访问镜像仓库，也不保存大型临时tar。manifest的id保留构建引擎观察值供追溯。
+The pinned release page contains `farsail-linux-amd64-images.tar.gz`, `manifest.json` and `SHA256SUMS`. The script verifies attachment SHA256, revision, all six image IDs and linux/amd64 before updating Compose. Dependency sources are pinned by registry digest. The archive uses full image-ID-derived tags because save/load does not retain RepoDigest. All services use pull_policy=never, and startup explicitly uses --pull never.
+
+Image content identity is determined by `config_digest` in the manifest; the configuration SHA also binds rootfs diffIDs. Docker inspect .Id under classic/containerd storage may represent a config or manifest respectively, so it cannot be compared directly across machines. After loading, Docker metadata is streamed through a fresh export to validate configuration SHA, still without accessing a registry or saving a large temporary tar. The manifest id retains the build engine's observed value for traceability.
 
 ```sh
 bash scripts/deploy/farsail.sh load-release "$RELEASE_SHA"
 ```
 
-代码clone成功不代表GitHub附件可下载。附件失败检查DNS、出站443和curl返回；重试可复用已下载文件。校验不通过先移走对应缓存文件。服务器无法下载时，在自己电脑下载同一发布的三个文件，用自己的SSH/scp传入 `/home/data/farsail-release`，然后：
+Successfully cloning code does not mean GitHub attachments can be downloaded. On attachment failure, check DNS, outbound 443 and the curl result; retries can reuse downloaded files. Move aside the corresponding cache file if validation fails. If the server cannot download them, download the same release's three files on your own computer, transfer them with your own SSH/scp to `/home/data/farsail-release`, then run:
 
 ```sh
 bash scripts/deploy/farsail.sh load-release "$RELEASE_SHA" /home/data/farsail-release
 ```
 
-此路径无需访问DockerHub。不得替换来源不明镜像站。SHA256保证完整性，信任根仍是本项目GitHub发布身份。`.local/production/manifest.json`是已核对清单，下载目录可保留供回滚。
+This path does not require DockerHub access. Do not substitute an image mirror of unknown provenance. SHA256 ensures integrity; the trust root remains this project's GitHub release identity. `.local/production/manifest.json` is the checked manifest. The download directory can be retained for rollback.
 
-## 证书和首次启动
+<a id="证书和首次启动"></a>
 
-Certbot5.4+ webroot支持 `--ip-address`，使用 `--preferred-profile shortlived`。IP证书约160小时，当前nginx/apache installer不支持IP，须自行部署/续期加载。[Let’s Encrypt官方说明](https://letsencrypt.org/2026/03/11/shorter-certs-certbot)。
+## Certificates and first startup
 
-先staging演练（隔离目录，不会替换正式证书，也不受系统信任）：
+Certbot 5.4+ webroot supports `--ip-address` with `--preferred-profile shortlived`. IP certificates last about 160 hours. The current nginx/apache installers do not support IPs, so deployment/renewal loading must be handled separately. [Official Let’s Encrypt explanation](https://letsencrypt.org/2026/03/11/shorter-certs-certbot).
+
+Rehearse with staging first (an isolated directory, which does not replace production certificates and is not trusted by the system):
 
 ```sh
 bash scripts/deploy/farsail.sh certificate staging
 ```
 
-再正式签发、加载并启动：
+Then issue the production certificate, load it and start:
 
 ```sh
 bash scripts/deploy/farsail.sh certificate
 ```
 
-首次HTTP仅提供ACME目录。正式证书先nginx原位reload，再启动业务；证书/路由错误须处理，不使用-k或跳过验证。
+Initial HTTP serves only the ACME directory. The production certificate is first reloaded into nginx in place, then application services start. Resolve certificate/routing errors; do not use -k or skip verification.
 
 ```sh
 bash scripts/deploy/farsail.sh install-timer
@@ -110,7 +120,7 @@ systemctl start farsail-renew.service
 systemctl status farsail-renew.timer farsail-renew.service --no-pager
 ```
 
-每天两次检查，随机延迟最多30分钟、补跑错过的任务。deploy hook留待加载标记；复制证书、nginx检查/reload、relay重启并健康后才移除标记。失败保留标记和systemd失败状态。查看 `journalctl -u farsail-renew.service` 和私有 `renew-last-success.txt`；应接入自己的运维通知，本包没有外部告警接收账号。当前明确使用Manual+重启relay，续期会断开中继会话，客户端须重新批准。未声称热加载无中断。
+Checks run twice daily, with up to 30 minutes of random delay and catch-up for missed jobs. The deploy hook leaves a pending-load marker; it is removed only after certificates are copied, nginx validation/reload succeeds, and the relay restarts and becomes healthy. Failure retains the marker and systemd failure state. Inspect `journalctl -u farsail-renew.service` and the private `renew-last-success.txt`. Integrate your own operations notifications; this bundle has no external alert-recipient account. It explicitly uses Manual + relay restart, so renewal disconnects relayed sessions and the client needs fresh approval. Uninterrupted hot reload is not claimed.
 
 ```sh
 curl --fail --show-error 'https://<公网IPv4>/healthz'
@@ -120,43 +130,47 @@ curl --fail --show-error 'https://<公网IPv4>/healthz'
 bash scripts/deploy/farsail.sh status
 ```
 
-## 邮箱、管理员和双端配置
+<a id="邮箱管理员和双端配置"></a>
 
-SMTP在共享namespace的127.0.0.1:1025，收件箱只发布到宿主127.0.0.1:8025。电脑另开终端，保持SSH转发：
+## Email, administrator and both client configurations
+
+SMTP is at 127.0.0.1:1025 in the shared namespace; the inbox is published only to host 127.0.0.1:8025. Open another terminal on your computer and keep SSH forwarding running:
 
 ```sh
 ssh -N -L 18025:127.0.0.1:8025 root@<公网IPv4>
 ```
 
-电脑打开 `http://127.0.0.1:18025`。客户端API为 `https://<公网IPv4>`，relay为 `https://<公网IPv4>:8443/`，UDP绑定改为 `0.0.0.0:0`，首次先勾选强制relay。注册→收件箱读取token→客户端验证→登录→绑定设备。Mailpit不向真实邮箱投递；测试信都由当前运维者可见，正式开放注册前应配置真实SMTP并清理测试账号。
+On the computer, open `http://127.0.0.1:18025`. Set the client's API to `https://<公网IPv4>`, relay to `https://<公网IPv4>:8443/`, and UDP binding to `0.0.0.0:0`. For the first run, enable forced relay. Register → retrieve the token from the inbox → verify in the client → log in → bind the device. Mailpit does not deliver to real mailboxes. All test email is visible to the current operator; configure real SMTP and clean up test accounts before opening registration publicly.
 
 ```sh
 bash scripts/deploy/farsail.sh bootstrap-admin '<已验证且启用的邮箱>'
 ```
 
-不是首个注册自动提权。管理员页面可改为邀请注册/关闭注册。被控端还须本机开启共享、逐次批准；检查双端校验码、实际selected path=relay以及停止/撤销。配置relay URL不等于实际走relay。公共发现/自动端口映射默认关闭，跨NAT直连须另验。标称带宽不等于实测吞吐或画质。
+The first registrant is not automatically elevated. The administrator page can change registration to invitation-only/closed. The host must still enable sharing locally and approve each request. Check both verification codes, actual selected path=relay, and stop/revocation behavior. Configuring a relay URL does not mean the actual path uses relay. Public discovery/automatic port mapping are disabled by default; cross-NAT direct connections need separate validation. Advertised bandwidth does not equal measured throughput or image quality.
 
-真实SMTP：编辑私有coordinator.env，设置 `FARSAIL_MAIL_MODE=smtp-tls`、HOST/USER/PASSWORD/MAIL_FROM（完整名为FARSAIL_SMTP_HOST、FARSAIL_SMTP_USER、FARSAIL_SMTP_PASSWORD、FARSAIL_MAIL_FROM），`FARSAIL_SMTP_TLS=implicit`与PORT=465或`starttls`与PORT=587（PORT完整名FARSAIL_SMTP_PORT）。必需TLS，不降级。遵循Compose env-file转义语法。清空compose.env的COMPOSE_PROFILES，先stop后start，不再启动Mailpit。真实SMTP本次未验。
+Real SMTP: edit the private coordinator.env and set `FARSAIL_MAIL_MODE=smtp-tls`, HOST/USER/PASSWORD/MAIL_FROM (full names FARSAIL_SMTP_HOST, FARSAIL_SMTP_USER, FARSAIL_SMTP_PASSWORD, FARSAIL_MAIL_FROM), `FARSAIL_SMTP_TLS=implicit` with PORT=465 or `starttls` with PORT=587 (full PORT name FARSAIL_SMTP_PORT). TLS is mandatory, without downgrade. Follow Compose env-file escaping syntax. Clear COMPOSE_PROFILES in compose.env, stop first, then start; Mailpit will no longer start. Real SMTP was not verified in this run.
 
-## 备份、升级、回滚
+<a id="备份升级回滚"></a>
+
+## Backup, upgrade and rollback
 
 ```sh
 bash scripts/deploy/farsail.sh backup
 ```
 
-私有backups目录生成pg_dump custom-format文件。另自行加密备份整个 `.local/production`（含证书、秘密、清单）和代码ref；备份含账号/邮件数据，不能公开上传。
+The private backups directory receives a pg_dump custom-format file. Separately encrypt and back up the entire `.local/production` (including certificates, secrets and manifest) and the code ref. Backups include account/email data and must not be uploaded publicly.
 
-升级前备份，再检出新固定SHA、load-release 新SHA，执行：
+Back up before upgrading, then check out the new pinned SHA, load-release the new SHA and run:
 
 ```sh
 bash scripts/deploy/farsail.sh start
 ```
 
-start总是一起force-recreate gateway/coordinator/relay/Mailpit，避免依赖服务仍留在旧network namespace；短暂中断，卷保留。禁止只重建gateway。回滚先检出旧代码和导入旧归档，再start。本项不改变数据库迁移；未来涉及不可逆迁移时必须评估备份兼容性。
+Start always force-recreates gateway/coordinator/relay/Mailpit together to prevent dependent services from retaining the old network namespace. There is a brief interruption; volumes are retained. Recreating gateway alone is prohibited. For rollback, first check out the old code and import the old archive, then start. This work item does not change database migrations; future irreversible migrations require evaluation of backup compatibility.
 
-恢复数据库：先stop，以同一state的Compose单独启动db，把选定dump经标准输入传给 `pg_restore -U farsail -d farsail --clean --if-exists --exit-on-error`，再start。--clean覆盖业务库，须由操作者核对备份/停机后执行。不得在公网运行开发测试脚本。完整灾备恢复演练尚未验证。
+Database restore: stop first, start db alone with Compose using the same state, pass the selected dump through standard input to `pg_restore -U farsail -d farsail --clean --if-exists --exit-on-error`, then start. --clean overwrites the application database, so the operator must confirm the backup/downtime before executing it. Do not run development test scripts on the public server. A full disaster-recovery restore drill has not been verified.
 
-恢复时先停止定时器及正在执行的续期，避免恢复中重启业务：
+Before restoring, stop both the timer and any running renewal to prevent application services restarting during restoration:
 
 ```sh
 systemctl stop farsail-renew.timer farsail-renew.service
@@ -170,7 +184,7 @@ bash scripts/deploy/farsail.sh stop
 docker compose --env-file .local/production/compose.env -f deploy/production/compose.yaml up -d --pull never --wait db
 ```
 
-确认选定备份后，下面单条命令持有实例操作锁并覆盖当前数据库内容：
+After confirming the selected backup, the single command below holds the instance operation lock and overwrites current database contents:
 
 ```sh
 flock .local/production.operation.lock docker compose --env-file .local/production/compose.env -f deploy/production/compose.yaml exec -T db pg_restore -U farsail -d farsail --clean --if-exists --exit-on-error < '<选定的.dump完整路径>'
@@ -192,8 +206,10 @@ bash scripts/deploy/farsail.sh logs
 bash scripts/deploy/farsail.sh stop
 ```
 
-stop仅删除本项目容器/网络、保留数据卷。故障按Compose健康、nginx配置、数据库、准入bearer、IP SAN/完整链、时钟和ACME80路由检查。准入只验证新relay连接，现有应用流由30秒grant截止；限速及未实施的连接限额见 [relay说明](../deploy/relay/README.md)。
+Stop removes only this project's containers/network and retains data volumes. Diagnose failures by checking Compose health, nginx configuration, the database, admission Bearer token, IP SAN/full chain, clock and ACME port-80 routing. Admission validates new relay connections only; existing application streams use the 30-second grant cutoff. For rate limits and unimplemented connection limits, see the [relay instructions](../deploy/relay/README.md).
 
-## 开发者测试
+<a id="开发者测试"></a>
 
-Windows `scripts/test-deploy.ps1 -Build` 需要Git Bash/openssl/jq。Linux构建两个本地镜像后运行 `bash scripts/deploy/test.sh`。仅操作farsail-deploy-test，回环58080/58443/58444/58026/55433；临时CA正常验证、真实注册/邮件/公钥证明、双向relay数据和selected path、未知/禁用身份/服务停机拒绝、namespace重建与持久化、后端tests/Clippy。测试结束停止容器，保留私有状态和卷。不登录用户服务器。
+## Developer tests
+
+Windows `scripts/test-deploy.ps1 -Build` requires Git Bash/openssl/jq. On Linux, build the two local images, then run `bash scripts/deploy/test.sh`. It operates only on farsail-deploy-test, using loopback ports 58080/58443/58444/58026/55433. Tests cover normal temporary-CA validation, real registration/email/public-key proof, bidirectional relay data and selected path, rejection of unknown/disabled identities/service downtime, namespace recreation and persistence, and backend tests/Clippy. Containers stop after the test; private state and volumes remain. It does not log in to the user's server.

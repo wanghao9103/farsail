@@ -1,3 +1,5 @@
+**English** | [简体中文](WI-UI-014.zh-CN.md)
+
 # UI-014 — Use the system computer name
 
 - Baseline: `024eb05` plus existing uncommitted UI-012/013. Preserve all unrelated file-transfer WIP.
@@ -7,6 +9,7 @@
 - API contract references: [GetComputerNameExW](https://learn.microsoft.com/en-us/windows/win32/api/sysinfoapi/nf-sysinfoapi-getcomputernameexw), [COMPUTER_NAME_FORMAT](https://learn.microsoft.com/en-us/windows/win32/api/sysinfoapi/ne-sysinfoapi-computer_name_format).
 
 ## Verification
+
 - `rustc --edition=2024 --test apps/desktop/src-tauri/src/computer.rs -o .local/ui-verification/computer-name-tests.exe` and the resulting executable passed on Windows. Actual native API returned a nonempty, NUL-free, stable name; the machine identity was not logged.
 - `npm run build` passed (TypeScript and Vite). `scripts/test-desktop-ui.cjs` passed existing regression coverage plus: default computer name submitted at binding; only local legacy name migrated once; other legacy-named device unchanged; existing custom alias unchanged; rename failure retains original and allows manual recovery; null hostname leaves manual-name entry available. Screenshot `computer-name.png` reviewed.
 - `git diff --check` passed. `rustfmt` scoped to the two touched native files, skipping child modules.

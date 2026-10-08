@@ -1,12 +1,16 @@
+**English** | [简体中文](WI-UI-013.zh-CN.md)
+
 # UI-013 — Clear actions and complete user flows
 
 ## Baseline and scope
+
 - Baseline commit `024eb05`, including the uncommitted UI-012 changes. Preserve unrelated Rust/Cargo/file-transfer WIP.
 - Write set: `apps/desktop/src/main.tsx`, `apps/desktop/src/style.css`, `scripts/test-desktop-ui.cjs`, this file. Runtime is loopback Vite 1420 and synthetic browser IPC fixtures under `.local/ui-verification/`.
 - Make sharing and approved connections prepare transport automatically; clarify ending connections, invitations, account recovery, device management and admin operations. Preserve server permissions and explicit host consent.
 - Acceptance: production frontend build, existing layout/onboarding regression plus action/failure/recovery tests, screenshot inspection. No native installer or public release in this scope.
 
 ## Evidence
+
 - Sharing from settings is one action that prepares transport as needed. Relay/bind/force-relay configuration is under advanced settings; applying it explicitly explains that existing local connections/sharing stop.
 - Approved requests prepare transport instead of presenting a disabled connection button. View/control connection buttons name their actual permission. New requests advance to current connections; pending requests refresh while waiting. Approval still requires the host action and native/server authorization.
 - Request-list and viewer end actions both use `revoke_remote`. They leave the current step on failure for retry and close the view only after success. This differs deliberately from merely closing local transport, which retained the grant. Failure refreshes local state because native operations may already have stopped sharing/transport.

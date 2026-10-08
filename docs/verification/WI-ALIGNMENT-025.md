@@ -1,3 +1,5 @@
+**English** | [简体中文](WI-ALIGNMENT-025.zh-CN.md)
+
 # ALIGNMENT-025 — desktop text and control alignment
 
 Baseline `f1c3ac1`, managed mouse-control-022 worktree. User requests all-page alignment checks from an attached device-page screenshot. Installed executable metadata reports 0.1.13; remote-primary stacking was already corrected in the uninstalled 0.1.14 candidate. Do not infer that the running window necessarily uses the inspected executable. The new screenshot confirms footer text uses inconsistent left edges and the primary action remains stacked in that captured version.

@@ -1,3 +1,5 @@
+**English** | [简体中文](WI-SHARE-020.zh-CN.md)
+
 # SHARE-020 — remember local sharing and remote watch
 
 ## Authority, baseline and exclusive write set
@@ -33,11 +35,11 @@ Local verification: actual isolated native WebView performed six ordinary close/
 
 Unified local Rust suite: 52 passed (client 19, desktop 6, transport 12, media 5, Windows 10); two existing real frame/input tests remained intentionally ignored. Includes the new failure-save/delete fallback and cancellation before startup scheduling tests. After tightening optional-store failure cleanup, client/desktop 25 tests passed again. TypeScript, production Vite build, formatting, Clippy and script syntax checks passed. New native six-cycle evidence is in the ignored `.local/share020-native-verification.json`; existing native isolation and both browser suites also passed. CI and publication remain pending here until the exact-source release is verified.
 
-First installer run `36702053298` at `9c0e300` failed during the added synthetic binding confirmation. The devices page and overview form both have an “添加这台电脑” button; the test now waits for the form's named input before submitting and confirms the resulting synthetic device. Failure diagnostics print only that owned fixture window's accessibility names. No failed installer is published. Failed password/bind/login-switch requests now cancel operational activity but preserve the same identity's remembered intent; successful binding/password change and explicit logout still forget it. A dedicated HTTP regression verifies this distinction.
+First installer run `36702053298` at `9c0e300` failed during the added synthetic binding confirmation. The devices page and overview form both have an “Add this computer” button; the test now waits for the form's named input before submitting and confirms the resulting synthetic device. Failure diagnostics print only that owned fixture window's accessibility names. No failed installer is published. Failed password/bind/login-switch requests now cancel operational activity but preserve the same identity's remembered intent; successful binding/password change and explicit logout still forget it. A dedicated HTTP regression verifies this distinction.
 
 After that correction, client 20 and desktop 6 tests, formatting and Clippy passed. Combined with unchanged transport/media/Windows suites, final coverage is 53 passing Rust regressions and two intentionally ignored interactive tests. Initial-source Windows client `36702051245`, transport `36702051235` and backend `36702051233` succeeded; a new exact-source installer and regression cycle is required for the correction.
 
-Second installer run `36703091696` at `da00d7e` reached successful native startup sharing (the production accessibility tree showed 本机屏幕共享中) but then looked for the watch button while still on the overview page. The test now explicitly navigates to My Devices on each signed-in launch. Windows client `36703089852`, transport `36703089855` and backend `36703089830` all passed. The existing delayed-logout regression now switches the server before releasing the old capability response, verifying compensation still targets the original identity. Failed installer artifacts remain unpublished.
+Second installer run `36703091696` at `da00d7e` reached successful native startup sharing (the production accessibility tree showed Local screen sharing active) but then looked for the watch button while still on the overview page. The test now explicitly navigates to My Devices on each signed-in launch. Windows client `36703089852`, transport `36703089855` and backend `36703089830` all passed. The existing delayed-logout regression now switches the server before releasing the old capability response, verifying compensation still targets the original identity. Failed installer artifacts remain unpublished.
 
 ## Verified delivery — 2026-10-08
 
@@ -45,12 +47,12 @@ The interrupted task was resumed by root with a clean checkout and no active suc
 
 [Release 0.1.10](https://github.com/wanghao9103/farsail/releases/tag/windows-preview-0.1.10-be659f2) / [Windows x64 installer](https://github.com/wanghao9103/farsail/releases/download/windows-preview-0.1.10-be659f2/FarSail_0.1.10_x64-setup.exe). CI's installed production binary passed native settings restart, sharing/watch preference restart, actual desktop preflight, reinstall/uninstall retention and absence of debug probes. Publication used only those tested CI originals. Four public attachments were downloaded anonymously with normal TLS and matched originals by size/SHA-256.
 
-| Attachment | Bytes | SHA-256 |
-| --- | ---: | --- |
-| FarSail_0.1.10_x64-setup.exe | 7,910,524 | `cbe56dfde6b18a9024fcac130b7e6c8c986d83cc9cbeec94d76e008e3ef4166f` |
-| SHA256SUMS.txt | 96 | `eb4ed95e6b9f03f156802821048d7afa74e69c2cf5f315d5dc63c70e0663f26b` |
-| release-metadata.json | 653 | `51ceeb3f08b017a80ac4f147dc1aacc1664b2989c3aa980a7938e27314104fc9` |
-| installation-verification.json | 508 | `f4f6c5db683c9c269e731a87a4a7ad24daaa8a21fb2cd20eb0c97815f1fe5878` |
+| Attachment                     |     Bytes | SHA-256                                                            |
+| ------------------------------ | --------: | ------------------------------------------------------------------ |
+| FarSail_0.1.10_x64-setup.exe   | 7,910,524 | `cbe56dfde6b18a9024fcac130b7e6c8c986d83cc9cbeec94d76e008e3ef4166f` |
+| SHA256SUMS.txt                 |        96 | `eb4ed95e6b9f03f156802821048d7afa74e69c2cf5f315d5dc63c70e0663f26b` |
+| release-metadata.json          |       653 | `51ceeb3f08b017a80ac4f147dc1aacc1664b2989c3aa980a7938e27314104fc9` |
+| installation-verification.json |       508 | `f4f6c5db683c9c269e731a87a4a7ad24daaa8a21fb2cd20eb0c97815f1fe5878` |
 
 No production installation/profile/server changes. Old primary WIP remains excluded. The record preserves the process-local advanced-connection limitation and fail-closed identity/desktop requirements; it does not claim cross-NAT unattended recovery with an unconfigured relay. Source tag triggered three additional regressions, whose completion is checked before the next source write set starts.
 

@@ -1,52 +1,69 @@
+**English** | [简体中文](README.zh-CN.md)
+
 <p align="center">
   <img src="assets/branding/farsail-v2/128x128.png" width="96" height="96" alt="FarSail icon candidate" />
 </p>
 
-# FarSail · 遥舟
+<a id="farsail--遥舟"></a>
 
-0.1.10 将本机共享和远程值守开关记住：普通重启后重新检查登录、设备、连接和本机桌面，通过后恢复；手动关闭后下次保持关闭，退出登录清除开启偏好。高级连接设置仍为本次运行有效。实现与验收见 [SHARE-020](docs/verification/WI-SHARE-020.md)。
+# FarSail
 
-正在开发中的开源远程桌面与文件传输工具。账号、设备与授权协调服务使用 Rust；Windows 客户端使用 Tauri 2、React 和 Rust 原生客户端库。
+FarSail is an open-source remote desktop project with a Windows client built using Rust, Tauri 2 and React, encrypted peer-to-peer connections, and self-hosted relay support. File transfer and mobile clients are planned capabilities, not delivered features.
 
-**当前状态：WI-001 协调服务、WI-002 Windows 客户端、WI-003 认证加密传输及 WI-004 Windows 远程查看/输入基线已在本机验证，WI-008B 提供已验收的 [Windows x64 预览安装包](docs/WINDOWS_INSTALL.md)。** iroh 数据通道支持本地直连及自建 TLS relay；Windows 端可在本机开启共享，默认逐次批准后传送 JPEG 画面并接受鼠标键盘；0.1.2 提供独立原生查看窗口、断线清理和本机显式开启的同账号“远程值守”，详见 [验证记录](docs/verification/WI-REMOTE-012.md)。0.1.3 增加固定桌面工作区、明确的连接操作及计算机名称显示，见 [新版交付记录](docs/verification/WI-UI-RELEASE-013.md)。0.1.4 修复鼠标输入与输入拒绝时保留画面的处理，见 [输入修复记录](docs/verification/WI-INPUT-014.md)。0.1.5 提供默认最大化、自动隐藏工具栏与 720p/1080p 高清切换，见 [窗口与画质记录](docs/verification/WI-VIEWER-015.md)。0.1.6 将远程画面光标改为普通箭头，见 [光标更新](docs/verification/WI-INPUT-016.md)。安装包未签名；文件内容、公网跨 NAT、HEVC与手机端仍待验证或实现。
+The account, device and authorization coordinator is written in Rust. **WI-001 (coordinator), WI-002 (Windows client), WI-003 (authenticated encrypted transport), and WI-004 (Windows remote viewing/input baseline) have been verified locally. WI-008B provides a verified [Windows x64 preview installer](docs/WINDOWS_INSTALL.md).** The iroh data channel supports local direct connections and a self-hosted TLS relay. Windows hosts can enable local sharing and transmit JPEG frames and mouse/keyboard input after per-request approval. The installer is unsigned; public cross-NAT behavior, file contents, HEVC and mobile clients remain unverified or unimplemented.
 
-0.1.7 增加统一深色远程标题栏、按窗口自动适配、2K/4K JPEG 档位和静止画面保活，帧率显示真实接收更新；两端升级可用完整功能。下载入口见上方安装说明，验证见 [VIEWER-017](docs/verification/WI-VIEWER-017.md)。
+## Documented preview milestones
 
-0.1.8 默认将完整远程画面铺满可用区域，消除宽高比不同时的留边；“更多操作”可切换保持比例，选择会保留，输入坐标随显示方式同步。验证与新版下载见 [VIEWER-018](docs/verification/WI-VIEWER-018.md)。
+- 0.1.2 adds an independent native viewer, disconnect cleanup and host-side opt-in for same-account unattended access. See the [verification record](docs/verification/WI-REMOTE-012.md).
+- 0.1.3 adds a fixed desktop workspace, clearer connection actions and the computer name. See the [delivery record](docs/verification/WI-UI-RELEASE-013.md).
+- 0.1.4 fixes mouse input and keeps the screen connection available when Windows rejects input. See the [input fix](docs/verification/WI-INPUT-014.md).
+- 0.1.5 adds a maximized viewer, an automatically hidden toolbar and 720p/1080p quality selection. See the [window and quality record](docs/verification/WI-VIEWER-015.md).
+- 0.1.6 uses a normal arrow cursor for the remote image. See the [cursor update](docs/verification/WI-INPUT-016.md).
+- 0.1.7 adds a consistent dark viewer title bar, automatic viewport adaptation, 2K/4K JPEG profiles and static-image keepalive. FPS reflects received frame updates. Upgrade both endpoints for the complete feature set. Use the installation guide above and [VIEWER-017](docs/verification/WI-VIEWER-017.md).
+- 0.1.8 fills the available viewport with the complete remote image by default, removing letterboxing when aspect ratios differ. More Actions can preserve the original aspect ratio; the choice is retained and input coordinates use the same display mode. See [VIEWER-018](docs/verification/WI-VIEWER-018.md).
+- 0.1.9 refreshes address discovery before connecting and performs bounded periodic direct-path retries for relay sessions. Refresh preserves the endpoint, approval and screen connection, and publishes changed addresses promptly. Both endpoints should be updated; the existing server remains compatible. See [P2P-019](docs/verification/WI-P2P-019.md) for downloads, real QAD failure-to-recovery, uninterrupted sessions and artifact evidence. Physical cross-NAT migration still needs two-computer testing; direct connectivity is not guaranteed for every network.
+- 0.1.10 remembers local sharing and unattended-access choices. After a normal restart, login, device, connection and the interactive desktop are rechecked before restoration. Manual disable remains disabled on the next start; logout clears enabled preferences. Advanced connection settings remain effective for the current run only. See [SHARE-020](docs/verification/WI-SHARE-020.md).
+- 0.1.11 fixes lost mouse-button releases under stale geometry, adds pointer capture and cleanup on blur or dragging outside the image, and includes P2P discovery refresh and saved sharing/unattended preferences. Continuous clicks and focus switches between owned ordinary windows passed. See [INPUT-021](docs/verification/WI-INPUT-021.md) for delivery evidence and downloads.
 
-0.1.9 在新连接前主动刷新地址发现，中继会话定时、有界重试直连；刷新保留原端点、批准和画面，地址变化及时上报。建议两端升级，现有服务端兼容。下载与真实 QAD 失败→恢复、不断流及制品证据见 [P2P-019](docs/verification/WI-P2P-019.md)。实际跨 NAT 升级仍需双机验收，不保证所有网络能直连。
+These are recorded milestones. Local candidate work and its verification limits are retained in the verification documents; a local installer build is not a public release.
 
-0.1.11 修正旧布局下鼠标抬起丢失，增加指针捕获与失焦/拖出清理；包含 P2P 刷新和共享/值守偏好保存。连续点击与自建普通窗口焦点切换通过，交付证据与下载见 [INPUT-021](docs/verification/WI-INPUT-021.md)。
+<a id="计划能力"></a>
 
-## 计划能力
+## Planned capabilities
 
-- 账号注册与登录、设备绑定、同账号全部可远程设备列表。
-- Windows 远程查看与鼠标键盘控制；Android/iPhone 控制 Windows。
-- 跨网络加密通信、P2P 直连与中继回退。
-- 多屏、分辨率切换、可协商的 4:4:4 画质与自适应带宽。
-- H.265/H.264 视频链路，AV1 能力评估，以及适用数据的传输前无损压缩。
-- 双向文件传输、独立文件会话、分块校验、断点续传和限速。
-- 后续扩展手机被控能力，按平台公开接口分别验证。
+- Account registration and login, device binding, and a list of remotely accessible devices for the same account.
+- Windows viewing and mouse/keyboard control; Android and iPhone clients controlling Windows.
+- Encrypted communication across networks, direct peer-to-peer (P2P) connections and relay fallback.
+- Multiple displays, resolution switching, negotiable 4:4:4 quality and adaptive bandwidth.
+- H.265/H.264 video, evaluation of AV1 support, and lossless compression before transfer for suitable data.
+- Bidirectional file transfer, independent file sessions, chunk verification, resume support and rate limits.
+- Later mobile-host capabilities, verified separately against each platform's public APIs.
 
-## 文档与资产
+<a id="文档与资产"></a>
 
-- [项目设计](PROJECT_DESIGN.md)：功能范围、架构、账号与授权、传输和实施验收。
-- [编码全景调研](CODEC_SURVEY.md)：视频/图像格式和选型依据。
-- [图标说明](assets/branding/README.md)：候选资源、生成提示词及视觉相似性初筛记录。
-- [协调服务 API](docs/API.md)：已实现的账号、设备、邀请、授权状态机和管理员接口。
-- [Windows 客户端](docs/CLIENT.md)：运行方式、凭据边界与已实现界面。
-- [Windows 预览安装](docs/WINDOWS_INSTALL.md)：无需开发环境的x64安装、校验、WebView2与双机联调。
-- [认证传输](docs/TRANSPORT.md)：iroh 握手、短租约、数据通道和路径状态。
-- [Windows 远控](docs/REMOTE.md)：DXGI/JPEG、viewer、输入权限与安全停止。
-- [自建 relay](deploy/relay/README.md)：HTTPS 证书与公网 IP 配置示例。
-- [公网 IP 部署包](docs/DEPLOYMENT.md)：六镜像离线制品、短期 IP 证书、回环 Mailpit 与备份/升级。
-- [实施与验收](docs/IMPLEMENTATION.md)：工作项进度及本地验证证据。
+## Documentation and assets
 
-图标由内置图像生成工具生成，目前推荐候选为 v2；相似性初筛不代表唯一性或完成商标查重。
+English is the default documentation language. Use the language links at the top of each page to switch to Simplified Chinese. See [documentation languages](docs/LANGUAGES.md) for the file convention and checks.
 
-## 开发与提交
+- [Project design](PROJECT_DESIGN.md): scope, architecture, accounts and authorization, transport, implementation and verification.
+- [Codec survey](CODEC_SURVEY.md): video/image formats and selection rationale.
+- [Icon notes](assets/branding/README.md): candidate assets, generation prompts and initial visual-similarity screening.
+- [Coordinator API](docs/API.md): implemented account, device, invitation, authorization state-machine and administrator endpoints.
+- [Windows client](docs/CLIENT.md): how to run it, credential boundaries and implemented screens.
+- [Windows preview installation](docs/WINDOWS_INSTALL.md): x64 installation without development tools, checksums, WebView2 and two-computer testing.
+- [Authenticated transport](docs/TRANSPORT.md): iroh handshake, short leases, data channels and path state.
+- [Windows remote control](docs/REMOTE.md): DXGI/JPEG, viewer, input permissions and safe shutdown.
+- [Self-hosted relay](deploy/relay/README.md): HTTPS certificates and public-IP configuration examples.
+- [Public-IP deployment bundle](docs/DEPLOYMENT.md): six-image offline artifacts, short-lived IP certificates, loopback Mailpit and backup/upgrade.
+- [Implementation and verification](docs/IMPLEMENTATION.md): work-item progress and local evidence.
 
-本机需要 Rust 1.93 和 Docker。`scripts/test-coordinator.ps1` 会生成忽略的 `.local/dev.env`，仅启动 `farsail-dev` PostgreSQL 与 Mailpit，然后运行 Rust 测试。服务启动示例（PowerShell）：
+The icon was generated with the built-in image-generation tool; v2 is the recommended candidate. Initial similarity screening does not establish uniqueness or complete trademark clearance.
+
+<a id="开发与提交"></a>
+
+## Development and contributions
+
+Local development requires Rust 1.93 and Docker. `scripts/test-coordinator.ps1` generates the ignored `.local/dev.env`, starts only the `farsail-dev` PostgreSQL and Mailpit services, then runs the Rust tests. Example coordinator start in PowerShell:
 
 ```powershell
 ./scripts/test-coordinator.ps1
@@ -57,9 +74,9 @@ $env:FARSAIL_SMTP_PORT = '51025'
 cargo run -p farsail-coordinator
 ```
 
-服务只监听 `127.0.0.1:8787`，Mailpit UI 为 `http://127.0.0.1:58025`。`GET http://127.0.0.1:8787/healthz` 可检查 PostgreSQL。`./scripts/test-coordinator.ps1 -Stop` 仅停止此项目容器；保留本地数据卷。生产实例需要 TLS 反向代理、有效证书、TLS SMTP、备份和限流，不能通过关闭证书校验接入。功能完成状态以 [WI-001](docs/verification/WI-001.md)、[WI-002](docs/verification/WI-002.md)、[WI-003](docs/verification/WI-003.md) 和 [WI-004](docs/verification/WI-004.md) 验证记录为准。
+The service listens only on `127.0.0.1:8787`; Mailpit UI is at `http://127.0.0.1:58025`. `GET http://127.0.0.1:8787/healthz` checks PostgreSQL. `./scripts/test-coordinator.ps1 -Stop` stops only this project's containers and retains the local data volume. Production requires a TLS reverse proxy, valid certificates, TLS SMTP, backups and rate limits. Do not disable certificate verification. Completion status is governed by the verification records [WI-001](docs/verification/WI-001.md), [WI-002](docs/verification/WI-002.md), [WI-003](docs/verification/WI-003.md) and [WI-004](docs/verification/WI-004.md).
 
-Windows 客户端本地运行（另开终端分别执行）：
+Run the Windows client locally in separate terminals:
 
 ```powershell
 ./scripts/start-local.ps1
@@ -67,8 +84,8 @@ npm ci
 npm run tauri -w @farsail/desktop -- dev
 ```
 
-`./scripts/test-remote.ps1 -RealCapture` 可跑前端、真实 PostgreSQL/HTTP/iroh/DXGI 集成测试和 Tauri 编译。日常双端流程是绑定设备→启动传输→被控端本机开启共享→发起授权请求→被控端明确批准→连接并查看。文件内容仍不可用；公网、跨 NAT、第二台 Windows 及手机端没有本项证据。
+`./scripts/test-remote.ps1 -RealCapture` runs frontend, real PostgreSQL/HTTP/iroh/DXGI integration checks and the Tauri build. The normal two-endpoint flow is: bind devices → start transport → enable sharing on the host → request authorization → explicitly approve on the host → connect and view. File contents remain unavailable. Public networking, cross-NAT, a second Windows machine and mobile clients are not proven by this work item's evidence.
 
 ## License
 
-[MIT](LICENSE)。引入的第三方依赖仍遵循其各自许可证。
+[MIT](LICENSE). Third-party dependencies remain subject to their respective licenses.

@@ -1,3 +1,5 @@
+**English** | [简体中文](WI-DESIGN-023.zh-CN.md)
+
 # DESIGN-023 — selected dark desktop suite and actionable failure dialogs
 
 Baseline `4cd4ecc`; local branch `codex/mouse-control-022`. User selected the second displayed board, `exec-363f15d0-e5df-42cf-86a2-bc90c44345ff.png`, and explicitly requests operation errors in dialogs. Existing production React/Tauri app is the implementation target; do not scaffold a separate web product or remove real capabilities to match synthetic concept details.
@@ -12,7 +14,7 @@ Network finding: persisted sharing restores an endpoint with relay=None, while t
 
 Validation: meaningful modal/keyboard/focus/retry regressions, default restoration configuration and existing cancellation/DPAPI tests, frontend build, native tests/Clippy, all major page states at normal/minimum widths, source-versus-render screenshot comparison and design-qa.md. Browser automation requires explicit permission under the Product Design browser rule when IAB automation is unavailable. Local candidate only unless publishing is requested.
 
-User decision: selected “先实现，不使用浏览器自动化”. Implementation and non-browser verification proceed; all browser/native WebView automation and visual QA are deferred. `design-qa.md` records `final result: blocked`, rather than claiming screenshots or fidelity checks were performed. Updated UI tests are definitions only and syntax checked; they are not passing execution evidence.
+User decision: selected “Implement first, without browser automation”. Implementation and non-browser verification proceed; all browser/native WebView automation and visual QA are deferred. `design-qa.md` records `final result: blocked`, rather than claiming screenshots or fidelity checks were performed. Updated UI tests are definitions only and syntax checked; they are not passing execution evidence.
 
 Native results: client 21 unit tests (including real temporary DPAPI restoration/cancellation and the new HTTPS/loopback/default relay contract) plus desktop 13 tests passed. Client/desktop/transport Clippy `-D warnings` passed. No production configuration read/decrypted or changed. HTTPS restore now uses the same verified8443 relay default as explicit desktop start; custom relay/UDP/force settings remain per-run and are not newly persisted. UI displays actual active endpoint configuration without equating a configured relay with the connection's selected path. This fixes a confirmed source-level fallback gap; physical first-dial timeout root cause remains unproven.
 

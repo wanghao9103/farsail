@@ -1,3 +1,5 @@
+**English** | [简体中文](WI-RECONNECT-026.zh-CN.md)
+
 # RECONNECT-026 — visible recovery and retained remote display
 
 Baseline `8e3e7aa`, managed mouse-control-022 worktree. User reports silent automatic reconnect and being returned from a secondary display to the first display. Preserve current design and existing no-browser-automation instruction. No installation/profile/server change or public release.

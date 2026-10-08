@@ -1,14 +1,20 @@
-# FarSail Windows 客户端（WI-002/003/004）
+**English** | [简体中文](CLIENT.zh-CN.md)
 
-0.1.10 的本机共享与远程值守偏好见 [SHARE-020](verification/WI-SHARE-020.md)。DPAPI 只保存这两项已成功开启的选择及服务/账号/设备/登录会话范围，不保存高级连接参数。原生启动仅尝试恢复一次，先重验登录、心跳、传输和桌面，再发布共享能力；界面分别显示记住的意图和有效活动。手动关闭、退出登录、身份变化会取消迟到恢复；普通关窗或故障停止活动而保留有效偏好。首次默认关闭，仍需 Windows 已登录且应用运行，不提供服务、自启动或安全桌面支持。
+<a id="farsail-windows-客户端wi-002003004"></a>
 
-Windows 客户端位于 `apps/desktop`，React/Vite 页面调用 Tauri 2 命令，账号、设备和授权 HTTP 请求由 `crates/client` 发出。服务协议见 [API.md](API.md)，传输见 [TRANSPORT.md](TRANSPORT.md)，画面与输入细节见 [REMOTE.md](REMOTE.md)。Windows 远程查看与鼠标键盘基线已接入；文件内容仍属 WI-005。
+# FarSail Windows client (WI-002/003/004)
 
-无需开发环境的 Windows x64 预览安装、WebView2、未签名说明及第二台电脑联调步骤见 [WINDOWS_INSTALL.md](WINDOWS_INSTALL.md)；固定下载与实际验证结果见 [WI-008B](verification/WI-008B.md)。
+For the local sharing and remote standby preferences in 0.1.10, see [SHARE-020](verification/WI-SHARE-020.md). DPAPI saves only these two choices after they have been successfully enabled, together with their service/account/device/login-session scope; it does not save advanced connection parameters. Native startup attempts restoration only once, revalidating the login, heartbeat, transport and desktop before publishing sharing capability. The interface separately shows the remembered intent and effective activity. Manual disablement, logout or an identity change cancels delayed restoration; ordinary window closure or a fault stops activity while retaining valid preferences. Both are off initially. Windows must still be logged in and the application running; there is no service, autostart or secure-desktop support.
 
-## 本地运行
+The Windows client is in `apps/desktop`. Its React/Vite pages call Tauri 2 commands, while `crates/client` sends account, device and authorization HTTP requests. For the service protocol, see [API.md](API.md); for transport, see [TRANSPORT.md](TRANSPORT.md); for screen and input details, see [REMOTE.md](REMOTE.md). The Windows remote-viewing and mouse/keyboard baseline is integrated; file contents remain part of WI-005.
 
-需要 Windows、Rust 1.93、Node/npm 和 Docker。服务端示例只绑定回环，测试邮件只进入本地 Mailpit。
+For Windows x64 preview installation without a development environment, WebView2, the unsigned-build explanation and integration steps for a second computer, see [WINDOWS_INSTALL.md](WINDOWS_INSTALL.md). For pinned downloads and actual verification results, see [WI-008B](verification/WI-008B.md).
+
+<a id="本地运行"></a>
+
+## Running locally
+
+Requires Windows, Rust 1.93, Node/npm and Docker. The server example binds only to loopback, and test email goes only to local Mailpit.
 
 ```powershell
 ./scripts/start-local.ps1
@@ -17,26 +23,32 @@ npm ci
 npm run tauri -w @farsail/desktop -- dev
 ```
 
-或者运行 `./scripts/test-remote.ps1 -RealCapture`：启动项目专属的 `farsail-dev` PostgreSQL/Mailpit，运行后端、传输、客户端和 Windows 合成测试，再以本机真实显示器在内存中完成采集→JPEG→认证连接→解码；最后执行 Clippy、前端构建和 Tauri 原生构建。真实系统输入是独立的忽略测试，只有确认程序自己创建的窗口位于前台才会注入无害内容。不会发送真实邮件。服务地址默认为 `http://127.0.0.1:8787`，可在退出登录后的设置页修改。Mailpit UI 在 `http://127.0.0.1:58025`。结束后以 `./scripts/test-coordinator.ps1 -Stop` 停止本项目容器；开发数据库卷仍保留。运行中的 `start-local.ps1` 窗口用 Ctrl+C 结束协调服务。
+Alternatively, run `./scripts/test-remote.ps1 -RealCapture`: it starts the project-specific `farsail-dev` PostgreSQL/Mailpit services, runs backend, transport, client and Windows synthetic tests, then uses the local physical monitor to complete capture → JPEG → authenticated connection → decoding in memory. Finally, it runs Clippy, the frontend build and the Tauri native build. Actual system input is a separate ignored test; it injects harmless content only after confirming that the window created by the test program itself is in the foreground. No real email is sent. The default service address is `http://127.0.0.1:8787`; it can be changed in Settings after logging out. The Mailpit UI is at `http://127.0.0.1:58025`. Afterward, use `./scripts/test-coordinator.ps1 -Stop` to stop this project's containers; the development database volume is retained. Use Ctrl+C in the running `start-local.ps1` window to stop the coordinator.
 
-## 使用流程
+<a id="使用流程"></a>
 
-1. 注册账号，去 Mailpit 读取本地验证令牌，在验证邮箱页提交；真实部署须配置 TLS SMTP。
-2. 登录后在总览中确认绑定本机。Rust 生成 Ed25519 密钥，签署服务挑战，初始声明 `can_host=false`、`can_files=false`。绑定后启动心跳；退出登录或切换账号会清掉旧的登录与设备凭据、停止旧身份心跳。
-3. “我的设备”逐页读取完整同账号设备，包含离线和管理员停用项，可搜索、按能力筛选、改名和解绑。“账号安全”可改密、退出及撤销其他登录会话。
-4. “设置”启动安全传输并开启本机共享后，Windows DXGI 探测成功才声明 `can_host=true`。同账号另一客户端刷新设备列表即可选择在线主机；目标端仍须逐次明确批准查看或控制，批准窗口显示申请邮箱及设备名。发起端点“连接并查看”，viewer 收到二进制 JPEG，显示显示器选择、实际接收 FPS、路径 RTT 和双方可比较校验码。`control` 允许鼠标键盘，`view` 仅看画面；双方都能本地立即停止。文件功能尚不可用。
-5. 管理员账号可在同一客户端查看用户、登录会话和审计元数据，启停账号/设备、调整注册策略、创建和撤销注册邀请。管理员无法代替目标设备批准远控。
+## Usage
 
-## 凭据边界
+1. Register an account, retrieve the local verification token from Mailpit and submit it on the email-verification page; a real deployment must configure TLS SMTP.
+2. After logging in, confirm binding this computer in Overview. Rust generates an Ed25519 key, signs the service challenge and initially declares `can_host=false` and `can_files=false`. Heartbeats start after binding. Logging out or switching accounts clears the old login and device credentials and stops heartbeats for the old identity.
+3. “My devices” reads all devices belonging to the same account page by page, including offline and administrator-disabled devices. It supports search, capability filters, renaming and unbinding. “Account security” supports password changes, logout and revocation of other login sessions.
+4. After starting secure transport and enabling local sharing in “Settings”, the client declares `can_host=true` only when the Windows DXGI probe succeeds. Another client under the same account can refresh its device list and select the online host. The target must still explicitly approve each viewing or control request; the approval window shows the requester's email and device name. On the requester, click “Connect and view”. The viewer receives binary JPEG and displays monitor selection, actual received FPS, path RTT and a verification code that both sides can compare. `control` allows mouse and keyboard input; `view` only shows the screen. Both sides can stop immediately and locally. Files are not yet available.
+5. An administrator account can use the same client to view users, login sessions and audit metadata; enable or disable accounts/devices; change registration policy; and create or revoke signup invitations. Administrators cannot approve remote control on behalf of the target device.
 
-- `crates/client` 的串行状态锁负责访问 token 刷新轮换、HTTP 和设备签名；WebView 不获得访问/刷新 token、设备 token、设备私钥或 grant token。前端仅暂时持有用户输入的密码、邮箱验证令牌及一次性邀请码，不使用 `localStorage`。
-- 登录会话、设备凭据、每个服务地址与账号对应的设备私钥分别存放在 Windows 用户作用域的 DPAPI 加密文件中，目录由 Tauri 的 `app_local_data_dir` 提供。iroh 使用这同一把设备私钥。退出先取消本地会话，再删除登录和设备凭据；保留私钥以便同一账号下次重新证明设备身份。移动端需另实现平台安全存储适配。
-- 公网服务地址只能使用证书验证的 HTTPS，包含 HTTPS IP；显式回环地址才允许 HTTP。请求不跟随重定向，响应单次上限 1 MiB。不存在跳过证书验证的开关。
-- 登录撤销和设备 token 失效由服务端决定。网络离线时退出仍删除本机凭据，同时报告远端撤销未确认。下次登录须重新签名绑定设备。授权 grant 留在原生内存，通过设备认证的 iroh 握手交给正确的发起端，页面不接触该凭据。原生层最多处理 8 个同时握手、16 个活跃会话；退出或重启传输后的旧启动/旧连接结果不会写回。
-- 同一配置目录有排他锁，第二个桌面进程不能并发读取并轮换同一刷新令牌。debug IPC 测试可以指定独立的 `FARSAIL_TEST_PROFILE_DIR`。本机共享关闭、退出或窗口关闭先停采集和输入，服务端更新/撤销随后尽力执行；租约仍是兜底边界。
+<a id="凭据边界"></a>
 
-## 已知边界与 WI-005/006 接口
+## Credential boundaries
 
-JPEG 低帧率链路是当前可用基线。系统安全桌面、UAC、无人登录、跨 NAT/公网及第二台 Windows 尚未验证。视频编码、4:4:4 和带宽自适应属于 WI-006。网页预览只能检查布局，无法代表 Windows 原生采集、输入或 IPC。
+- The serialized state lock in `crates/client` handles access-token refresh rotation, HTTP and device signatures. The WebView never obtains access/refresh tokens, device tokens, device private keys or grant tokens. The frontend only temporarily holds user-entered passwords, email-verification tokens and one-time invitation codes, and does not use `localStorage`.
+- Login sessions, device credentials and device private keys scoped separately to each service address and account are stored in Windows-user-scoped DPAPI-encrypted files. Tauri's `app_local_data_dir` supplies the directory. Iroh uses that same device private key. Logout first cancels local sessions, then deletes login and device credentials; it retains the private key so that the same account can prove the device's identity again at its next login. Mobile clients require separate platform secure-storage adapters.
+- Public service addresses must use certificate-validated HTTPS, including HTTPS IP addresses. HTTP is allowed only for explicit loopback addresses. Requests do not follow redirects, and each response is limited to 1 MiB. There is no option to skip certificate verification.
+- The server determines login revocation and device-token invalidation. Logging out while offline still deletes local credentials and reports that remote revocation is unconfirmed. The next login must sign and bind the device again. Authorization grants stay in native memory and are delivered to the correct requester through a device-authenticated iroh handshake; pages never access this credential. The native layer handles at most 8 concurrent handshakes and 16 active sessions. Results from an old startup or connection after logout or a transport restart cannot be written back.
+- An exclusive lock protects the configuration directory, so a second desktop process cannot concurrently read and rotate the same refresh token. Debug IPC tests can specify an isolated `FARSAIL_TEST_PROFILE_DIR`. Disabling local sharing, logging out or closing a window first stops capture and input; server updates/revocation follow on a best-effort basis. The lease remains the fallback boundary.
 
-原生接口 `NativeClient::start_transport`、`connect_transport`、`transport_session` 和 `farsail_transport::Session::send/receive` 仍供文件工作项复用。`Media`、`Control`、`File` 有独立权限和尺寸边界。WI-005 实现分块、校验、续传及限速前继续保持 `can_files=false`。本机双端验证直连及强制 TLS relay，但没有公网 TLS 代理、第二台电脑、跨 NAT 穿透率或手机真机证据。
+<a id="已知边界与-wi-005006-接口"></a>
+
+## Known boundaries and WI-005/006 interfaces
+
+The low-frame-rate JPEG path is the currently usable baseline. The system secure desktop, UAC, a logged-out Windows session, cross-NAT/public-network operation and a second Windows computer have not been verified. Video encoding, 4:4:4 and bandwidth adaptation belong to WI-006. A web preview can check layout only; it cannot represent Windows native capture, input or IPC.
+
+The native interfaces `NativeClient::start_transport`, `connect_transport`, `transport_session` and `farsail_transport::Session::send/receive` remain available for reuse by the file work item. `Media`, `Control` and `File` have separate permission and size boundaries. Keep `can_files=false` until WI-005 implements chunking, verification, resume and rate limiting. Local two-endpoint validation covers direct connections and forced TLS relay, but there is no evidence for a public TLS proxy, a second computer, cross-NAT traversal rates or physical mobile devices.

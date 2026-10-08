@@ -21,6 +21,8 @@ build/
 .gradle/
 .vite/
 .cache/
+__pycache__/
+*.pyc
 coverage/
 apps/desktop/src-tauri/gen/schemas/
 
