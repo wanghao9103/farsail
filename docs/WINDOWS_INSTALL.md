@@ -1,16 +1,16 @@
 # Windows x64 预览安装与双机联调
 
-FarSail 0.1.10 是支持自动适配与 720p/1080p/2K/4K 档位的 JPEG 查看/鼠标键盘控制预览。远程窗口默认最大化，使用与客户端一致的深色标题栏，全屏时隐藏；工具栏自动隐藏，移到顶部或点击显示入口可展开，并可固定显示。默认完整画面铺满可用区域，比例不同时会拉伸；“更多操作 → 画面显示”可选择保持比例（有意留边），选择会保留，鼠标坐标同步。编码不放大源显示器、不修改远端系统分辨率。需要 Windows 10/11 x64 的普通交互桌面；不需要安装 Rust、Node 或开发工具。文件传输、HEVC、自适应视频码率和手机端尚未交付。安全桌面、UAC 和无人登录桌面不支持。
+FarSail 0.1.11 是支持自动适配与 720p/1080p/2K/4K 档位的 JPEG 查看/鼠标键盘控制预览。远程窗口默认最大化，使用与客户端一致的深色标题栏，全屏时隐藏；工具栏自动隐藏，移到顶部或点击显示入口可展开，并可固定显示。默认完整画面铺满可用区域，比例不同时会拉伸；“更多操作 → 画面显示”可选择保持比例（有意留边），选择会保留，鼠标坐标同步。编码不放大源显示器、不修改远端系统分辨率。需要 Windows 10/11 x64 的普通交互桌面；不需要安装 Rust、Node 或开发工具。文件传输、HEVC、自适应视频码率和手机端尚未交付。安全桌面、UAC 和无人登录桌面不支持。
 
 新连接前主动刷新发现，中继会话定时重试直连，地址变化及时上报；刷新保留原会话和画面。窗口会显示正在尝试直连、定时重试或强制中继。真实回环 QAD 失败→恢复和持续认证传帧通过；两台物理电脑在网络修复后同一会话中继→直连仍需现场验收，不能保证所有 NAT 可直连。
 
 ## 下载与安装
 
-当前固定预发布：[下载安装包](https://github.com/wanghao9103/farsail/releases/download/windows-preview-0.1.10-be659f2/FarSail_0.1.10_x64-setup.exe)、[SHA256SUMS.txt](https://github.com/wanghao9103/farsail/releases/download/windows-preview-0.1.10-be659f2/SHA256SUMS.txt)，其余元数据见 [发布页](https://github.com/wanghao9103/farsail/releases/tag/windows-preview-0.1.10-be659f2)。源码 SHA、安装包 SHA256 和安装验证证据见 [SHARE-020](verification/WI-SHARE-020.md)。同时下载 `FarSail_0.1.10_x64-setup.exe`、`SHA256SUMS.txt`、`release-metadata.json`。PowerShell 在下载目录执行：
+当前固定预发布：[下载安装包](https://github.com/wanghao9103/farsail/releases/download/windows-preview-0.1.11-70d9393/FarSail_0.1.11_x64-setup.exe)、[SHA256SUMS.txt](https://github.com/wanghao9103/farsail/releases/download/windows-preview-0.1.11-70d9393/SHA256SUMS.txt)，其余元数据见 [发布页](https://github.com/wanghao9103/farsail/releases/tag/windows-preview-0.1.11-70d9393)。源码 SHA、安装包 SHA256 和安装验证证据见 [INPUT-021](verification/WI-INPUT-021.md)。同时下载 `FarSail_0.1.11_x64-setup.exe`、`SHA256SUMS.txt`、`release-metadata.json`。PowerShell 在下载目录执行：
 
 ```powershell
 $expected = ((Get-Content ./SHA256SUMS.txt -Raw).Trim() -split '\s+')[0]
-$actual = (Get-FileHash ./FarSail_0.1.10_x64-setup.exe -Algorithm SHA256).Hash
+$actual = (Get-FileHash ./FarSail_0.1.11_x64-setup.exe -Algorithm SHA256).Hash
 if ($actual -ine $expected) { throw 'SHA256 mismatch: do not install' }
 ```
 

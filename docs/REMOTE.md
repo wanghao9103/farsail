@@ -20,6 +20,8 @@ Windows 被控端必须登录、绑定设备、启动认证传输，再在本机
 
 ## 本地运行与验收
 
+0.1.11补充：显示/画质布局变化不应丢掉已注入按钮的UP。只有本会话拥有的按钮能释放；缺失/旧布局不阻止释放，仍不允许旧坐标的新DOWN。查看端自有指针捕获覆盖拖出后的结束，失焦或异常丢失捕获释放并取消，外面已按住再移入不会成为新的远端点击。所有执行仍在有效授权/共享/会话/输入锁检查后进行，Windows拒绝不被绕过。见 [INPUT-021](verification/WI-INPUT-021.md)。
+
 先按 [客户端说明](CLIENT.md) 启动本项目 PostgreSQL/Mailpit、协调服务及 Tauri。双端本机集成测试用隔离账号、临时 DPAPI 目录、真实 PostgreSQL/Axum/iroh，正常流程更新主机能力；不手改数据库。`scripts/test-remote.ps1 -RealCapture` 在有交互桌面的本机额外执行真实 DXGI→JPEG→认证连接→解码，实际像素始终只在内存。`cargo test -p farsail-windows real_input_into_own_foreground_window -- --ignored --nocapture` 只在测试程序自建窗口获得并核对前台进程后发送无害文本、组合键和点击；若前台核对失败，测试在注入前失败。CI 没有交互桌面，仅运行合成帧、坐标/旋转、权限与构建测试，不能替代上述两项本机证据。
 
 桌面配置目录通过 Windows 文件排他锁防止并发进程使用同一个刷新令牌；debug IPC 烟测可用 `FARSAIL_TEST_PROFILE_DIR` 指向独立临时目录。停止测试服务用 `scripts/test-coordinator.ps1 -Stop`，仅影响 `farsail-dev` 项目，保留数据卷和忽略的 `.local/dev.env`。公网服务、第二台 Windows、跨 NAT、移动真机及安全桌面均未在 WI-004 验证。
