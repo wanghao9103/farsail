@@ -880,7 +880,10 @@ const fs = require("node:fs");
   await page
     .getByRole("button", { name: "从账号移除设备", exact: true })
     .click();
-  await page.getByRole("button", { name: "保留设备", exact: true }).click();
+  await page
+    .getByRole("alertdialog", { name: "从账号移除设备？" })
+    .getByRole("button", { name: "取消", exact: true })
+    .click();
   assert.equal(
     await page.evaluate(
       () =>
