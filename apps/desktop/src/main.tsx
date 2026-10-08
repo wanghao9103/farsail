@@ -3234,6 +3234,7 @@ function Viewer({
                 "系统暂时无法执行鼠标键盘操作，画面连接仍保留。")
               : ""
           }
+          message="远程电脑暂时无法执行鼠标键盘操作。画面连接仍保留，你可以重试控制。"
           onDismiss={() => setDismissedInput(status?.input?.generation ?? 0)}
           action={{
             title: "控制已暂停",
@@ -3248,7 +3249,7 @@ function Viewer({
             !ended &&
             !inputBlocked &&
             !problem
-              ? "自动刷新后仍未能恢复鼠标定位。画面连接保持，你可以再次恢复鼠标控制。"
+              ? "暂时无法执行鼠标定位操作。画面连接保持，你可以尝试恢复鼠标控制。"
               : ""
           }
           onDismiss={() => setDismissedMouse(mouseFailure)}
