@@ -16,6 +16,13 @@ The application embeds only the public updater key. Store the matching private k
 
 The generated key is held locally in the ignored private directory; it has not been configured as a repository secret or uploaded. Configure the secret before creating the release tag. The updater signature authenticates package bytes and version; it is separate from a Windows Authenticode publisher certificate and does not eliminate SmartScreen warnings.
 
+For maintainers who prefer not to paste a private key, the setup helper verifies the local key against the embedded public key and saves the secret through the authenticated GitHub CLI. Secret values pass over standard input, not command arguments or logs; GitHub CLI encrypts them locally before upload. Ordinary client users never configure a signing secret. Running the helper without the apply flag only performs a local check. The apply command requires an account allowed to write this repository's Secrets. Restore the backed-up matching key on another machine instead of generating a replacement. This setup has been checked locally, but the actual repository Secret has not been written.
+
+```bash
+gh auth login --hostname github.com
+node scripts/configure-client-updates.mjs --apply
+```
+
 ## Automatic release process
 
 Update the client version in `apps/desktop/src-tauri/tauri.conf.json`, merge reviewed source, and push a matching tag. The tag below is an example for the initial candidate, not a statement that it has been released.

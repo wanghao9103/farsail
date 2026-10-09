@@ -118,7 +118,7 @@ jobs:
           cargo clippy --locked -p farsail-desktop --all-targets -- -D warnings
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Signature and manifest failure regressions
-        run: node --test scripts/test-client-update-manifest.mjs
+        run: node --test scripts/test-client-update-manifest.mjs scripts/test-configure-client-updates.mjs
       - uses: actions/upload-artifact@v4
         with:
           name: client-${{ matrix.platform }}

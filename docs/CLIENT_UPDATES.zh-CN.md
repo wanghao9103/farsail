@@ -16,6 +16,13 @@ GitHub Actions 构建 Windows x64 NSIS 安装包和 Ubuntu x64 Debian 包。发�
 
 新生成的密钥目前保存在本地被忽略的私有目录中，尚未配置为仓库 Secret 或上传。请先配置再创建发布标签。更新签名用于验证包内容和版本，与 Windows Authenticode 发布者证书是两件事，不会因此消除 SmartScreen 提示。
 
+维护者不需要手动粘贴私钥：初始化脚本先检查本地私钥是否与应用内公钥匹配，再通过已经登录的 GitHub CLI 保存 Secret。值通过标准输入传递，不出现在命令参数或日志中；GitHub CLI 会在本地加密后上传。普通客户端用户始终无需配置签名 Secret。不带应用参数执行脚本时只做本地检查；下面的应用命令需要具有该仓库 Secrets 写入权限的账号。更换维护电脑时应恢复备份中匹配的私钥，不要重新生成替代密钥。初始化已经完成本地检查，但尚未实际写入仓库 Secret。
+
+```bash
+gh auth login --hostname github.com
+node scripts/configure-client-updates.mjs --apply
+```
+
 ## 自动发布流程
 
 修改 `apps/desktop/src-tauri/tauri.conf.json` 中的客户端版本，合入评审后的源码，再推送对应版本标签。下面是首个候选版本的示例，不表示它已经发布。
