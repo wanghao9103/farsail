@@ -51,15 +51,15 @@ nano "$smtp_state/coordinator.env"
 
 Edit only mail settings; do not replace the whole file with the following snippet. Preserve `FARSAIL_DATABASE_URL`, `FARSAIL_BIND`, `FARSAIL_RELAY_ACCESS_TOKEN` and `FARSAIL_RELAY_URLS`.
 
-| Setting | Default test configuration | Real email action |
-| --- | --- | --- |
-| `FARSAIL_MAIL_MODE` | `smtp-local` | Change to `smtp-tls` |
-| `FARSAIL_SMTP_HOST` | `127.0.0.1` | Change to the sender's SMTP host |
-| `FARSAIL_SMTP_PORT` | 1025 | Change to 465 for implicit TLS |
-| `FARSAIL_MAIL_FROM` | Local test sender | Change to the authenticated sender address |
-| `FARSAIL_SMTP_USER` | Missing in old templates, empty in new ones | Add or fill the full sender email address |
-| `FARSAIL_SMTP_PASSWORD` | Missing in old templates, empty in new ones | Add or fill the SMTP authorization code |
-| `FARSAIL_SMTP_TLS` | Missing in old templates | Explicitly set `implicit`; new templates include it |
+| Setting                 | Default test configuration                  | Real email action                                   |
+| ----------------------- | ------------------------------------------- | --------------------------------------------------- |
+| `FARSAIL_MAIL_MODE`     | `smtp-local`                                | Change to `smtp-tls`                                |
+| `FARSAIL_SMTP_HOST`     | `127.0.0.1`                                 | Change to the sender's SMTP host                    |
+| `FARSAIL_SMTP_PORT`     | 1025                                        | Change to 465 for implicit TLS                      |
+| `FARSAIL_MAIL_FROM`     | Local test sender                           | Change to the authenticated sender address          |
+| `FARSAIL_SMTP_USER`     | Missing in old templates, empty in new ones | Add or fill the full sender email address           |
+| `FARSAIL_SMTP_PASSWORD` | Missing in old templates, empty in new ones | Add or fill the SMTP authorization code             |
+| `FARSAIL_SMTP_TLS`      | Missing in old templates                    | Explicitly set `implicit`; new templates include it |
 
 Replace the example address and authorization code below with your values. Each setting should occur only once.
 
@@ -118,14 +118,14 @@ docker compose --env-file "$smtp_state/compose.env" \
   -f deploy/production/compose.yaml logs --tail 100 coordinator
 ```
 
-| Symptom | Check |
-| --- | --- |
+| Symptom                              | Check                                                                               |
+| ------------------------------------ | ----------------------------------------------------------------------------------- |
 | Missing variables or startup failure | Add the SMTP user and authorization code, save the file, and recreate the container |
-| SMTP authentication failure | Enabled service, valid authorization code and full email username |
-| Connection timeout or DNS failure | Server DNS, cloud outbound rules, host firewall and provider network restrictions |
-| TLS handshake failure | Matching hostname, port and TLS mode; correct system clock and CA certificates |
-| Sender rejection | Sender address matches the authenticated account and has send permission |
-| Successful request without delivery | Spam folder, provider delivery records and sending limits; valid resend conditions |
+| SMTP authentication failure          | Enabled service, valid authorization code and full email username                   |
+| Connection timeout or DNS failure    | Server DNS, cloud outbound rules, host firewall and provider network restrictions   |
+| TLS handshake failure                | Matching hostname, port and TLS mode; correct system clock and CA certificates      |
+| Sender rejection                     | Sender address matches the authenticated account and has send permission            |
+| Successful request without delivery  | Spam folder, provider delivery records and sending limits; valid resend conditions  |
 
 Redact passwords, tokens and database credentials when sharing diagnostics, and avoid printing the complete Compose configuration. SMTP acceptance does not prove inbox delivery; verify real receipt and successful email verification.
 

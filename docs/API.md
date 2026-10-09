@@ -13,7 +13,7 @@ Errors use an HTTP status and `{ "error": "..." }`: 400 malformed/expired input,
 | Method and path                      | Body / result                                                                        | Credential                                |
 | ------------------------------------ | ------------------------------------------------------------------------------------ | ----------------------------------------- |
 | `POST /v1/auth/register`             | `{email,password,invite_code?}` → `{id}`; password 12–1024 bytes                     | none; code required in `invite_only` mode |
-| `POST /v1/auth/verify`               | `{email,token}`; consumes a six-digit email verification code                                                      | none                                      |
+| `POST /v1/auth/verify`               | `{email,token}`; consumes a six-digit email verification code                        | none                                      |
 | `POST /v1/auth/verify/resend`        | `{email,password}`; reissues verification mail for unverified account                | none                                      |
 | `POST /v1/auth/login`                | `{email,password}` → `{access_token,refresh_token,session_id,access_expires_in}`     | none                                      |
 | `POST /v1/auth/refresh`              | `{refresh_token}` → new token pair; reuse revokes session                            | refresh token                             |

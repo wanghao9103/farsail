@@ -414,7 +414,7 @@ pub fn smoke_probe(webview: &tauri::Webview) {
         const initial=await invoke('ipc_viewer_state');
         if(!initial.maximized) throw Error('viewer did not open maximized');
         if(initial.decorations || !document.querySelector('.viewer-titlebar')) throw Error('custom titlebar missing');
-        for(const [cmd,args] of [['state',{}],['call',{op:'admin_users',args:{}}],['set_server',{server:'http://127.0.0.1:1'}],['share_enable',{}],['remote_watch',{enabled:true}],['remote_input',{id:'other',input:null}],['media_profile',{id:'other',profile:1}],['transport_connect',{id:'other',permission:'view'}],['plugin:window|close',{label:'main'}]]) {
+        for(const [cmd,args] of [['state',{}],['update_status',{}],['update_preferences',{preferences:{autoCheck:false,autoInstall:true}}],['update_check',{}],['update_download',{}],['update_install',{}],['call',{op:'admin_users',args:{}}],['set_server',{server:'http://127.0.0.1:1'}],['share_enable',{}],['remote_watch',{enabled:true}],['remote_input',{id:'other',input:null}],['media_profile',{id:'other',profile:1}],['transport_connect',{id:'other',permission:'view'}],['plugin:window|close',{label:'main'}]]) {
           let blocked=false; try { await invoke(cmd,args); } catch { blocked=true; }
           if(!blocked) throw Error('unexpected permission: '+cmd); denied.push(cmd);
         }

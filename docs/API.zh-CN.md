@@ -17,7 +17,7 @@
 | 方法与路径                           | 请求体 / 结果                                                                    | 凭据                             |
 | ------------------------------------ | -------------------------------------------------------------------------------- | -------------------------------- |
 | `POST /v1/auth/register`             | `{email,password,invite_code?}` → `{id}`；密码为 12–1024 字节                    | 无；`invite_only` 模式需要邀请码 |
-| `POST /v1/auth/verify`               | `{email,token}`；消耗 6 位邮箱验证码                                                      | 无                               |
+| `POST /v1/auth/verify`               | `{email,token}`；消耗 6 位邮箱验证码                                             | 无                               |
 | `POST /v1/auth/verify/resend`        | `{email,password}`；为未验证账户重新发送验证邮件                                 | 无                               |
 | `POST /v1/auth/login`                | `{email,password}` → `{access_token,refresh_token,session_id,access_expires_in}` | 无                               |
 | `POST /v1/auth/refresh`              | `{refresh_token}` → 新令牌对；重复使用会撤销会话                                 | 刷新令牌                         |

@@ -78,7 +78,7 @@ Install the delivered Ubuntu client 0.1.18:
 sudo apt install ./FarSail_0.1.18_ubuntu26.04_amd64.deb
 ```
 
- Check nonexistent-account and incorrect-password dialogs, log in correctly, add this computer from Overview, then connect to a Windows computer with sharing enabled. Real accounts, binding and cross-computer remote control require production acceptance checks.
+Check nonexistent-account and incorrect-password dialogs, log in correctly, add this computer from Overview, then connect to a Windows computer with sharing enabled. Real accounts, binding and cross-computer remote control require production acceptance checks.
 
 ## 4. Roll back the coordinator
 
