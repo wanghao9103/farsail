@@ -25,6 +25,8 @@ git tag client-v0.1.20
 git push origin client-v0.1.20
 ```
 
+The workflow also supports publishing a matching client release from the GitHub web interface or selecting a source ref and matching version tag in Run workflow. This lets maintainers build and publish online without downloading a build toolchain or pushing a tag from their local terminal.
+
 The `Client installers and signed updates` workflow automatically builds both platforms. Windows validates the installed binary, native settings, restart, sharing preferences, reinstallation and uninstallation. Ubuntu checks native WebKitGTK IPC and keyring behavior, package metadata and runtime dependencies on the build baseline. Publication verifies both package signatures, the signed version, source commit, checksums and Windows installation report before uploading. Pull-request builds run without the production signing key and provide preview artifacts only.
 
 The versioned release retains immutable installers, signatures, checksums and verification metadata. A successful public download of each uploaded file must match the tested bytes before the channel advances. The channel cannot move to an older or equal version. Both platforms are required: a failed build, missing signature or failed installation check leaves the previous channel unchanged. The channel stages the next manifest before replacing the existing asset; clients retain their working installation if a check fails during this brief replacement window.

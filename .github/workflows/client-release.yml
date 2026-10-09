@@ -2,6 +2,14 @@ name: Client installers and signed updates
 on:
   push:
     tags: ["client-v*"]
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Client version tag, matching the selected source version"
+        required: true
+        type: string
   pull_request:
     paths:
       [
@@ -16,10 +24,11 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: client-release-${{ github.event_name == 'push' && 'publication' || github.ref }}
+  group: client-release-${{ github.event_name != 'pull_request' && 'publication' || github.ref }}
   cancel-in-progress: false
 jobs:
   package:
+    if: github.event_name != 'release' || startsWith(github.event.release.tag_name, 'client-v')
     strategy:
       fail-fast: false
       matrix:
@@ -44,14 +53,14 @@ jobs:
           node-version: "22"
           cache: npm
       - name: Validate immutable release version
-        if: github.event_name == 'push'
+        if: github.event_name != 'pull_request'
         shell: bash
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.release_tag || github.ref_name }}
         run: |
           node --input-type=module -e 'import fs from "node:fs";const c=JSON.parse(fs.readFileSync("apps/desktop/src-tauri/tauri.conf.json"));if(!/^\d+\.\d+\.\d+$/.test(c.version)||process.env.RELEASE_TAG!==`client-v${c.version}`)throw Error("Tag must match client version")'
       - name: Require signing key for publication
-        if: github.event_name == 'push'
+        if: github.event_name != 'pull_request'
         shell: bash
         env:
           SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -65,7 +74,7 @@ jobs:
       - name: Ubuntu Debian package
         if: runner.os == 'Linux'
         env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ github.event_name == 'push' && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ github.event_name != 'pull_request' && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         run: |
           if [[ -n "$TAURI_SIGNING_PRIVATE_KEY" ]]; then
@@ -93,7 +102,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ github.event_name == 'push' && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ github.event_name != 'pull_request' && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
         run: ./scripts/package-windows.ps1
       - name: Windows install, native IPC, restart, reinstall and uninstall
@@ -117,7 +126,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
   publish:
-    if: github.event_name == 'push'
+    if: github.event_name != 'pull_request'
     needs: package
     runs-on: ubuntu-24.04
     permissions:
@@ -147,6 +156,11 @@ jobs:
             const getRelease=async tag=>{try{return (await github.rest.repos.getReleaseByTag({...params,tag})).data;}catch(e){if(e.status===404)return null;throw e;}};
             const tag=`client-v${manifest.version}`;
             let release=await getRelease(tag);
+            let tagged;
+            try{tagged=(await github.rest.git.getRef({...params,ref:`tags/${tag}`})).data.object;}
+            catch(e){if(e.status!==404)throw e;}
+            for(let i=0;tagged?.type==='tag'&&i<8;i++)tagged=(await github.rest.git.getTag({...params,tag_sha:tagged.sha})).data.object;
+            if(tagged&&(tagged.type!=='commit'||tagged.sha!==context.sha))throw Error('Existing version tag points to different source; do not retarget it');
             const publicBytes=async url=>{for(let i=0;i<4;i++){const r=await fetch(url);if(r.ok)return Buffer.from(await r.arrayBuffer());if(i===3)throw Error(`Public download failed: ${r.status}`);await new Promise(resolve=>setTimeout(resolve,5000));}};
             let channel=await getRelease('client-updates');
             let old=channel?.assets.find(a=>a.name==='latest.json');
