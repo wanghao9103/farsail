@@ -11,7 +11,9 @@
   --accent-text: #102722;
   color: var(--text);
   background: var(--canvas);
-  font-family: "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+  font-family:
+    "Segoe UI", "Microsoft YaHei UI", "Ubuntu", "Noto Sans CJK SC", system-ui,
+    sans-serif;
   font-size: 14px;
   line-height: 1.5;
 }

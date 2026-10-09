@@ -19,7 +19,11 @@ use std::{
 };
 use tokio::sync::{Mutex, broadcast, watch};
 use url::Url;
+#[cfg(target_os = "linux")]
+mod linux_store;
 mod preferences;
+#[cfg(target_os = "linux")]
+pub use linux_store::LinuxStore;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -642,6 +646,13 @@ impl NativeClient {
             let message = serde_json::from_slice::<Value>(&bytes)
                 .ok()
                 .and_then(|v| v.get("error").and_then(Value::as_str).map(str::to_owned))
+                .or_else(|| {
+                    // Axum JSON extractor errors are plain text, including an older
+                    // coordinator rejecting the Linux platform before the handler.
+                    (status.as_u16() == 422 && bytes.len() <= 4096)
+                        .then(|| String::from_utf8(bytes.clone()).ok())
+                        .flatten()
+                })
                 .unwrap_or_else(|| status.canonical_reason().unwrap_or("request failed").into());
             return Err(Error::Http(status.as_u16(), message));
         }
@@ -945,7 +956,7 @@ impl NativeClient {
                 let message = challenge["message"]
                     .as_str()
                     .ok_or_else(|| Error::Invalid("missing challenge message".into()))?;
-                let bind = self.user(&mut s, Method::POST, "/v1/devices/bind", Some(json!({"challenge_id":challenge["challenge_id"], "signature":hex::encode(signing.sign(message.as_bytes()).to_bytes()), "name":string("name")?, "platform":"windows", "can_host":false, "can_files":false})), false).await?;
+                let bind = self.user(&mut s, Method::POST, "/v1/devices/bind", Some(json!({"challenge_id":challenge["challenge_id"], "signature":hex::encode(signing.sign(message.as_bytes()).to_bytes()), "name":string("name")?, "platform":std::env::consts::OS, "can_host":false, "can_files":false})), false).await?;
                 let credential = DeviceCredential {
                     id: bind["id"]
                         .as_str()
@@ -2130,6 +2141,41 @@ mod tests {
         source.close().await;
         target.close().await;
     }
+    #[tokio::test]
+    async fn plain_json_rejection_retains_linux_compatibility_reason() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let reason = "Failed to deserialize: platform: unknown variant `linux`, expected windows/android/ios";
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0u8; 4096];
+            let received = stream.read(&mut request).await.unwrap();
+            assert!(received > 0);
+            let response = format!(
+                "HTTP/1.1 422 Unprocessable Entity\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{}",
+                reason.len(),
+                reason
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+        let client = NativeClient::new(Arc::new(MemoryStore::default())).unwrap();
+        client.set_server(&base).await.unwrap();
+        let state = client.state.lock().await;
+        let result = client
+            .raw(
+                &state,
+                Method::POST,
+                "/v1/devices/bind",
+                Some(json!({"platform":"linux"})),
+                None,
+                None,
+            )
+            .await;
+        assert!(matches!(result, Err(Error::Http(422, ref message)) if message == reason));
+        server.await.unwrap();
+    }
+
     #[tokio::test]
     async fn slow_http_does_not_hold_local_sign_out() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};

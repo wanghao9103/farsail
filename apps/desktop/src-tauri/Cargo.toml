@@ -24,6 +24,7 @@ tauri = { version = "2.11.5", features = [] }
 tokio = { version = "1", features = ["time", "sync", "rt"] }
 serde = { version = "1", features = ["derive"] }
 fs2 = "0.4"
+tauri-plugin-updater = "=2.13.1"
 
 [build-dependencies]
 tauri-build = { version = "2.5.5", features = [] }

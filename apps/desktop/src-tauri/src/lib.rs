@@ -1,9 +1,15 @@
-use farsail_client::{NativeClient, WindowsStore};
+#[cfg(target_os = "linux")]
+use farsail_client::LinuxStore as PlatformStore;
+use farsail_client::NativeClient;
+#[cfg(windows)]
+use farsail_client::WindowsStore as PlatformStore;
 use farsail_core::RemotePermission;
 use farsail_transport::Config as TransportConfig;
 use std::sync::Arc;
 use tauri::Manager;
 mod computer;
+mod updater;
+use updater::{update_check, update_download, update_install, update_preferences, update_status};
 mod input_recovery;
 mod remote;
 mod viewer;
@@ -26,6 +32,8 @@ async fn state(
     viewer::main_only(&window)?;
     let mut state = client.public_state().await;
     state["computerName"] = serde_json::json!(computer::name());
+    state["platform"] = serde_json::json!(std::env::consts::OS);
+    state["canShareLocalScreen"] = serde_json::json!(cfg!(windows));
     state["administratorMode"] = serde_json::json!(farsail_windows::administrator_mode());
     Ok(state)
 }
@@ -312,9 +320,18 @@ fn ipc_media_smoke() -> Result<tauri::ipc::Response, String> {
     ))
 }
 pub fn run() {
+    #[cfg(windows)]
     farsail_windows::ensure_dpi_awareness().expect("FarSail requires per-monitor DPI awareness");
     let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .on_page_load(|webview, _| {
+            #[cfg(all(debug_assertions, target_os = "linux"))]
+            if std::env::var_os("FARSAIL_UBUNTU_SMOKE").is_some() {
+                if webview.label() == "main" && !IPC_SMOKE_STARTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    let _ = webview.eval(include_str!("ubuntu_smoke.js"));
+                }
+                return;
+            }
             #[cfg(debug_assertions)]
             if let Ok(mode) = std::env::var("FARSAIL_SHARE_SMOKE") {
                 if webview.label() == "main" && !IPC_SMOKE_STARTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
@@ -355,7 +372,9 @@ pub fn run() {
             let instance=std::fs::OpenOptions::new().create(true).truncate(false).read(true).write(true).open(dir.join("instance.lock"))?;
             instance.try_lock_exclusive().map_err(|_|std::io::Error::new(std::io::ErrorKind::AlreadyExists,"FarSail is already running for this profile"))?;
             app.manage(instance);
-            let store = Arc::new(WindowsStore::new(dir)?);
+            let updater=updater::Runtime::new(dir.join("updates.json"),app.package_info().version.to_string()).map_err(std::io::Error::other)?;
+            app.manage(updater.clone());
+            let store = Arc::new(PlatformStore::new(dir)?);
             let client = Arc::new(NativeClient::new(store)?);
             let remote=RemoteRuntime::new(client.clone());
             let heartbeat = client.clone();
@@ -383,6 +402,7 @@ pub fn run() {
             });
             app.manage(client);
             app.manage(remote);
+            #[cfg(not(debug_assertions))] updater.start(app.handle().clone());
             #[cfg(debug_assertions)]
             viewer::smoke_setup(app.handle())?;
             Ok(())
@@ -448,6 +468,11 @@ pub fn run() {
     });
     #[cfg(debug_assertions)]
     let builder = builder.invoke_handler(tauri::generate_handler![
+        update_status,
+        update_preferences,
+        update_check,
+        update_download,
+        update_install,
         viewer_window_action,
         viewer_open,
         viewer_window_active,
@@ -475,6 +500,11 @@ pub fn run() {
     ]);
     #[cfg(not(debug_assertions))]
     let builder = builder.invoke_handler(tauri::generate_handler![
+        update_status,
+        update_preferences,
+        update_check,
+        update_download,
+        update_install,
         viewer_window_action,
         viewer_open,
         viewer_window_active,

@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { Device, Me, Pending, Remote, User } from "@farsail/ui";
+import { useClientUpdates, UpdateNotice, UpdateSettings } from "./updates";
 import "./style.css";
 import "./desktop-theme.css";
 import { RefreshFailureGate } from "./feedback-policy";
@@ -44,6 +45,8 @@ type Tab =
   | "admin"
   | "settings";
 type PublicState = {
+  platform?: string;
+  canShareLocalScreen?: boolean;
   computerName?: string | null;
   administratorMode?: boolean | null;
   server: string;
@@ -60,11 +63,21 @@ type PublicState = {
     restore: "idle" | "pending" | "ready" | "failed";
   };
 };
+const canShareLocalScreen = (state: PublicState) =>
+  state.canShareLocalScreen ?? state.platform !== "linux";
+function LocalSharingUnsupported() {
+  return (
+    <p className="hint" role="status">
+      Ubuntu 客户端可连接 Windows 电脑，暂不支持共享本机屏幕或远程值守。
+    </p>
+  );
+}
 const sharingChoice = (state: PublicState) =>
   state.sharing || !!state.sharePreferences?.sharing;
 const watchChoice = (state: PublicState) =>
   state.remoteWatch || !!state.sharePreferences?.watch;
 function SharingRecovery({ state }: { state: PublicState }) {
+  if (!canShareLocalScreen(state)) return null;
   if (state.sharing || !state.sharePreferences?.sharing) return null;
   return (
     <p className="hint" role="status">
@@ -85,6 +98,7 @@ function SettingsSharingControls({
   act: Action;
   prepareTransport: () => Promise<void>;
 }) {
+  if (!canShareLocalScreen(state)) return <LocalSharingUnsupported />;
   return (
     <div className="preference-rows">
       <label className="preference-row">
@@ -166,8 +180,16 @@ const readableError = (raw: string) => {
   if (/HTTP 404\b/.test(raw)) return "未找到该设备或记录，请刷新后重试。";
   if (/HTTP 409\b/.test(raw)) return "状态已发生变化，请刷新后重试。";
   if (/HTTP 429\b/.test(raw)) return "操作过于频繁，请稍后再试。";
+  if (/HTTP 422\b/.test(raw) && /unknown variant [`"']linux/.test(raw))
+    return "服务器版本尚不支持 Ubuntu。请先升级协调服务，再添加这台电脑。";
+  if (/HTTP 422\b/.test(raw))
+    return "服务器无法识别提交的信息，请检查客户端与服务器版本是否兼容。";
   if (/no interactive display/i.test(raw))
     return "无法获取本机屏幕，请先登录 Windows 桌面再开启共享。";
+  if (/local screen sharing is only supported on Windows/i.test(raw))
+    return "Ubuntu 暂不支持共享本机屏幕，可连接已开启共享的 Windows 电脑。";
+  if (/Ubuntu Secret Service unavailable/i.test(raw))
+    return "无法访问 Ubuntu 密钥环，请在桌面会话中解锁登录密钥环后重试。";
   if (/relay URL|relay did not become reachable/i.test(raw))
     return "无法连接中继服务器，请在高级连接设置中检查 HTTPS 地址和网络。";
   if (/invalid UDP bind/i.test(raw))
@@ -252,6 +274,7 @@ function useViewerNoticePresent(lease: ViewerNoticeLease | null) {
 }
 
 function App() {
+  const updates = useClientUpdates(native);
   const [publicState, setPublicState] = useState<PublicState>({
     server: "http://127.0.0.1:8787",
     signedIn: false,
@@ -293,7 +316,7 @@ function App() {
     null,
   );
   const [authMode, setAuthMode] = useState<
-    "login" | "register" | "verify" | "resend" | "recover" | "reset"
+    "login" | "register" | "verify" | "recover" | "reset"
   >("login");
   const refreshVersion = useRef(0);
   const refreshFailures = useRef(new RefreshFailureGate());
@@ -573,8 +596,20 @@ function App() {
         <div
           className="sidebar-foot"
           role="status"
-          aria-label={publicState.sharing ? "本机屏幕共享中" : "本机未共享"}
-          title={publicState.sharing ? "本机屏幕共享中" : "本机未共享"}
+          aria-label={
+            !canShareLocalScreen(publicState)
+              ? "Ubuntu 控制端"
+              : publicState.sharing
+                ? "本机屏幕共享中"
+                : "本机未共享"
+          }
+          title={
+            !canShareLocalScreen(publicState)
+              ? "Ubuntu 控制端"
+              : publicState.sharing
+                ? "本机屏幕共享中"
+                : "本机未共享"
+          }
         >
           {me && (
             <div className="sidebar-account">
@@ -590,7 +625,13 @@ function App() {
               className={`status-dot ${publicState.sharing ? "is-sharing" : ""}`}
               aria-hidden="true"
             />
-            <span>{publicState.sharing ? "本机屏幕共享中" : "本机未共享"}</span>
+            <span>
+              {!canShareLocalScreen(publicState)
+                ? "Ubuntu 控制端"
+                : publicState.sharing
+                  ? "本机屏幕共享中"
+                  : "本机未共享"}
+            </span>
             <small>远程桌面预览版</small>
           </div>
         </div>
@@ -629,6 +670,7 @@ function App() {
             )}
           </div>
         </header>
+        <UpdateNotice updates={updates} onOpen={() => setTab("settings")} />
         <FailureDialog
           error={problem}
           message={readableError(problem)}
@@ -665,6 +707,7 @@ function App() {
             />
           ) : tab === "settings" ? (
             <section className="stack">
+              <UpdateSettings updates={updates} />
               <div className="card">
                 <div className="section-heading">
                   <div>
@@ -723,20 +766,22 @@ function App() {
                   act={act}
                   prepareTransport={prepareTransport}
                 />
-                <div className="input-permission-info">
-                  <strong>Windows 运行权限</strong>
-                  <p className="muted">
-                    {publicState.administratorMode === true
-                      ? "本机 FarSail 已以管理员权限运行。"
-                      : publicState.administratorMode === false
-                        ? "本机 FarSail 当前使用普通权限。"
-                        : "暂时无法读取本机运行权限。"}
-                  </p>
-                  <p className="hint">
-                    要操作以管理员权限运行的窗口，请在被控电脑手动以管理员身份启动
-                    FarSail；控制端不需要更改权限。系统授权确认与登录画面仍需在被控电脑上处理。
-                  </p>
-                </div>
+                {canShareLocalScreen(publicState) && (
+                  <div className="input-permission-info">
+                    <strong>Windows 运行权限</strong>
+                    <p className="muted">
+                      {publicState.administratorMode === true
+                        ? "本机 FarSail 已以管理员权限运行。"
+                        : publicState.administratorMode === false
+                          ? "本机 FarSail 当前使用普通权限。"
+                          : "暂时无法读取本机运行权限。"}
+                    </p>
+                    <p className="hint">
+                      要操作以管理员权限运行的窗口，请在被控电脑手动以管理员身份启动
+                      FarSail；控制端不需要更改权限。系统授权确认与登录画面仍需在被控电脑上处理。
+                    </p>
+                  </div>
+                )}
                 <SharingRecovery state={publicState} />
                 {!publicState.deviceId && (
                   <p className="hint">
@@ -885,10 +930,8 @@ function Auth({
   onLogin,
   onSettings,
 }: {
-  mode: "login" | "register" | "verify" | "resend" | "recover" | "reset";
-  setMode: (
-    m: "login" | "register" | "verify" | "resend" | "recover" | "reset",
-  ) => void;
+  mode: "login" | "register" | "verify" | "recover" | "reset";
+  setMode: (m: "login" | "register" | "verify" | "recover" | "reset") => void;
   busy: boolean;
   act: Action;
   onLogin: (x: Record<string, unknown>) => Promise<void>;
@@ -896,6 +939,7 @@ function Auth({
 }) {
   const loginErrorDialog = useRef<HTMLDialogElement>(null);
   const [loginError, setLoginError] = useState("");
+  const [loginErrorTitle, setLoginErrorTitle] = useState("登录未成功");
   const [loginTechnicalError, setLoginTechnicalError] = useState("");
   const [email, setEmail] = useState(""),
     [password, setPassword] = useState(""),
@@ -906,9 +950,17 @@ function Auth({
     login: "登录 FarSail",
     register: "创建账号",
     verify: "验证邮箱",
-    resend: "重发验证邮件",
     recover: "找回密码",
     reset: "设置新密码",
+  };
+  const resendVerification = async () => {
+    await act(async () => {
+      if (!email || !password)
+        throw new Error(
+          "重发所需的账号信息已失效，请在登录页填写邮箱和密码，再进入验证邮箱页重试。",
+        );
+      await api("resend", { email, password });
+    }, "重发请求已提交，请检查收件箱和垃圾邮件。");
   };
   const submit = async () => {
     if (mode === "login")
@@ -917,12 +969,32 @@ function Auth({
           await onLogin({ email, password });
         } catch (e) {
           const raw = errorText(e);
-          const message = /HTTP 401\b/.test(raw)
-            ? "无法登录：邮箱或密码不正确，或账号尚未验证、已被停用。新注册账号请先完成邮箱验证。"
-            : /HTTP 429\b/.test(raw)
-              ? "登录尝试过于频繁，请稍后再试。"
-              : "暂时未能登录。请稍后再试，或查看技术详情。";
-          setLoginError(message);
+          const reasons: Record<string, [string, string]> = {
+            account_not_found: [
+              "账号不存在",
+              "这个邮箱尚未注册。请检查邮箱是否输入正确，或创建账号。",
+            ],
+            invalid_password: [
+              "密码错误",
+              "密码不正确，请重新输入。忘记密码时可返回登录页选择‘找回密码’。",
+            ],
+            email_not_verified: ["邮箱尚未验证", "请先完成邮箱验证，再登录。"],
+            account_disabled: [
+              "账号已停用",
+              "这个账号已被停用，请联系管理员。",
+            ],
+          };
+          const code = /^HTTP 401: (\w+)$/.exec(raw)?.[1];
+          const reason = code ? reasons[code] : undefined;
+          setLoginErrorTitle(reason?.[0] ?? "登录未成功");
+          setLoginError(
+            reason?.[1] ??
+              (/HTTP 401\b/.test(raw)
+                ? "邮箱或密码不正确。请核对后重新输入。旧版服务器未提供具体登录失败原因。"
+                : /HTTP 429\b/.test(raw)
+                  ? "登录尝试过于频繁，请稍后再试。"
+                  : "暂时未能登录。请稍后再试，或查看技术详情。"),
+          );
           setLoginTechnicalError(raw);
           loginErrorDialog.current?.showModal();
           return HANDLED_FAILURE;
@@ -940,17 +1012,14 @@ function Auth({
       }, "账号已创建，请输入邮件中的验证码完成注册");
     if (mode === "verify")
       return act(async () => {
-        await api("verify", { token: token.trim() });
+        await api("verify", {
+          ...(email.trim() ? { email } : {}),
+          token: token.trim(),
+        });
         setToken("");
         setPassword("");
         setMode("login");
       }, "邮箱验证成功，请登录");
-    if (mode === "resend")
-      return act(async () => {
-        await api("resend", { email, password });
-        setToken("");
-        setMode("verify");
-      }, "验证邮件已重新发送");
     if (mode === "recover")
       return act(async () => {
         await api("recover_request", { email });
@@ -985,7 +1054,7 @@ function Auth({
         aria-labelledby="login-error-title"
         aria-describedby="login-error-description"
       >
-        <h2 id="login-error-title">登录未成功</h2>
+        <h2 id="login-error-title">{loginErrorTitle}</h2>
         <p id="login-error-description">{loginError}</p>
         <div className="row-actions">
           <button
@@ -1044,16 +1113,14 @@ function Auth({
         <h2>{titles[mode]}</h2>
         <p className="muted">
           {mode === "verify"
-            ? `最后一步：输入${email ? `发送至 ${email} 的邮件` : "验证邮件"}中的完整验证码。`
+            ? `请输入${email ? `发送至 ${email} 的` : "邮件中的"}邮箱验证码。未收到时，请检查垃圾邮件或重新发送。`
             : mode === "reset"
               ? "输入重置邮件中的完整重置码，再设置至少 12 个字符的新密码。"
               : mode === "recover"
                 ? "填写注册邮箱，我们会向符合条件的账号发送密码重置邮件。"
                 : mode === "register"
                   ? "使用邮箱注册，密码至少需要 12 个字符。"
-                  : mode === "resend"
-                    ? "填写注册邮箱和密码，重新获取验证邮件。"
-                    : "登录后即可添加本机、连接电脑或开启共享。"}
+                  : "登录后即可添加本机、连接电脑或开启共享。"}
         </p>
         <form
           onSubmit={(e) => {
@@ -1062,7 +1129,7 @@ function Auth({
           }}
           className="form"
         >
-          {["login", "register", "resend", "recover"].includes(mode) && (
+          {["login", "register", "recover"].includes(mode) && (
             <label>
               邮箱地址
               <input
@@ -1075,7 +1142,7 @@ function Auth({
               />
             </label>
           )}
-          {["login", "register", "resend"].includes(mode) && (
+          {["login", "register"].includes(mode) && (
             <label>
               密码
               <input
@@ -1097,7 +1164,11 @@ function Auth({
                 required
                 value={token}
                 onChange={(e) => setToken(e.target.value)}
-                autoComplete="off"
+                autoComplete={mode === "verify" ? "one-time-code" : "off"}
+                inputMode={mode === "verify" ? "numeric" : "text"}
+                placeholder={
+                  mode === "verify" ? "请输入 6 位数字验证码" : undefined
+                }
               />
             </label>
           )}
@@ -1133,20 +1204,22 @@ function Auth({
                   ? "完成验证"
                   : mode === "login"
                     ? "登录"
-                    : mode === "resend"
-                      ? "重新发送验证邮件"
-                      : mode === "recover"
-                        ? "发送密码重置邮件"
-                        : "保存新密码并返回登录"}
+                    : mode === "recover"
+                      ? "发送密码重置邮件"
+                      : "保存新密码并返回登录"}
           </button>
         </form>
         <div className="auth-links">
+          {mode === "verify" && (
+            <button disabled={busy} onClick={() => void resendVerification()}>
+              没收到验证码？重新发送
+            </button>
+          )}
           {(
             {
               login: ["register", "recover", "verify"],
               register: ["login"],
-              verify: ["resend", "login"],
-              resend: ["verify", "login"],
+              verify: ["login"],
               recover: ["reset", "login"],
               reset: ["recover", "login"],
             }[mode] as (typeof mode)[]
@@ -1154,11 +1227,9 @@ function Auth({
             <button key={x} disabled={busy} onClick={() => setMode(x)}>
               {x === "reset"
                 ? "已有重置码"
-                : x === "resend"
-                  ? "没收到验证邮件"
-                  : x === "recover" && mode === "reset"
-                    ? "重新发送重置邮件"
-                    : titles[x]}
+                : x === "recover" && mode === "reset"
+                  ? "重新发送重置邮件"
+                  : titles[x]}
             </button>
           ))}
         </div>
@@ -1208,7 +1279,9 @@ function Overview({
             <div className="eyebrow">DEVICE IDENTITY</div>
             <h2>添加这台电脑</h2>
             <p>
-              添加后可连接你的其他电脑。如果希望他人连接本机，还需要开启本机共享。
+              {canShareLocalScreen(state)
+                ? "添加后可连接你的其他电脑。如果希望他人连接本机，还需要开启本机共享。"
+                : "添加后可连接已开启共享的 Windows 电脑。Ubuntu 暂不支持共享本机屏幕。"}
             </p>
           </div>
           <form
@@ -1258,16 +1331,26 @@ function Overview({
           </div>
           <div className="stack">
             <span className={state.sharing ? "tag ready" : "tag"}>
-              {state.sharing ? "本机共享已开启" : "本机共享未开启"}
+              {!canShareLocalScreen(state)
+                ? "Ubuntu 控制端"
+                : state.sharing
+                  ? "本机共享已开启"
+                  : "本机共享未开启"}
             </span>
             <button
               className="secondary"
               onClick={() => onNavigate("settings")}
             >
-              {state.sharing ? "管理本机共享" : "设置本机共享"}
+              {!canShareLocalScreen(state)
+                ? "连接与设置"
+                : state.sharing
+                  ? "管理本机共享"
+                  : "设置本机共享"}
             </button>
             <small className="muted">
-              默认每次连接需批准；本机可单独开启同账号远程值守。
+              {canShareLocalScreen(state)
+                ? "默认每次连接需批准；本机可单独开启同账号远程值守。"
+                : "可连接 Windows 电脑；暂不支持共享本机屏幕。"}
             </small>
           </div>
         </div>
@@ -1618,7 +1701,9 @@ function Devices({
                 </p>
               </div>
             </div>
-            {isLocal ? (
+            {isLocal && !canShareLocalScreen(state) ? (
+              <LocalSharingUnsupported />
+            ) : isLocal ? (
               <>
                 <div className="sharing-panel">
                   <div>

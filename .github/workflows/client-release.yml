@@ -1,0 +1,181 @@
+name: Client installers and signed updates
+on:
+  push:
+    tags: ["client-v*"]
+  pull_request:
+    paths:
+      [
+        "apps/desktop/**",
+        "crates/**",
+        "packages/ui/**",
+        "Cargo.*",
+        "package*.json",
+        "scripts/*",
+        ".github/workflows/client-release.yml",
+      ]
+permissions:
+  contents: read
+concurrency:
+  group: client-release-${{ github.event_name == 'push' && 'publication' || github.ref }}
+  cancel-in-progress: false
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: linux
+          - os: windows-2022
+            platform: windows
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.93.0
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: client-release-${{ matrix.platform }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Validate immutable release version
+        if: github.event_name == 'push'
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          node --input-type=module -e 'import fs from "node:fs";const c=JSON.parse(fs.readFileSync("apps/desktop/src-tauri/tauri.conf.json"));if(!/^\d+\.\d+\.\d+$/.test(c.version)||process.env.RELEASE_TAG!==`client-v${c.version}`)throw Error("Tag must match client version")'
+      - name: Require signing key for publication
+        if: github.event_name == 'push'
+        shell: bash
+        env:
+          SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: test -n "$SIGNING_KEY"
+      - name: Ubuntu native dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev patchelf gnome-keyring xvfb dbus-x11 fonts-noto-cjk pkexec
+      - name: Ubuntu native IPC, credential storage and Rust checks
+        if: runner.os == 'Linux'
+        run: bash scripts/test-desktop-linux.sh
+      - name: Ubuntu Debian package
+        if: runner.os == 'Linux'
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ github.event_name == 'push' && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        run: |
+          if [[ -n "$TAURI_SIGNING_PRIVATE_KEY" ]]; then
+            npm run tauri -w @farsail/desktop -- build --bundles deb --config src-tauri/tauri.linux.conf.json -- --locked
+          else
+            npm run tauri -w @farsail/desktop -- build --bundles deb --config src-tauri/tauri.linux.conf.json --config '{"bundle":{"createUpdaterArtifacts":false}}' -- --locked
+          fi
+          mkdir -p .local/client-artifacts
+          version=$(node -p 'require("./apps/desktop/src-tauri/tauri.conf.json").version')
+          package="target/release/bundle/deb/FarSail_${version}_amd64.deb"
+          test "$(dpkg-deb -f "$package" Version)" = "$version"
+          test "$(dpkg-deb -f "$package" Architecture)" = amd64
+          dpkg-deb -x "$package" .local/deb-extracted
+          ldd .local/deb-extracted/usr/bin/farsail-desktop | tee .local/deb-dependencies.txt
+          ! rg 'not found' .local/deb-dependencies.txt
+          cp "$package" .local/client-artifacts/
+          if [[ -n "$TAURI_SIGNING_PRIVATE_KEY" ]]; then cp "$package.sig" .local/client-artifacts/; fi
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';import crypto from 'node:crypto';
+          const version=JSON.parse(fs.readFileSync('apps/desktop/src-tauri/tauri.conf.json')).version;
+          const installer=`FarSail_${version}_amd64.deb`;const bytes=fs.readFileSync(`.local/client-artifacts/${installer}`);
+          fs.writeFileSync('.local/client-artifacts/release-metadata.json',JSON.stringify({version,source_commit:process.env.GITHUB_SHA,installer,installer_sha256:crypto.createHash('sha256').update(bytes).digest('hex'),installer_bytes:bytes.length,target:'x86_64-unknown-linux-gnu',build_os:'Ubuntu 24.04',native_debug_ipc:'passed',package_dependencies:'passed'},null,2));
+          JS
+      - name: Windows release and NSIS
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ github.event_name == 'push' && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        run: ./scripts/package-windows.ps1
+      - name: Windows install, native IPC, restart, reinstall and uninstall
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/test-windows-package.ps1
+      - name: Windows targeted Rust regressions
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cargo test --locked -p farsail-client -p farsail-desktop --lib
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo clippy --locked -p farsail-desktop --all-targets -- -D warnings
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Signature and manifest failure regressions
+        run: node --test scripts/test-client-update-manifest.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: client-${{ matrix.platform }}
+          path: ${{ matrix.platform == 'linux' && '.local/client-artifacts/*' || '.local/windows-package/artifacts/*' }}
+          if-no-files-found: error
+          retention-days: 14
+  publish:
+    if: github.event_name == 'push'
+    needs: package
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: actions/download-artifact@v4
+        with:
+          name: client-linux
+          path: .local/publish-input/linux
+      - uses: actions/download-artifact@v4
+        with:
+          name: client-windows
+          path: .local/publish-input/windows
+      - name: Verify both platform signatures, version and tested artifact identity
+        run: node scripts/client-update-manifest.mjs .local/publish-input .local/publication "$GITHUB_SHA"
+      - name: Publish versioned installers, then update channel
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs=require('fs');
+            const directory='.local/publication',manifest=JSON.parse(fs.readFileSync(`${directory}/latest.json`));
+            const params={owner:context.repo.owner,repo:context.repo.repo};
+            const getRelease=async tag=>{try{return (await github.rest.repos.getReleaseByTag({...params,tag})).data;}catch(e){if(e.status===404)return null;throw e;}};
+            const tag=`client-v${manifest.version}`;
+            let release=await getRelease(tag);
+            const publicBytes=async url=>{for(let i=0;i<4;i++){const r=await fetch(url);if(r.ok)return Buffer.from(await r.arrayBuffer());if(i===3)throw Error(`Public download failed: ${r.status}`);await new Promise(resolve=>setTimeout(resolve,5000));}};
+            let channel=await getRelease('client-updates');
+            let old=channel?.assets.find(a=>a.name==='latest.json');
+            let previous;
+            if(old){
+              const response=await fetch(old.browser_download_url);if(!response.ok)throw Error('Cannot read existing update channel');
+              previous=Buffer.from(await response.arrayBuffer());const current=JSON.parse(previous);
+              if(!/^\d+\.\d+\.\d+$/.test(current.version))throw Error('Invalid existing channel version');
+              const a=current.version.split('.').map(Number),b=manifest.version.split('.').map(Number);
+              const delta=a.map((v,i)=>v-b[i]).find(v=>v!==0)||0;
+              if(delta>0)throw Error('Update channel must advance monotonically');
+              if(delta===0){if(previous.equals(fs.readFileSync(`${directory}/latest.json`))){core.notice('This exact update is already published');return;}throw Error('Cannot replace a published version with different artifacts');}
+            }
+            if(!release)release=(await github.rest.repos.createRelease({...params,tag_name:tag,target_commitish:context.sha,name:`FarSail ${manifest.version} — Ubuntu / Windows`,prerelease:true,body:`GitHub Actions built and verified both installers from ${context.sha}. Includes signed automatic updates. Existing clients without the updater must install this version once manually. Ubuntu may require system authorization.`})).data;
+            const upload=async(id,name,data)=>(await github.rest.repos.uploadReleaseAsset({...params,release_id:id,name,data,headers:{'content-type':'application/octet-stream','content-length':data.length}})).data;
+            for(const name of fs.readdirSync(directory)){
+              const bytes=fs.readFileSync(`${directory}/${name}`);
+              const asset=release.assets.find(a=>a.name===name)||await upload(release.id,name,bytes);
+              const published=await publicBytes(asset.browser_download_url);
+              if(!published.equals(bytes))throw Error(`Published bytes differ: ${name}`);
+            }
+            if(!channel)channel=(await github.rest.repos.createRelease({...params,tag_name:'client-updates',target_commitish:context.sha,name:'FarSail client update channel',prerelease:true,body:'The signed update feed points to immutable, verified Ubuntu and Windows installers. Download installers from the versioned client releases.'})).data;
+            // Stage first; a failed build/upload never replaces the previous channel.
+            const nextName=`latest-${context.runId}.json`,nextBytes=fs.readFileSync(`${directory}/latest.json`);
+            const next=channel.assets.find(a=>a.name===nextName)||await upload(channel.id,nextName,nextBytes);
+            if(!(await publicBytes(next.browser_download_url)).equals(nextBytes))throw Error('Staged manifest differs');
+            if(old)await github.rest.repos.deleteReleaseAsset({...params,asset_id:old.id});
+            try{await github.rest.repos.updateReleaseAsset({...params,asset_id:next.id,name:'latest.json'});}
+            catch(e){if(previous)await upload(channel.id,'latest.json',previous);throw e;}
+            const published=await publicBytes(`https://github.com/${context.repo.owner}/${context.repo.repo}/releases/download/client-updates/latest.json`);
+            if(!published.equals(nextBytes))throw Error('Published channel verification failed');
+            core.notice(`Published ${tag}: ${release.html_url}`);

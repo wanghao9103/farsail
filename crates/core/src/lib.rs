@@ -23,6 +23,7 @@ impl RemotePermission {
 #[serde(rename_all = "snake_case")]
 pub enum DevicePlatform {
     Windows,
+    Linux,
     Android,
     Ios,
 }
@@ -31,6 +32,7 @@ impl DevicePlatform {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Windows => "windows",
+            Self::Linux => "linux",
             Self::Android => "android",
             Self::Ios => "ios",
         }

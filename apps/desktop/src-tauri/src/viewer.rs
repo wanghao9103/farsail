@@ -265,6 +265,9 @@ pub async fn viewer_open(window: tauri::WebviewWindow, id: String) -> Result<Str
         return Err("invalid session".into());
     }
     let app = window.app_handle();
+    if app.state::<Arc<RemoteRuntime>>().is_updating() {
+        return Err("正在安装更新，请稍后重新连接。".into());
+    }
     let label = format!("viewer-{id}");
     if app.get_webview_window(&label).is_some() {
         let binding = app

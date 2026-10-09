@@ -43,6 +43,7 @@ async fn main() -> anyhow::Result<()> {
         "coordinator must bind loopback; terminate HTTPS in a reverse proxy"
     );
     let mode = env::var("FARSAIL_MAIL_MODE").unwrap_or_else(|_| "smtp-local".into());
+    tracing::info!(mail_mode = %mode, "mailer configuration selected");
     let mailer = match mode.as_str() {
         "memory" if env::var("FARSAIL_DEV_MEMORY_MAIL").as_deref() == Ok("1") => Mailer::memory(),
         "smtp-local" => {

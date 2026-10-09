@@ -47,8 +47,8 @@ email="smoke-$(openssl rand -hex 8)@example.test"; password=$(openssl rand -hex 
 api /v1/auth/register "$(jq -nc --arg email "$email" --arg password "$password" '{email:$email,password:$password}')" >/dev/null
 mail_id=$(curl --fail --silent http://127.0.0.1:58026/api/v1/messages | jq -r --arg email "$email" '.messages[]|select(.To[0].Address==$email)|.ID' | head -1)
 [[ -n $mail_id ]]
-verify=$(curl --fail --silent "http://127.0.0.1:58026/api/v1/message/$mail_id" | jq -r '.Text' | sed -n 's/^FarSail one-time token: //p' | tr -d '\r')
-api /v1/auth/verify "$(jq -nc --arg token "$verify" '{token:$token}')" >/dev/null
+verify=$(curl --fail --silent "http://127.0.0.1:58026/api/v1/message/$mail_id" | jq -r '.Text' | sed -n 's/^验证码：//p' | tr -d '\r')
+api /v1/auth/verify "$(jq -nc --arg email "$email" --arg token "$verify" '{email:$email,token:$token}')" >/dev/null
 auth=$(api /v1/auth/login "$(jq -nc --arg email "$email" --arg password "$password" '{email:$email,password:$password}')" | jq -r .access_token)
 keys=(); ids=()
 for n in 1 2; do

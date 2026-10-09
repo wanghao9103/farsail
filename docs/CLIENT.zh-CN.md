@@ -4,6 +4,10 @@
 
 # FarSail Windows 客户端（WI-002/003/004）
 
+自动构建与客户端更新的设置、签名及发布流程见[客户端自动更新](CLIENT_UPDATES.zh-CN.md)。
+
+Ubuntu 控制端适配、源码运行、Debian 打包与 Secret Service 边界见 [Ubuntu 桌面客户端](UBUNTU_INSTALL.zh-CN.md)。Linux 本机屏幕共享暂不可用。
+
 0.1.10 的本机共享与远程值守偏好见 [SHARE-020](verification/WI-SHARE-020.zh-CN.md)。DPAPI 只保存这两项已成功开启的选择及服务/账号/设备/登录会话范围，不保存高级连接参数。原生启动仅尝试恢复一次，先重验登录、心跳、传输和桌面，再发布共享能力；界面分别显示记住的意图和有效活动。手动关闭、退出登录、身份变化会取消迟到恢复；普通关窗或故障停止活动而保留有效偏好。首次默认关闭，仍需 Windows 已登录且应用运行，不提供服务、自启动或安全桌面支持。
 
 Windows 客户端位于 `apps/desktop`，React/Vite 页面调用 Tauri 2 命令，账号、设备和授权 HTTP 请求由 `crates/client` 发出。服务协议见 [API.md](API.zh-CN.md)，传输见 [TRANSPORT.md](TRANSPORT.zh-CN.md)，画面与输入细节见 [REMOTE.md](REMOTE.zh-CN.md)。Windows 远程查看与鼠标键盘基线已接入；文件内容仍属 WI-005。

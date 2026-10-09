@@ -75,6 +75,10 @@ FARSAIL_BIND=127.0.0.1:8787
 FARSAIL_MAIL_MODE=smtp-local
 FARSAIL_SMTP_HOST=127.0.0.1
 FARSAIL_SMTP_PORT=1025
+# Required for smtp-tls; enter the sender account and its SMTP authorization code.
+FARSAIL_SMTP_TLS=implicit
+FARSAIL_SMTP_USER=
+FARSAIL_SMTP_PASSWORD=
 FARSAIL_MAIL_FROM=FarSail <noreply@localhost>
 FARSAIL_RELAY_ACCESS_TOKEN=$access
 FARSAIL_RELAY_URLS=https://$ip:$relay/

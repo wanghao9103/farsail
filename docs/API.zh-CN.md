@@ -17,7 +17,7 @@
 | 方法与路径                           | 请求体 / 结果                                                                    | 凭据                             |
 | ------------------------------------ | -------------------------------------------------------------------------------- | -------------------------------- |
 | `POST /v1/auth/register`             | `{email,password,invite_code?}` → `{id}`；密码为 12–1024 字节                    | 无；`invite_only` 模式需要邀请码 |
-| `POST /v1/auth/verify`               | `{token}`；消耗邮箱验证令牌                                                      | 无                               |
+| `POST /v1/auth/verify`               | `{email,token}`；消耗 6 位邮箱验证码                                                      | 无                               |
 | `POST /v1/auth/verify/resend`        | `{email,password}`；为未验证账户重新发送验证邮件                                 | 无                               |
 | `POST /v1/auth/login`                | `{email,password}` → `{access_token,refresh_token,session_id,access_expires_in}` | 无                               |
 | `POST /v1/auth/refresh`              | `{refresh_token}` → 新令牌对；重复使用会撤销会话                                 | 刷新令牌                         |
@@ -29,13 +29,13 @@
 | `GET /v1/auth/sessions`              | 当前账户的登录会话                                                               | 用户                             |
 | `POST /v1/auth/sessions/{id}/revoke` | 撤销所属登录及其授权                                                             | 用户                             |
 
-邮箱统一转换为小写。邮箱验证有效期为 24 小时，密码找回为 30 分钟，访问令牌为 15 分钟，刷新令牌为 30 天。Argon2id 密码处理最多使用四个阻塞工作线程。注册、登录、找回、挑战和邀请流程使用 PostgreSQL 支持的限流；TLS 代理还应按 IP 限流。如果注册后邮件发送失败，可使用账户密码调用 `verify/resend` 恢复验证流程。
+邮箱统一转换为小写。邮箱验证采用绑定规范化邮箱的 6 位数字验证码，仅存储 SHA-256 摘要，有效期为 10 分钟且仅可使用一次。重发使旧验证码失效；同一邮箱每 15 分钟最多尝试 5 次。已发出的 43 字符旧验证令牌在原有效期内仍可不带邮箱提交。密码找回为 30 分钟，访问令牌为 15 分钟，刷新令牌为 30 天。Argon2id 密码处理最多使用四个阻塞工作线程。注册、登录、找回、挑战和邀请流程使用 PostgreSQL 支持的限流；TLS 代理还应按 IP 限流。如果注册后邮件发送失败，可使用账户密码调用 `verify/resend` 恢复验证流程。
 
 <a id="device"></a>
 
 ## 设备
 
-客户端生成长期 Ed25519 密钥对，并将私钥保存在平台安全存储中。32 字节公钥以小写十六进制发送。向 `POST /v1/devices/challenge` 发送 `{public_key}`，返回 `{challenge_id,nonce,message,expires_in}`。对返回的 UTF-8 `message` 原样签名，再向 `POST /v1/devices/bind` 发送 `{challenge_id,signature,name,platform,can_host,can_files}`。签名为 64 字节小写十六进制；`platform` 为 `windows`、`android` 或 `ios`。响应为 `{id,device_token}`。挑战只能使用一次，五分钟后过期。同一所有者重新绑定会轮换设备令牌；其他所有者不能接管同一公钥。管理员禁用的设备必须经管理员明确启用后才能重新绑定。
+客户端生成长期 Ed25519 密钥对，并将私钥保存在平台安全存储中。32 字节公钥以小写十六进制发送。向 `POST /v1/devices/challenge` 发送 `{public_key}`，返回 `{challenge_id,nonce,message,expires_in}`。对返回的 UTF-8 `message` 原样签名，再向 `POST /v1/devices/bind` 发送 `{challenge_id,signature,name,platform,can_host,can_files}`。签名为 64 字节小写十六进制；`platform` 为 `windows`、`linux`、`android` 或 `ios`。响应为 `{id,device_token}`。挑战只能使用一次，五分钟后过期。同一所有者重新绑定会轮换设备令牌；其他所有者不能接管同一公钥。管理员禁用的设备必须经管理员明确启用后才能重新绑定。
 
 | 方法与路径                                              | 请求体 / 结果                                                                                                        | 凭据 |
 | ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- | ---- |
@@ -49,6 +49,8 @@
 过时的代次收到 409，不能更改较新连接的租约。设备凭据关联到签发它的登录会话；退出登录、撤销登录、修改/找回密码及禁用账户都会使其失效并清除在线状态。之后再次登录时，需签署新的绑定挑战以获取新令牌。解绑会保留非活动的历史行供审计引用，并释放其公钥，以便通过新的明确证明重新绑定；管理员禁用保留绑定，必须经管理员启用后才能重新证明。`device_token` 不能调用账户或列表接口。
 
 Windows 桌面绑定初始使用 `can_host=false` 和 `can_files=false`。原生客户端探测 DXGI，并要求本地共享开关开启后才能设置 `can_host=true`。协调服务要求存在匹配且有效的心跳代次。桌面端在未开启共享的情况下启动时，会清除异常退出遗留的过时被控声明。在 WI-005 之前，`can_files` 始终为 false。
+
+Linux 设备绑定时两项能力均为 false，仅作为控制端。协调服务拒绝 Linux 绑定时声明被控或文件能力，允许使用 `can_host=false` 清理能力，只有 Windows 设备可以开启 `can_host=true`。
 
 <a id="invitation-and-remote-authorization"></a>
 
@@ -116,3 +118,5 @@ Windows 桌面绑定初始使用 `can_host=false` 和 `can_files=false`。原生
 `POST /internal/relay-access` 只在设置至少 32 字节的 `FARSAIL_RELAY_ACCESS_TOKEN` 时挂载，必须使用匹配的 Bearer 令牌和 64 位十六进制 `X-Iroh-NodeId`。该公钥由 iroh-relay 连接握手证明；调用者仅应为可信本机 relay，客户端不能自行调用来代替设备证明。仅 `200 true` 表示注册设备仍绑定且启用、用户已验证且启用、绑定登录未撤销且刷新令牌未过期。未知/禁用设备返回 `200 false`；Bearer 令牌缺失或错误返回 401，公钥无效返回 400，数据库故障返回 500 或在 2 秒后超时。反向代理公网路径屏蔽整个 `/internal`。
 
 这是连接准入，不等同于远控授权：已连接的 relay 不会持续回查；应用授权、30 秒租约与撤销规则不变。所有公网 `/v1/admin` 接口继续使用原有管理员鉴权，不因反向代理而开放匿名管理。
+
+登录失败返回 HTTP 401，`error` 分别为 `account_not_found`、`invalid_password`、`email_not_verified`、`account_disabled`。其它认证失败仍为 `unauthorized`。

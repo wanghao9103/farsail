@@ -4,6 +4,10 @@
 
 # FarSail Windows client (WI-002/003/004)
 
+For build automation, update preferences, signing and publication, see [Client automatic updates](CLIENT_UPDATES.md).
+
+Ubuntu controller support, source commands, Debian packaging and the Secret Service boundary are documented in [Ubuntu desktop client](UBUNTU_INSTALL.md). Local Linux screen sharing remains unavailable.
+
 For the local sharing and remote standby preferences in 0.1.10, see [SHARE-020](verification/WI-SHARE-020.md). DPAPI saves only these two choices after they have been successfully enabled, together with their service/account/device/login-session scope; it does not save advanced connection parameters. Native startup attempts restoration only once, revalidating the login, heartbeat, transport and desktop before publishing sharing capability. The interface separately shows the remembered intent and effective activity. Manual disablement, logout or an identity change cancels delayed restoration; ordinary window closure or a fault stops activity while retaining valid preferences. Both are off initially. Windows must still be logged in and the application running; there is no service, autostart or secure-desktop support.
 
 The Windows client is in `apps/desktop`. Its React/Vite pages call Tauri 2 commands, while `crates/client` sends account, device and authorization HTTP requests. For the service protocol, see [API.md](API.md); for transport, see [TRANSPORT.md](TRANSPORT.md); for screen and input details, see [REMOTE.md](REMOTE.md). The Windows remote-viewing and mouse/keyboard baseline is integrated; file contents remain part of WI-005.

@@ -1,4 +1,4 @@
-//! Public machine metadata, obtained from Windows rather than browser identity.
+//! Public machine metadata, obtained from the operating system rather than browser identity.
 
 #[cfg(windows)]
 pub fn name() -> Option<String> {
@@ -26,16 +26,23 @@ pub fn name() -> Option<String> {
     (!value.is_empty()).then(|| value.to_owned())
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+pub fn name() -> Option<String> {
+    let value = std::fs::read_to_string("/proc/sys/kernel/hostname").ok()?;
+    let value = value.trim();
+    (!value.is_empty() && !value.contains('\0')).then(|| value.to_owned())
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn name() -> Option<String> {
     None
 }
 
-#[cfg(all(test, windows))]
+#[cfg(all(test, any(windows, target_os = "linux")))]
 mod tests {
     #[test]
-    fn reads_windows_name_without_logging_machine_identity() {
-        let name = super::name().expect("Windows should provide a computer name");
+    fn reads_system_name_without_logging_machine_identity() {
+        let name = super::name().expect("the OS should provide a computer name");
         assert!(!name.is_empty());
         assert!(!name.contains('\0'));
         assert_eq!(Some(name), super::name());
