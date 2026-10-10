@@ -20,7 +20,26 @@
 
 旧服务端包中包含 `update-online.sh`，但旧升级流程不会安装常驻命令；临时解压目录删除后，脚本也可能不再保留。旧脚本仍要求地址和校验参数，安装新版客户端不会替换服务器上的这个脚本。
 
-新版已校验包包含 `install-online-updater.sh`。传入并校验该包后，可安装升级入口，此步骤不重启服务：
+已有服务器可以直接复制下列命令，自动下载首次安装工具、核验已填好的校验值并安装入口；无需上传本地文件，也无需手填地址或摘要。此步骤不重启服务：
+
+```bash
+(
+  set -e
+  farsail_setup=$(mktemp -d)
+  trap 'rm -rf -- "$farsail_setup"' EXIT
+  curl -q --fail --show-error --location --proto '=https' --proto-redir '=https' \
+    --retry 2 --connect-timeout 20 --max-time 120 --max-filesize 1048576 \
+    --output "$farsail_setup/install-farsail-update.sh" \
+    'https://github.com/wanghao9103/farsail/releases/download/coordinator-files-d21b298-online1/install-farsail-update.sh'
+  printf '%s  %s\n' '9640cd48a0787b3ddbe0b2432ded99b0737595750f04acc3c8f7875c7fb3f7ed' \
+    "$farsail_setup/install-farsail-update.sh" | sha256sum -c -
+  bash "$farsail_setup/install-farsail-update.sh"
+)
+```
+
+脚本下载固定提交的两份工具并核验内置 SHA256。若不能访问 `raw.githubusercontent.com`，可从[本次发布](https://github.com/wanghao9103/farsail/releases/tag/coordinator-files-d21b298-online1)下载 `FarSail_server_updater_fc17a7c.tar.gz` 与同名 `.sha256`，校验、解压并按包内说明安装。
+
+新版已校验服务端包也包含 `install-online-updater.sh`。传入并校验该包后，可安装同一个入口：
 
 ```bash
 bash /tmp/farsail-coordinator-release/install-online-updater.sh \
@@ -36,7 +55,7 @@ bash scripts/deploy/update-online.sh --latest /home/data/farsail
 bash scripts/deploy/update-online.sh --latest --check /home/data/farsail
 ```
 
-**发布状态：**2026-10-10 核对时，公开的服务端包仍是历史 Ubuntu/登录修复包与邮件更新包。Files 包和本升级入口是待审查候选，尚未作为新服务端 Release 公开发布，也没有安装到现网。发布符合新规则的包前，新命令会明确提示没有可用的自动升级包。旧地址与校验参数模式仍可用于明确选择的历史版本，见 [Ubuntu/登录升级](UPGRADE_UBUNTU_LOGIN.zh-CN.md)和[邮件升级](EMAIL_VERIFICATION_UPDATE.zh-CN.md)。
+**发布状态：**2026-10-10 已公开[文件传输与自动升级服务端包](https://github.com/wanghao9103/farsail/releases/tag/coordinator-files-d21b298-online1)，附件 `FarSail_coordinator_files_d21b298_online1_linux_amd64.tar.gz` 的 SHA256 为 `3f78775afff275c6ff8652c5300e759f88e4b3a3a96e17b8f5038081f48f970c`，包括同名校验附件及首次安装工具。镜像源码为 `d21b298d9b4327032c204f852a540c7d4a88f433`，升级工具和发布标签源码为 `fc17a7ce4ef84b5569b791da54534a95ff42a450`。归档字节保持验证时的原值，包内“尚未发布”与 `published: false` 是构建时快照；公开状态以该 Release 为准。尚未执行现网升级。旧地址与校验参数模式仍可用于明确选择的历史版本，见 [Ubuntu/登录升级](UPGRADE_UBUNTU_LOGIN.zh-CN.md)和[邮件升级](EMAIL_VERIFICATION_UPDATE.zh-CN.md)。
 
 ## 如何选择最新服务端包
 
@@ -84,4 +103,4 @@ docker compose --env-file "$cloud_state/compose.env" \
 | 源码基线变化或候选更旧   | 核对并发升级和版本选择，不绕过源码及成功记录检查。     |
 | 启动或元数据发布失败     | 查看回退结果和脚本输出的准确私有备份路径。             |
 
-本地 HTTPS/版本选择测试，以及模拟 Docker、备份、回退、安装的合同测试覆盖这些失败边界，不代表新包已经公开发布或现网已升级。命令在执行时检查更新，不会安装无人值守的定时任务。
+本地 HTTPS/版本选择测试、升级/回退/安装合同及真实隔离 Docker/PostgreSQL 升级与备份恢复通过。本次公开发布后实际匿名 HTTPS 下载、外层及包内校验、匿名最新版本检查均通过；这些验证不代表现网已升级。命令在执行时检查更新，不会安装无人值守的定时任务。
