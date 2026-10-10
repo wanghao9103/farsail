@@ -439,6 +439,99 @@ input[type="checkbox"] {
   padding: 8px 16px;
   width: 100%;
 }
+.file-device-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 38px;
+}
+.file-sharing-panel {
+  margin-top: 18px;
+}
+.files-workspace {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-height: 0;
+}
+.files-layout {
+  display: grid;
+  grid-template-columns: minmax(190px, 0.3fr) minmax(0, 1fr);
+  align-items: start;
+  gap: 18px;
+  min-height: 0;
+}
+.files-layout > .card {
+  min-width: 0;
+  margin: 0;
+}
+.file-session-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.file-session {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-align: left;
+  width: 100%;
+  min-width: 0;
+  justify-content: flex-start;
+}
+.file-session.selected {
+  background: #1e353e;
+  border-color: var(--accent);
+}
+.file-session span,
+.file-transfer-description {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.file-session small,
+.file-transfer small {
+  display: block;
+  color: var(--muted);
+  margin-top: 6px;
+}
+.file-transfer-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.file-transfer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 18px;
+  padding: 16px 0;
+  border-top: 1px solid var(--line);
+}
+.file-transfer-description {
+  flex: 1;
+}
+.file-transfer progress {
+  width: 100%;
+  margin-top: 8px;
+  accent-color: var(--accent);
+}
+.file-transfer-pane .row-actions {
+  flex-wrap: wrap;
+}
+@media (max-width: 880px) {
+  .files-layout {
+    grid-template-columns: 1fr;
+  }
+  .file-transfer {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .file-transfer-description {
+    width: 100%;
+  }
+}
 .sharing-panel {
   background: #232e36;
   border-color: var(--line);

@@ -2,7 +2,7 @@
 
 # Ubuntu desktop client
 
-The Ubuntu client provides the account, device and connection interface and reuses the viewer protocol to connect to Windows hosts. Local Ubuntu screen sharing and remote standby are unavailable; Settings and the local device panel explain this limit. Files remain unavailable. Windows capture and input are unchanged.
+The Ubuntu client provides the account, device and connection interface and reuses the viewer protocol to connect to Windows hosts. Local Ubuntu screen sharing and remote standby are unavailable; Settings and the local device panel explain this limit. The current source candidate can send and receive individual files through a separately approved [file connection](FILES.md); older published installers do not include this addition. Windows capture and input are unchanged.
 
 ## Run from source
 
@@ -18,9 +18,9 @@ npm run tauri -w @farsail/desktop -- dev
 
 Configure the coordinator address in Settings, sign in and add this computer. Devices bind with platform `linux` and the system hostname as the initial display name. Select an online Windows device with sharing enabled, request viewing or control, then connect after approval. The Linux app can also use an existing self-hosted coordinator; Docker is not required on the controlling desktop.
 
-The coordinator must also be upgraded to accept `linux`; startup applies the additive `20261009000000_linux_platform.sql` migration without changing historical migration checksums. Linux devices cannot publish host or file capabilities.
+The coordinator must also be upgraded to accept `linux`; startup applies the additive `20261009000000_linux_platform.sql` migration without changing historical migration checksums. Linux devices cannot publish screen-host capability. To receive files in the current source candidate, enable the independent receiving switch; it then publishes file capability. Upgrade the coordinator for Linux file capability and manual file approval independent of screen sharing.
 
-Add this computer once on first use. Reopening the app or signing back into the same account restores the existing device connection and immediately updates its online lease, preserving its id and name; logout still revokes the previous login and device credential. Identity is scoped to the coordinator and account, and disabled or unbound devices are never restored automatically. Clearing the keyring/profile, or having already signed out with an older client that discarded its binding record, still requires adding the computer once. Being online on Ubuntu means the controller is connected, not that local screen sharing is supported. Recovery failures report a reason; check the network and refresh to retry.
+Add this computer once on first use. Reopening the app or signing back into the same account restores the existing device connection and immediately updates its online lease, preserving its id and name; logout still revokes the previous login and device credential. Identity is scoped to the coordinator and account, and disabled or unbound devices are never restored automatically. Clearing the keyring/profile, or having already signed out with an older client that discarded its binding record, still requires adding the computer once. Being online on Ubuntu means the client is connected, not that local screen sharing is supported. Recovery failures report a reason; check the network and refresh to retry.
 
 ## Build a Debian package
 

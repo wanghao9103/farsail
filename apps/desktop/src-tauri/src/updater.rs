@@ -1,5 +1,5 @@
 use crate::{remote::RemoteRuntime, viewer};
-use farsail_client::NativeClient;
+use farsail_client::{NativeClient, file_runtime::NativeFiles};
 use serde::{Deserialize, Serialize};
 use std::{
     path::PathBuf,
@@ -226,12 +226,14 @@ impl Runtime {
             )
         };
         let remote = app.state::<Arc<RemoteRuntime>>().inner().clone();
-        if app.webview_windows().keys().any(|label| label != "main") || !remote.begin_update().await
-        {
-            self.phase(
-                "waiting",
-                "更新已就绪，等待远程连接结束。请关闭远程窗口后安装。",
-            );
+        let files = app.state::<Arc<NativeFiles>>().inner().clone();
+        if app.webview_windows().keys().any(|label| label != "main") || !files.begin_update() {
+            self.phase("waiting", "更新已就绪，等待屏幕或文件连接结束后安装。");
+            return Ok(self.snapshot());
+        }
+        if !remote.begin_update().await {
+            files.finish_update();
+            self.phase("waiting", "更新已就绪，等待屏幕或文件连接结束后安装。");
             return Ok(self.snapshot());
         }
         self.phase(
@@ -241,9 +243,13 @@ impl Runtime {
         let client = app.state::<Arc<NativeClient>>().inner().clone();
         client.cancel_sharing_restore();
         client.disable_host_local();
+        client.disable_files_local();
+        files.stop_all();
         remote.stop_all().await;
         let _ =
             tokio::time::timeout(Duration::from_secs(2), client.set_host_capability(false)).await;
+        let _ =
+            tokio::time::timeout(Duration::from_secs(2), client.set_files_capability(false)).await;
         client.stop_transport().await;
         let result = tokio::task::spawn_blocking(move || update.install(bytes.as_slice())).await;
         match result {
@@ -252,10 +258,12 @@ impl Runtime {
             }
             Ok(Err(e)) => {
                 remote.finish_update();
+                files.finish_update();
                 Err(self.failed(format!("{e} 请重新开启共享或连接后重试。")))
             }
             Err(e) => {
                 remote.finish_update();
+                files.finish_update();
                 Err(self.failed(e))
             }
         }

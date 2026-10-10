@@ -8,9 +8,9 @@
 
 # FarSail · 遥舟
 
-FarSail 是正在开发中的开源远程桌面项目，Windows 客户端采用 Rust、Tauri 2 和 React，支持加密的 P2P 连接及自建中继。文件传输和手机端属于计划能力，尚未交付。
+FarSail 是正在开发中的开源远程桌面项目，Windows 与 Ubuntu 客户端采用 Rust、Tauri 2 和 React，支持加密的 P2P 连接及自建中继。当前源码候选新增双向单文件传输，旧版已发布安装包不会自动获得该功能；手机端仍属计划能力。
 
-账号、设备与授权协调服务使用 Rust。**WI-001 协调服务、WI-002 Windows 客户端、WI-003 认证加密传输及 WI-004 Windows 远程查看/输入基线已在本机验证；WI-008B 提供已验收的 [Windows x64 预览安装包](docs/WINDOWS_INSTALL.zh-CN.md)。** iroh 数据通道支持本地直连及自建 TLS relay。Windows 被控端可在本机开启共享，默认逐次批准后传送 JPEG 画面并接受鼠标键盘。安装包未签名；公网跨 NAT、文件内容、HEVC 和手机端仍待验证或实现。
+账号、设备与授权协调服务使用 Rust。**WI-001 协调服务、WI-002 Windows 客户端、WI-003 认证加密传输及 WI-004 Windows 远程查看/输入基线已在本机验证；WI-008B 提供已验收的 [Windows x64 预览安装包](docs/WINDOWS_INSTALL.zh-CN.md)。** iroh 数据通道支持本地直连及自建 TLS relay。Windows 被控端可在本机开启共享，默认逐次批准后传送 JPEG 画面并接受鼠标键盘。安装包未签名；公网跨 NAT、物理 Windows 文件传输、HEVC 和手机端仍待验证或实现。当前候选使用方式与具体验证边界见[文件传输](docs/FILES.zh-CN.md)。
 
 <a id="documented-preview-milestones"></a>
 
@@ -38,7 +38,7 @@ FarSail 是正在开发中的开源远程桌面项目，Windows 客户端采用 
 - 跨网络加密通信、P2P 直连与中继回退。
 - 多屏、分辨率切换、可协商的 4:4:4 画质与自适应带宽。
 - H.265/H.264 视频链路、AV1 能力评估，以及适用数据的传输前无损压缩。
-- 双向文件传输、独立文件会话、分块校验、断点续传和限速。
+- 当前单文件基线之外的断点续传、选择性压缩和可配置文件/媒体共同带宽控制。
 - 后续扩展手机被控能力，按平台公开接口分别验证。
 
 <a id="documentation-and-assets"></a>
@@ -56,6 +56,7 @@ FarSail 是正在开发中的开源远程桌面项目，Windows 客户端采用 
 - [Windows 预览安装](docs/WINDOWS_INSTALL.zh-CN.md)：无需开发环境的 x64 安装、校验、WebView2 与双机联调。
 - [认证传输](docs/TRANSPORT.zh-CN.md)：iroh 握手、短租约、数据通道和路径状态。
 - [Windows 远控](docs/REMOTE.zh-CN.md)：DXGI/JPEG、viewer、输入权限与安全停止。
+- [桌面文件传输](docs/FILES.zh-CN.md)：独立批准、原生选文件、安全保存、进度与限制。
 - [自建 relay](deploy/relay/README.zh-CN.md)：HTTPS 证书与公网 IP 配置示例。
 - [公网 IP 部署包](docs/DEPLOYMENT.zh-CN.md)：六镜像离线制品、短期 IP 证书、回环 Mailpit 与备份/升级。
 - [实施与验收](docs/IMPLEMENTATION.zh-CN.md)：工作项进度与本地验证证据。
@@ -87,7 +88,7 @@ npm ci
 npm run tauri -w @farsail/desktop -- dev
 ```
 
-`./scripts/test-remote.ps1 -RealCapture` 可跑前端、真实 PostgreSQL/HTTP/iroh/DXGI 集成测试和 Tauri 编译。日常双端流程是绑定设备→启动传输→被控端本机开启共享→发起授权请求→被控端明确批准→连接并查看。文件内容仍不可用；公网、跨 NAT、第二台 Windows 及手机端没有本项证据。
+`./scripts/test-remote.ps1 -RealCapture` 可跑前端、真实 PostgreSQL/HTTP/iroh/DXGI 集成测试和 Tauri 编译。日常双端流程是绑定设备→启动传输→被控端本机开启共享→发起授权请求→被控端明确批准→连接并查看。独立文件流程见[文件传输](docs/FILES.zh-CN.md)，需要两端和协调服务使用新源码候选，旧版已发布安装包不能直接使用；公网、跨 NAT、第二台 Windows 及手机端没有本项证据。
 
 <a id="license"></a>
 

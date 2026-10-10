@@ -50,6 +50,7 @@ const fs = require("node:fs");
       loginFailure: "",
       bindFailure: "",
       sharing: false,
+      filesEnabled: false,
       remoteWatch: false,
       sharePreferences: { sharing: false, watch: false, restore: "idle" },
       bound: true,
@@ -146,6 +147,7 @@ const fs = require("node:fs");
             platform: f.platform,
             canShareLocalScreen: f.canShareLocalScreen,
             sharing: f.sharing,
+            filesEnabled: f.filesEnabled,
             remoteWatch: f.remoteWatch,
             sharePreferences: f.sharePreferences,
             transportRunning: f.transportRunning,
@@ -1226,7 +1228,9 @@ const fs = require("node:fs");
     0,
   );
   await page.getByRole("button", { name: "总览", exact: true }).click();
-  await page.getByRole("status", { name: "本机未共享", exact: true }).waitFor();
+  await page
+    .getByRole("status", { name: "本机屏幕未共享", exact: true })
+    .waitFor();
   await page.screenshot({ path: ".local/ui-verification/ubuntu-overview.png" });
   await page.getByRole("button", { name: "我的设备", exact: true }).click();
   await page

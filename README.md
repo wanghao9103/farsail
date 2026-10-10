@@ -8,9 +8,9 @@
 
 # FarSail
 
-FarSail is an open-source remote desktop project with a Windows client built using Rust, Tauri 2 and React, encrypted peer-to-peer connections, and self-hosted relay support. File transfer and mobile clients are planned capabilities, not delivered features.
+FarSail is an open-source remote desktop project with Windows and Ubuntu clients built using Rust, Tauri 2 and React, encrypted peer-to-peer connections, and self-hosted relay support. The current source candidate adds bidirectional single-file transfer; older published installers do not gain this feature automatically. Mobile clients remain planned.
 
-The account, device and authorization coordinator is written in Rust. **WI-001 (coordinator), WI-002 (Windows client), WI-003 (authenticated encrypted transport), and WI-004 (Windows remote viewing/input baseline) have been verified locally. WI-008B provides a verified [Windows x64 preview installer](docs/WINDOWS_INSTALL.md).** The iroh data channel supports local direct connections and a self-hosted TLS relay. Windows hosts can enable local sharing and transmit JPEG frames and mouse/keyboard input after per-request approval. The installer is unsigned; public cross-NAT behavior, file contents, HEVC and mobile clients remain unverified or unimplemented.
+The account, device and authorization coordinator is written in Rust. **WI-001 (coordinator), WI-002 (Windows client), WI-003 (authenticated encrypted transport), and WI-004 (Windows remote viewing/input baseline) have been verified locally. WI-008B provides a verified [Windows x64 preview installer](docs/WINDOWS_INSTALL.md).** The iroh data channel supports local direct connections and a self-hosted TLS relay. Windows hosts can enable local sharing and transmit JPEG frames and mouse/keyboard input after per-request approval. The installer is unsigned; public cross-NAT behavior, physical Windows file transfer, HEVC and mobile clients remain unverified or unimplemented. See [file transfer](docs/FILES.md) for the current candidate, usage and precise verification boundary.
 
 ## Documented preview milestones
 
@@ -36,7 +36,7 @@ These are recorded milestones. Local candidate work and its verification limits 
 - Encrypted communication across networks, direct peer-to-peer (P2P) connections and relay fallback.
 - Multiple displays, resolution switching, negotiable 4:4:4 quality and adaptive bandwidth.
 - H.265/H.264 video, evaluation of AV1 support, and lossless compression before transfer for suitable data.
-- Bidirectional file transfer, independent file sessions, chunk verification, resume support and rate limits.
+- File-transfer resume, selective compression and configurable combined file/media bandwidth controls beyond the current single-file baseline.
 - Later mobile-host capabilities, verified separately against each platform's public APIs.
 
 <a id="文档与资产"></a>
@@ -54,6 +54,7 @@ English is the default documentation language. Use the language links at the top
 - [Windows preview installation](docs/WINDOWS_INSTALL.md): x64 installation without development tools, checksums, WebView2 and two-computer testing.
 - [Authenticated transport](docs/TRANSPORT.md): iroh handshake, short leases, data channels and path state.
 - [Windows remote control](docs/REMOTE.md): DXGI/JPEG, viewer, input permissions and safe shutdown.
+- [Desktop file transfer](docs/FILES.md): separate approval, native file selection, safe save, progress and limits.
 - [Self-hosted relay](deploy/relay/README.md): HTTPS certificates and public-IP configuration examples.
 - [Public-IP deployment bundle](docs/DEPLOYMENT.md): six-image offline artifacts, short-lived IP certificates, loopback Mailpit and backup/upgrade.
 - [Implementation and verification](docs/IMPLEMENTATION.md): work-item progress and local evidence.
@@ -85,7 +86,7 @@ npm ci
 npm run tauri -w @farsail/desktop -- dev
 ```
 
-`./scripts/test-remote.ps1 -RealCapture` runs frontend, real PostgreSQL/HTTP/iroh/DXGI integration checks and the Tauri build. The normal two-endpoint flow is: bind devices → start transport → enable sharing on the host → request authorization → explicitly approve on the host → connect and view. File contents remain unavailable. Public networking, cross-NAT, a second Windows machine and mobile clients are not proven by this work item's evidence.
+`./scripts/test-remote.ps1 -RealCapture` runs frontend, real PostgreSQL/HTTP/iroh/DXGI integration checks and the Tauri build. The normal two-endpoint flow is: bind devices → start transport → enable sharing on the host → request authorization → explicitly approve on the host → connect and view. The separate file workflow is documented in [file transfer](docs/FILES.md); it requires the new source candidate on both desktops and the coordinator, not an older published package. Public networking, cross-NAT, a second Windows machine and mobile clients are not proven by this work item's evidence.
 
 ## License
 

@@ -10,7 +10,7 @@ Ubuntu 控制端适配、源码运行、Debian 打包与 Secret Service 边界�
 
 0.1.10 的本机共享与远程值守偏好见 [SHARE-020](verification/WI-SHARE-020.zh-CN.md)。DPAPI 只保存这两项已成功开启的选择及服务/账号/设备/登录会话范围，不保存高级连接参数。原生启动仅尝试恢复一次，先重验登录、心跳、传输和桌面，再发布共享能力；界面分别显示记住的意图和有效活动。手动关闭、退出登录、身份变化会取消迟到恢复；普通关窗或故障停止活动而保留有效偏好。首次默认关闭，仍需 Windows 已登录且应用运行，不提供服务、自启动或安全桌面支持。
 
-Windows 客户端位于 `apps/desktop`，React/Vite 页面调用 Tauri 2 命令，账号、设备和授权 HTTP 请求由 `crates/client` 发出。服务协议见 [API.md](API.zh-CN.md)，传输见 [TRANSPORT.md](TRANSPORT.zh-CN.md)，画面与输入细节见 [REMOTE.md](REMOTE.zh-CN.md)。Windows 远程查看与鼠标键盘基线已接入；文件内容仍属 WI-005。
+Windows 客户端位于 `apps/desktop`，React/Vite 页面调用 Tauri 2 命令，账号、设备和授权 HTTP 请求由 `crates/client` 发出。服务协议见 [API.md](API.zh-CN.md)，传输见 [TRANSPORT.md](TRANSPORT.zh-CN.md)，画面与输入细节见 [REMOTE.md](REMOTE.zh-CN.md)。Windows 远程查看与鼠标键盘基线已接入。当前源码候选也包含 Ubuntu/Windows 独立[文件传输](FILES.zh-CN.md)，续传/压缩和物理 Windows 验证不属于此次基线。
 
 无需开发环境的 Windows x64 预览安装、WebView2、未签名说明及第二台电脑联调步骤见 [WINDOWS_INSTALL.md](WINDOWS_INSTALL.zh-CN.md)；固定下载与实际验证结果见 [WI-008B](verification/WI-008B.zh-CN.md)。
 
@@ -36,7 +36,7 @@ npm run tauri -w @farsail/desktop -- dev
 1. 注册账号，去 Mailpit 读取本地验证令牌，在验证邮箱页提交；真实部署须配置 TLS SMTP。
 2. 登录后在总览中确认绑定本机。Rust 生成 Ed25519 密钥，签署服务挑战，初始声明 `can_host=false`、`can_files=false`。绑定后启动心跳；退出登录或切换账号会清掉旧的登录与设备凭据、停止旧身份心跳。
 3. “我的设备”逐页读取完整同账号设备，包含离线和管理员停用项，可搜索、按能力筛选、改名和解绑。“账号安全”可改密、退出及撤销其他登录会话。
-4. “设置”启动安全传输并开启本机共享后，Windows DXGI 探测成功才声明 `can_host=true`。同账号另一客户端刷新设备列表即可选择在线主机；目标端仍须逐次明确批准查看或控制，批准窗口显示申请邮箱及设备名。发起端点“连接并查看”，viewer 收到二进制 JPEG，显示显示器选择、实际接收 FPS、路径 RTT 和双方可比较校验码。`control` 允许鼠标键盘，`view` 仅看画面；双方都能本地立即停止。文件功能尚不可用。
+4. “设置”启动安全传输并开启本机共享后，Windows DXGI 探测成功才声明 `can_host=true`。同账号另一客户端刷新设备列表即可选择在线主机；目标端仍须逐次明确批准查看或控制，批准窗口显示申请邮箱及设备名。发起端点“连接并查看”，viewer 收到二进制 JPEG，显示显示器选择、实际接收 FPS、路径 RTT 和双方可比较校验码。`control` 允许鼠标键盘，`view` 仅看画面；双方都能本地立即停止。文件需要独立申请权限并获得批准，请按[文件传输](FILES.zh-CN.md)操作，不能复用屏幕/控制批准。
 5. 管理员账号可在同一客户端查看用户、登录会话和审计元数据，启停账号/设备、调整注册策略、创建和撤销注册邀请。管理员无法代替目标设备批准远控。
 
 <a id="credential-boundaries"></a>
@@ -55,4 +55,4 @@ npm run tauri -w @farsail/desktop -- dev
 
 JPEG 低帧率链路是当前可用基线。系统安全桌面、UAC、无人登录、跨 NAT/公网及第二台 Windows 尚未验证。视频编码、4:4:4 和带宽自适应属于 WI-006。网页预览只能检查布局，无法代表 Windows 原生采集、输入或 IPC。
 
-原生接口 `NativeClient::start_transport`、`connect_transport`、`transport_session` 和 `farsail_transport::Session::send/receive` 仍供文件工作项复用。`Media`、`Control`、`File` 有独立权限和尺寸边界。WI-005 实现分块、校验、续传及限速前继续保持 `can_files=false`。本机双端验证直连及强制 TLS relay，但没有公网 TLS 代理、第二台电脑、跨 NAT 穿透率或手机真机证据。
+原生接口 `NativeClient::start_transport`、`connect_transport`、`transport_session` 和 `farsail_transport::Session::send/receive` 仍供文件工作项复用。`Media`、`Control`、`File` 有独立权限和尺寸边界。当前文件基线仅在明确开启本机接收后声明 `can_files=true`；首次绑定与普通重启仍保持 `can_files=false`。已实现分块、SHA-256、共享文件带宽预算和禁止覆盖的安全目标，尚不支持断线续传，见[文件传输](FILES.zh-CN.md)。本机双端验证直连及强制 TLS relay，但没有公网 TLS 代理、第二台电脑、跨 NAT 穿透率或手机真机证据。

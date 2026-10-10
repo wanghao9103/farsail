@@ -44,13 +44,15 @@
 | `PATCH /v1/devices/{id}`                                | `{name}`                                                                                                             | 用户 |
 | `DELETE /v1/devices/{id}`                               | 解绑自己已启用的设备，撤销凭据、邀请和授权                                                                           | 用户 |
 | `POST /v1/devices/heartbeat`                            | `{generation:null}` 开始新的连接代次；后续 `{generation:n}` 续期 60 秒租约                                           | 设备 |
-| `POST /v1/devices/capability`                           | `{generation:n,can_host:true\|false}` 更新在线设备的被控能力；设为 false 会在事务中撤销待审批/已批准的查看和控制请求 | 设备 |
+| `POST /v1/devices/capability`                           | `{generation:n,can_host?:true\|false,can_files?:true\|false}` 更新指定的在线设备能力；至少提供一个开关             | 设备 |
 
 过时的代次收到 409，不能更改较新连接的租约。设备凭据关联到签发它的登录会话；退出登录、撤销登录、修改/找回密码及禁用账户都会使其失效并清除在线状态。之后再次登录时，需签署新的绑定挑战以获取新令牌。解绑会保留非活动的历史行供审计引用，并释放其公钥，以便通过新的明确证明重新绑定；管理员禁用保留绑定，必须经管理员启用后才能重新证明。`device_token` 不能调用账户或列表接口。
 
-Windows 桌面绑定初始使用 `can_host=false` 和 `can_files=false`。原生客户端探测 DXGI，并要求本地共享开关开启后才能设置 `can_host=true`。协调服务要求存在匹配且有效的心跳代次。桌面端在未开启共享的情况下启动时，会清除异常退出遗留的过时被控声明。在 WI-005 之前，`can_files` 始终为 false。
+桌面绑定初始使用 `can_host=false` 和 `can_files=false`。Windows 原生客户端探测 DXGI，并要求本地共享开关开启后才能设置 `can_host=true`。协调服务要求存在匹配且有效的心跳代次。桌面端在未开启共享的情况下启动时，会清除异常退出遗留的过时被控声明。独立的文件接收开关默认关闭，仅在原生文件运行时可用时设置 `can_files=true`；接收方仍须明确批准每次 Files 请求，并在写入前为每个文件选择本地保存位置。
 
-Linux 设备绑定时两项能力均为 false，仅作为控制端。协调服务拒绝 Linux 绑定时声明被控或文件能力，允许使用 `can_host=false` 清理能力，只有 Windows 设备可以开启 `can_host=true`。
+Linux 设备可以接收文件，无需共享屏幕。协调服务拒绝 Linux 绑定或更新能力时声明 `can_host=true`，允许独立更新文件能力。只有 Windows 设备可以通过在线能力 API 开启 `can_host=true`。
+
+省略的能力字段保持原值，兼容既有仅更新被控能力的请求。设置 `can_host=false` 会在事务中仅撤销发往该设备的待审批/已批准 View 和 Control 请求；设置 `can_files=false` 仅撤销 Files 请求。授权签发、续期和检查也会核对目标设备是否仍具备对应权限的能力。Files 权限不能访问屏幕或执行系统输入，View/Control 权限不能访问文件。协调服务只处理能力和授权元数据，文件字节通过经过认证的设备间传输通道发送。
 
 <a id="invitation-and-remote-authorization"></a>
 

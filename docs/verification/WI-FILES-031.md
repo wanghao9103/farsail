@@ -1,0 +1,32 @@
+**English** | [简体中文](WI-FILES-031.zh-CN.md)
+
+# FILES-031 — P2P-first desktop file transfer
+
+Date: 2026-10-10. Source baseline `f97943f`, client candidate 0.1.21. Published client 0.1.20 and the previous Ubuntu login coordinator package do not contain this feature. This record does not mean production was upgraded or a new installer was published.
+
+## Behavior and authorization
+
+Ubuntu and Windows share the native protocol, file actor and interface. Each connection requires a separate `files` grant; each file requires an additional native Save As selection on the recipient. Screen approval and remote standby cannot authorize files. Reception defaults to off and does not restart automatically. Opt-out stops local receiving work first; logout, device disable, authorization loss and update installation cannot retain active file operations.
+
+File connections reuse the existing iroh endpoint identity and discovery state. Known IP addresses receive a direct attempt window of up to 3 seconds before falling back to the configured trusted TLS relay. Explicit forced-relay preference remains effective. Cached relay paths are handled separately from the direct-attempt window; the interface reports the actual selected path. Existing screen-transport policy remains unchanged.
+
+The protocol sends 64 KiB chunks with strict acknowledgements, sequence, length and SHA-256 checks. Empty files follow the full protocol. Outgoing file connections share a 4 MiB/s file budget. Connections support sequential and bidirectional files, including reuse after rejection or cancellation. Late cancellation cannot undo a file already published on the recipient.
+
+Local paths stay in Rust. Sources must be regular files; Unix nonblocking open plus post-open metadata checks prevent a source replaced by a FIFO from hanging indefinitely. Saving creates a private random partial through a capability handle to the selected directory and publishes through an atomic non-replacing hard link after verification. Failure or shutdown removes partials. Parent rename/symlink replacement does not redirect writing into a different directory. Publication and local cancellation share a lock; committed state is set before releasing it. Grants carry the reception epoch so an off/on cycle cannot revive old approvals or late handshakes, including registration awaiting the session-map lock after the handshake completed.
+
+## Checks executed
+
+- 44 client units passed, with one real-system-keyring check intentionally ignored; 39 desktop and 15 transport checks passed. They include real QUIC invalid ACK/early Complete checks; path, hash, overwrite, FIFO, parent replacement and publication-lock checks; exact file/screen permissions and reception-epoch regression.
+- A dedicated isolated PostgreSQL instance, real coordinator HTTP, two Linux NativeClients, real QUIC and native filesystem actors passed five integration cases. They cover multi-MiB and empty files, both directions/sequential files, lease renewal while waiting for acceptance and while connected, rejection/cancellation from either side, partial cleanup, fresh approval after opt-out/re-enable, logout from either side and media/control denial. The existing full NativeClient/coordinator regression also passed.
+- Three new real QUIC/TLS transport checks passed: usable IP and relay select direct; a known-IP UDP black hole falls back after the attempt window; retained endpoint identity with a cached relay still honors the window. Each verifies bidirectional 786,461-byte payloads, matching TLS exporters and media/control denial.
+- PostgreSQL file-permission and existing coordinator regressions passed. Linux accepts `can_files` but still rejects `can_host`; disabling one capability revokes its matching sessions, and issuing/inspecting/renewing grants rechecks target capability.
+- TypeScript/Vite, Chromium and WebKit file-interface and existing desktop-interface suites passed. Normal and narrow screenshots were reviewed. Synthetic IPC interface tests are distinct from native integration evidence.
+- The Ubuntu native application passed isolated profile, Secret Service and Xvfb/Openbox probes: reception defaults off, WebView filesystem access is denied, viewer windows cannot invoke file commands, and window restore/maximize/fullscreen/minimize plus existing media checks pass. Native picker commands compile; integration tests select explicit fixture paths rather than using real Open/Save dialogs.
+
+Tests use synthetic credentials, dedicated schemas and temporary files, not user accounts, system credentials or real device configuration. Local evidence is stored in ignored `.local/files-final-*.log`, `.local/files-native-smoke.log` and `.local/ui-verification/file-transfer*.png`; these are not public release attachments. Database integration explicitly skips when its dedicated URL is absent. Skipped tests do not constitute real integration verification.
+
+## Pending acceptance and boundaries
+
+Windows CI, real native Open/Save dialogs on physical Ubuntu/Windows, public installer installation/upgrade, internet two-machine NAT/P2P and production relay behavior, disk-full/power-loss handling and practical large-file performance remain separate acceptance tasks. Destination filesystems need hard links; FAT/exFAT fails without overwrite/copy fallback. No recursive directories, remote filesystem browsing, disconnect resume, compression or automatic execution are implemented. Authorization is checked before commit; once the hard-link system call starts, clock expiry or an independent session close cannot form an atomic transaction with it or undo a published file. Random partial names and directory capabilities protect remote input and parent redirection; they do not promise protection from a malicious local process with write access to the same directory. The 4 MiB/s file budget cannot guarantee screen responsiveness on every link.
+
+See [file transfer](../FILES.md) for usage. Upgrade both desktops and the coordinator: old servers may reject Linux file capability or couple it incorrectly with screen hosting. This change does not alter the database schema, reinitialize deployment or reset devices.

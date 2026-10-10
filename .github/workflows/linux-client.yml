@@ -65,7 +65,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev patchelf gnome-keyring xvfb dbus-x11 fonts-noto-cjk pkexec
       - run: bash scripts/test-desktop-linux.sh
       - run: cargo test -p farsail-core -p farsail-coordinator
-      - run: cargo test -p farsail-client --test coordinator_flow
+      - run: cargo test -p farsail-client --test coordinator_flow --test files_flow
       - name: WebKit UI and viewer regressions
         run: |
           npm install --no-save --package-lock=false playwright
@@ -75,6 +75,7 @@ jobs:
           trap 'kill "$vite"' EXIT
           for n in {1..30}; do curl -fsS http://127.0.0.1:1420/ >/dev/null 2>&1 && break; sleep 1; done
           UI_ENGINE=webkit node scripts/test-desktop-ui.cjs
+          UI_ENGINE=webkit node scripts/test-file-transfer-ui.cjs
           UI_ENGINE=webkit node scripts/test-remote-viewer.cjs
       - name: Debian package
         run: npm run tauri -w @farsail/desktop -- build --bundles deb --config src-tauri/tauri.linux.conf.json --config '{"bundle":{"createUpdaterArtifacts":false}}' -- --locked

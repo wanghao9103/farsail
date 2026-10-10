@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { Device, Me, Pending, Remote, User } from "@farsail/ui";
 import { useClientUpdates, UpdateNotice, UpdateSettings } from "./updates";
+import { FilesControls, FilesPanel } from "./files";
 import "./style.css";
 import "./desktop-theme.css";
 import { RefreshFailureGate } from "./feedback-policy";
@@ -26,6 +27,7 @@ import {
   Home20Regular,
   Desktop20Regular,
   Eye20Regular,
+  Folder20Regular,
   ArrowSwap20Regular,
   Shield20Regular,
   Settings20Regular,
@@ -41,6 +43,7 @@ type Tab =
   | "overview"
   | "devices"
   | "requests"
+  | "files"
   | "viewer"
   | "security"
   | "admin"
@@ -54,6 +57,7 @@ type PublicState = {
   signedIn: boolean;
   deviceId: string | null;
   deviceRestoreError?: string | null;
+  filesEnabled?: boolean;
   sharing: boolean;
   remoteWatch?: boolean;
   transportRunning?: boolean;
@@ -156,7 +160,7 @@ type ConnectionInvitation = {
   id: string;
   code: string;
   target: string;
-  permission: "view" | "control";
+  permission: "view" | "control" | "files";
   visible: boolean;
 };
 type SignupInvitation = {
@@ -285,6 +289,11 @@ function App() {
   });
   const [me, setMe] = useState<Me | null>(null);
   const [tab, setTab] = useState<Tab>("overview");
+  const [fileSession, setFileSession] = useState<string | null>(null);
+  const openFiles = (id: string) => {
+    setFileSession(id);
+    setTab("files");
+  };
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<OperationNotice | null>(null);
   const actionVersion = useRef(0);
@@ -355,6 +364,7 @@ function App() {
     if (!p.signedIn) {
       refreshFailures.current.recovered();
       setConnectionInvite(null);
+      setFileSession(null);
       setSignupInvite(null);
       setTransportReady(false);
 
@@ -583,6 +593,7 @@ function App() {
               ["overview", "总览", Home20Regular],
               ["devices", "我的设备", Desktop20Regular],
               ["requests", "远程连接", ArrowSwap20Regular],
+              ["files", "文件传输", Folder20Regular],
               ["settings", "共享与设置", Settings20Regular],
               ["security", "账号安全", Shield20Regular],
               ...(me?.role === "admin"
@@ -607,8 +618,8 @@ function App() {
         <div
           className="sidebar-foot"
           role="status"
-          aria-label={publicState.sharing ? "本机屏幕共享中" : "本机未共享"}
-          title={publicState.sharing ? "本机屏幕共享中" : "本机未共享"}
+          aria-label={publicState.sharing ? "本机屏幕共享中" : "本机屏幕未共享"}
+          title={`${publicState.sharing ? "本机屏幕共享中" : "本机屏幕未共享"}；${publicState.filesEnabled ? "文件接收已开启" : "文件接收已关闭"}`}
         >
           {me && (
             <div className="sidebar-account">
@@ -624,8 +635,12 @@ function App() {
               className={`status-dot ${publicState.sharing ? "is-sharing" : ""}`}
               aria-hidden="true"
             />
-            <span>{publicState.sharing ? "本机屏幕共享中" : "本机未共享"}</span>
-            <small>远程桌面预览版</small>
+            <span>
+              {publicState.sharing ? "本机屏幕共享中" : "本机屏幕未共享"}
+            </span>
+            <small>
+              {publicState.filesEnabled ? "文件接收已开启" : "文件接收已关闭"}
+            </small>
           </div>
         </div>
       </aside>
@@ -640,6 +655,7 @@ function App() {
                     overview: "总览",
                     devices: "我的设备",
                     requests: "远程连接",
+                    files: "文件传输",
                     viewer: "远程画面",
                     security: "账号安全",
                     admin: "管理控制台",
@@ -750,6 +766,15 @@ function App() {
                 <p className="hint">
                   这里显示当前端点使用的设置；具体连接路径会显示在远程窗口中。
                 </p>
+              </div>
+              <div className="card">
+                <h2>文件接收</h2>
+                <FilesControls
+                  state={publicState}
+                  busy={busy}
+                  act={act}
+                  prepareTransport={prepareTransport}
+                />
               </div>
               <div className="card">
                 <h2>本机共享</h2>
@@ -865,6 +890,7 @@ function App() {
               prepareTransport={prepareTransport}
               onConnectionReset={resetConnection}
               onView={openViewer}
+              onFiles={openFiles}
               onNavigate={setTab}
               devices={devices}
               state={publicState}
@@ -886,6 +912,19 @@ function App() {
               onRefresh={refresh}
               onNavigate={setTab}
               onView={openViewer}
+              onFiles={openFiles}
+            />
+          ) : tab === "files" ? (
+            <FilesPanel
+              requests={requests}
+              devices={devices}
+              state={publicState}
+              selectedId={fileSession}
+              onSelect={setFileSession}
+              busy={busy}
+              act={act}
+              prepareTransport={prepareTransport}
+              onRefresh={refresh}
             />
           ) : tab === "security" ? (
             <Security
@@ -1409,12 +1448,94 @@ function Empty({ text }: { text: string }) {
     </div>
   );
 }
+function IncomingApprovals({
+  pending,
+  state,
+  busy,
+  act,
+  prepareTransport,
+  onFiles,
+}: {
+  pending: Pending[];
+  state: PublicState;
+  busy: boolean;
+  act: Action;
+  prepareTransport: () => Promise<void>;
+  onFiles: (id: string) => void;
+}) {
+  return (
+    <>
+      <h3 className="heading-with-count">
+        等待批准的连接 <span className="count">{pending.length}</span>
+      </h3>
+      {pending.map((p) => (
+        <div className="approval-card" key={p.id}>
+          <strong>
+            {p.source_device_name} 请求
+            {p.permission === "files"
+              ? "传输文件"
+              : p.permission === "control"
+                ? "控制电脑"
+                : "查看屏幕"}
+          </strong>
+          <p className="muted">{p.requester_email}</p>
+          <p className="muted">
+            {p.permission === "files"
+              ? "仅允许传输文件；每个文件仍需你选择保存位置，不授予屏幕或鼠标键盘权限。"
+              : p.permission === "control"
+                ? "允许后对方能看到屏幕并操作鼠标键盘。"
+                : "允许后对方只能看到屏幕。"}
+          </p>
+          <div className="row-actions">
+            <button
+              className="secondary"
+              disabled={busy}
+              onClick={() =>
+                void act(
+                  () => api("decide", { id: p.id, approve: false }),
+                  "已拒绝连接",
+                )
+              }
+            >
+              拒绝
+            </button>
+            <button
+              className="primary"
+              disabled={
+                busy ||
+                !(p.permission === "files" ? state.filesEnabled : state.sharing)
+              }
+              onClick={() =>
+                void act(async () => {
+                  if (p.permission === "files") await prepareTransport();
+                  await api("decide", { id: p.id, approve: true });
+                  if (p.permission === "files") onFiles(p.id);
+                }, "已允许连接")
+              }
+            >
+              {p.permission === "files"
+                ? "允许文件传输"
+                : p.permission === "control"
+                  ? "允许查看和控制"
+                  : "允许查看"}
+            </button>
+          </div>
+          {p.permission === "files" && !state.filesEnabled && (
+            <p className="hint">请先开启“允许接收文件”。</p>
+          )}
+        </div>
+      ))}
+      {!pending.length && <p className="muted">暂无连接请求。</p>}
+    </>
+  );
+}
 function Devices({
   requests,
   pending,
   prepareTransport,
   onConnectionReset,
   onView,
+  onFiles,
   onRefresh,
   onNavigate,
   devices,
@@ -1427,6 +1548,7 @@ function Devices({
   prepareTransport: () => Promise<void>;
   onConnectionReset: () => void;
   onView: (id: string) => Promise<ViewerNoticeLease>;
+  onFiles: (id: string) => void;
   onRefresh: (foreground?: boolean) => Promise<void>;
   onNavigate: (tab: Tab) => void;
   devices: Device[];
@@ -1502,6 +1624,11 @@ function Devices({
               id: request.id,
               permission: request.permission,
             });
+            if (request.permission === "files") {
+              onFiles(request.id);
+              setConnectionNote("");
+              return;
+            }
             const opened = await onView(request.id);
             setConnectionNote(
               opened.isPresent() ? "已在独立窗口打开，可继续管理设备。" : "",
@@ -1517,16 +1644,14 @@ function Devices({
             setConnecting(false);
           }
         },
-        "已打开独立远程窗口",
+        request.permission === "files"
+          ? "文件连接已建立"
+          : "已打开独立远程窗口",
         false,
         {
           retryLabel: "重新连接",
           retry: () =>
-            connect(
-              request.permission === "control" ? "control" : "view",
-              request.target_device_id,
-              true,
-            ),
+            connect(request.permission, request.target_device_id, true),
         },
       );
     } else if (request.state !== "pending") {
@@ -1539,7 +1664,7 @@ function Devices({
     }
   }, [requests, waiting, act, prepareTransport, onView]);
   const connect = (
-    permission: "control" | "view",
+    permission: "control" | "view" | "files",
     target = device?.id,
     fresh = false,
   ) => {
@@ -1570,7 +1695,9 @@ function Devices({
             }));
           setWaiting({ id: result.id, target });
           setConnectionNote(
-            "等待对方批准，批准后会在此页面打开画面；切换页面后可到“远程连接”查看进度。",
+            permission === "files"
+              ? "等待对方批准文件连接；批准后进入文件传输页面。"
+              : "等待对方批准，批准后会在此页面打开画面；切换页面后可到“远程连接”查看进度。",
           );
         } catch (e) {
           setConnectionNote("");
@@ -1695,7 +1822,23 @@ function Devices({
               </div>
             </div>
             {isLocal && !canShareLocalScreen(state) ? (
-              <LocalSharingUnsupported />
+              <>
+                <LocalSharingUnsupported />
+                <FilesControls
+                  state={state}
+                  busy={busy}
+                  act={act}
+                  prepareTransport={prepareTransport}
+                />
+                <IncomingApprovals
+                  pending={pending}
+                  state={state}
+                  busy={busy}
+                  act={act}
+                  prepareTransport={prepareTransport}
+                  onFiles={onFiles}
+                />
+              </>
             ) : isLocal ? (
               <>
                 <div className="sharing-panel">
@@ -1727,6 +1870,12 @@ function Devices({
                     {sharingChoice(state) ? "停止本机共享" : "开启本机共享"}
                   </button>
                 </div>
+                <FilesControls
+                  state={state}
+                  busy={busy}
+                  act={act}
+                  prepareTransport={prepareTransport}
+                />
                 <SharingRecovery state={state} />
                 {!state.sharing &&
                   state.sharePreferences?.sharing &&
@@ -1778,52 +1927,14 @@ function Devices({
                     {watchChoice(state) ? "关闭远程值守" : "开启远程值守"}
                   </button>
                 </div>
-                <h3 className="heading-with-count">
-                  等待批准的连接 <span className="count">{pending.length}</span>
-                </h3>
-                {pending.map((p) => (
-                  <div className="approval-card" key={p.id}>
-                    <strong>
-                      {p.source_device_name} 请求
-                      {p.permission === "control" ? "控制电脑" : "查看屏幕"}
-                    </strong>
-                    <p className="muted">{p.requester_email}</p>
-                    <p className="muted">
-                      {p.permission === "control"
-                        ? "允许后对方能看到屏幕并操作鼠标键盘。"
-                        : "允许后对方只能看到屏幕。"}
-                    </p>
-                    <div className="row-actions">
-                      <button
-                        className="secondary"
-                        disabled={busy}
-                        onClick={() =>
-                          void act(
-                            () => api("decide", { id: p.id, approve: false }),
-                            "已拒绝连接",
-                          )
-                        }
-                      >
-                        拒绝
-                      </button>
-                      <button
-                        className="primary"
-                        disabled={busy || !state.sharing}
-                        onClick={() =>
-                          void act(
-                            () => api("decide", { id: p.id, approve: true }),
-                            "已允许连接",
-                          )
-                        }
-                      >
-                        {p.permission === "control"
-                          ? "允许查看和控制"
-                          : "允许查看"}
-                      </button>
-                    </div>
-                  </div>
-                ))}
-                {!pending.length && <p className="muted">暂无连接请求。</p>}
+                <IncomingApprovals
+                  pending={pending}
+                  state={state}
+                  busy={busy}
+                  act={act}
+                  prepareTransport={prepareTransport}
+                  onFiles={onFiles}
+                />
                 <button
                   className="text-button"
                   onClick={() => onNavigate("settings")}
@@ -1868,7 +1979,27 @@ function Devices({
                     仅查看屏幕
                   </button>
                 </div>
-                <p className="muted">此版本暂不支持文件传输。</p>
+                <button
+                  className="secondary file-device-action"
+                  disabled={
+                    busy ||
+                    connecting ||
+                    !!waiting ||
+                    !state.deviceId ||
+                    !device.enabled ||
+                    !device.online ||
+                    !device.can_files
+                  }
+                  onClick={() => connect("files")}
+                >
+                  <Folder20Regular aria-hidden="true" />
+                  文件传输
+                </button>
+                <p className="muted">
+                  {device.can_files
+                    ? "文件连接需对方单独批准，收到文件后再选择保存位置。"
+                    : "对方尚未允许接收文件，需在对方电脑开启。"}
+                </p>
                 <p className="muted">{blocked}</p>
                 {(waiting ||
                   connecting ||
@@ -2018,6 +2149,7 @@ function Requests({
   setInvitation,
   onNavigate,
   onView,
+  onFiles,
 }: {
   devices: Device[];
   requests: Remote[];
@@ -2034,6 +2166,7 @@ function Requests({
   >;
   onNavigate: (tab: Tab) => void;
   onView: (id: string) => Promise<ViewerNoticeLease>;
+  onFiles: (id: string) => void;
 }) {
   const [paths, setPaths] = useState<
     Record<
@@ -2082,9 +2215,9 @@ function Requests({
   const [section, setSection] = useState(
     pending.length ? "incoming" : "active",
   );
-  const [invitePermission, setInvitePermission] = useState<"view" | "control">(
-    invitation?.permission ?? "view",
-  );
+  const [invitePermission, setInvitePermission] = useState<
+    "view" | "control" | "files"
+  >(invitation?.permission ?? "view");
   const invite = invitation?.code ?? "";
   const inviteId = invitation?.id ?? "";
   const generatedInvite = invitation;
@@ -2116,7 +2249,7 @@ function Requests({
     <div className="connections-workspace">
       <div className="section-heading connection-intro">
         <p className="muted">
-          管理远程电脑的连接。对方允许后，才能查看或控制屏幕。
+          管理远程电脑的连接。屏幕访问与文件传输分别申请权限。
         </p>
         <div className="row-actions">
           <button
@@ -2154,7 +2287,7 @@ function Requests({
           <div className="eyebrow">REQUEST ACCESS</div>
           <h2>连接他人电脑</h2>
           <p className="muted">
-            请对方开启共享，并把设备 ID
+            请对方开启对应的屏幕共享或文件接收，并把设备 ID
             和一次性邀请码发给你。自己的电脑可直接从“我的设备”连接。
           </p>
           <form
@@ -2207,9 +2340,7 @@ function Requests({
               >
                 <option value="view">仅查看屏幕</option>
                 <option value="control">查看屏幕并操作鼠标键盘</option>
-                <option value="files" disabled>
-                  文件（待实现）
-                </option>
+                <option value="files">仅传输文件</option>
               </select>
             </label>
             <label>
@@ -2243,7 +2374,7 @@ function Requests({
           <div className="eyebrow">SHARE ACCESS</div>
           <h2>邀请他人连接我的电脑</h2>
           <p className="muted">
-            选择已开启共享的电脑，生成一次性邀请码。对方发起连接后，你仍需在那台电脑上批准。
+            选择已开启对应功能的电脑，生成一次性邀请码。对方发起连接后，你仍需在那台电脑上批准；文件连接始终逐次批准。
           </p>
           <form
             className="form"
@@ -2278,7 +2409,14 @@ function Requests({
               >
                 <option value="">选择设备</option>
                 {devices
-                  .filter((x) => x.can_host && x.enabled && x.online)
+                  .filter(
+                    (x) =>
+                      (invitePermission === "files"
+                        ? x.can_files
+                        : x.can_host) &&
+                      x.enabled &&
+                      x.online,
+                  )
                   .map((d) => (
                     <option key={d.id} value={d.id}>
                       {d.name}
@@ -2292,11 +2430,14 @@ function Requests({
                 aria-label="允许对方做什么"
                 value={invitePermission}
                 onChange={(e) =>
-                  setInvitePermission(e.target.value as "view" | "control")
+                  setInvitePermission(
+                    e.target.value as "view" | "control" | "files",
+                  )
                 }
               >
                 <option value="view">仅查看屏幕</option>
                 <option value="control">查看屏幕并操作鼠标键盘</option>
+                <option value="files">仅传输文件</option>
               </select>
             </label>
             <button
@@ -2308,7 +2449,7 @@ function Requests({
                     d.id === inviteTarget &&
                     d.online &&
                     d.enabled &&
-                    d.can_host,
+                    (invitePermission === "files" ? d.can_files : d.can_host),
                 )
               }
               className="secondary"
@@ -2316,9 +2457,16 @@ function Requests({
               生成邀请码
             </button>
           </form>
-          {!devices.some((d) => d.online && d.enabled && d.can_host) && (
+          {!devices.some(
+            (d) =>
+              d.online &&
+              d.enabled &&
+              (invitePermission === "files" ? d.can_files : d.can_host),
+          ) && (
             <p className="hint">
-              还没有开启共享的在线电脑。请先在那台电脑开启本机共享。
+              {invitePermission === "files"
+                ? "还没有允许接收文件的在线电脑。请先在那台电脑开启文件接收。"
+                : "还没有开启共享的在线电脑。请先在那台电脑开启本机共享。"}
             </p>
           )}
           {invite && (
@@ -2394,9 +2542,9 @@ function Requests({
             <span className="count">{pending.length}</span>
           </div>
           <p className="muted">
-            只批准你认识的连接。允许控制后，对方能看到屏幕并操作鼠标键盘。
+            只批准你认识的连接。文件连接不授予屏幕或鼠标键盘权限，收到文件仍需单独选择保存位置。
           </p>
-          {!state.sharing && pending.length > 0 && (
+          {!state.sharing && pending.some((p) => p.permission !== "files") && (
             <p className="hint">
               本机共享尚未开启。
               <button
@@ -2431,18 +2579,27 @@ function Requests({
                       拒绝
                     </button>
                     <button
-                      disabled={busy || !state.sharing}
+                      disabled={
+                        busy ||
+                        !(p.permission === "files"
+                          ? state.filesEnabled
+                          : state.sharing)
+                      }
                       className="primary"
                       onClick={() =>
-                        void act(
-                          () => api("decide", { id: p.id, approve: true }),
-                          "已允许连接，对方现在可以连接这台电脑",
-                        )
+                        void act(async () => {
+                          if (p.permission === "files")
+                            await prepareTransport();
+                          await api("decide", { id: p.id, approve: true });
+                          if (p.permission === "files") onFiles(p.id);
+                        }, "已允许连接，对方现在可以连接这台电脑")
                       }
                     >
-                      {p.permission === "control"
-                        ? "允许查看和控制"
-                        : "允许查看"}
+                      {p.permission === "files"
+                        ? "允许文件传输"
+                        : p.permission === "control"
+                          ? "允许查看和控制"
+                          : "允许查看"}
                     </button>
                   </div>
                 </div>
@@ -2503,6 +2660,35 @@ function Requests({
                     </details>
                   </div>
                   <div className="row-actions">
+                    {r.state === "approved" && r.permission === "files" && (
+                      <button
+                        className="secondary"
+                        disabled={busy}
+                        onClick={() =>
+                          void act(
+                            async () => {
+                              if (
+                                r.source_device_id === state.deviceId &&
+                                !["connected", "direct", "relay"].includes(
+                                  paths[r.id]?.state,
+                                )
+                              ) {
+                                await prepareTransport();
+                                await invoke("transport_connect", {
+                                  id: r.id,
+                                  permission: "files",
+                                });
+                              }
+                              onFiles(r.id);
+                            },
+                            "",
+                            false,
+                          )
+                        }
+                      >
+                        打开文件传输
+                      </button>
+                    )}
                     {r.state === "approved" &&
                       r.source_device_id === state.deviceId &&
                       r.permission !== "files" &&

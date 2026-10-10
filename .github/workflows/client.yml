@@ -43,6 +43,8 @@ jobs:
             $env:NODE_PATH = Join-Path $PWD 'node_modules'
             node scripts/test-desktop-ui.cjs
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            node scripts/test-file-transfer-ui.cjs
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             node scripts/test-remote-viewer.cjs
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           } finally { if (!$vite.HasExited) { Stop-Process -Id $vite.Id -Force } }
