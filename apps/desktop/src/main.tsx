@@ -25,6 +25,7 @@ import { FailureDialog, failureMessage, type FailureAction } from "./feedback";
 import {
   Home20Regular,
   Desktop20Regular,
+  Eye20Regular,
   ArrowSwap20Regular,
   Shield20Regular,
   Settings20Regular,
@@ -52,6 +53,7 @@ type PublicState = {
   server: string;
   signedIn: boolean;
   deviceId: string | null;
+  deviceRestoreError?: string | null;
   sharing: boolean;
   remoteWatch?: boolean;
   transportRunning?: boolean;
@@ -375,6 +377,15 @@ function App() {
       const q = await invoke<PublicState>("state");
       if (version !== refreshVersion.current) return;
       setPublicState(q);
+      if (
+        q.deviceRestoreError &&
+        refreshFailures.current.shouldReport(q.deviceRestoreError, foreground)
+      ) {
+        setFailureAction(undefined);
+        setProblem(
+          `已登录，但本机连接尚未恢复，请检查网络后刷新。技术详情：${q.deviceRestoreError}`,
+        );
+      }
       if (typeof q.transportRunning === "boolean")
         setTransportReady(q.transportRunning);
       const local = all.find((d) => d.id === q.deviceId);
@@ -405,7 +416,7 @@ function App() {
         const rows = await api<Pending[]>("pending");
         if (version === refreshVersion.current) setPending(rows);
       } else setPending([]);
-      if (version === refreshVersion.current)
+      if (version === refreshVersion.current && !q.deviceRestoreError)
         refreshFailures.current.recovered();
     } catch (e) {
       const error = errorText(e);
@@ -1871,6 +1882,7 @@ function Devices({
                     }
                     onClick={() => connect("view")}
                   >
+                    <Eye20Regular aria-hidden="true" />
                     仅查看屏幕
                   </button>
                 </div>

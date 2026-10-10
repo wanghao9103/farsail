@@ -256,6 +256,7 @@ struct State {
     device: Option<DeviceCredential>,
     generation: Option<i64>,
     grant: std::collections::HashMap<String, String>,
+    device_restore_error: Option<String>,
 }
 struct DeviceSnapshot {
     base: String,
@@ -323,6 +324,7 @@ impl NativeClient {
             device,
             generation: None,
             grant: Default::default(),
+            device_restore_error: None,
         };
         let preferences = preferences::Preferences::load(&*store, &state);
         Ok(Self {
@@ -348,7 +350,7 @@ impl NativeClient {
     pub async fn public_state(&self) -> Value {
         let s = self.state.lock().await;
         let preferences = self.preferences.lock().unwrap().public(&s);
-        let mut result = json!({"server": s.base, "signedIn": s.login.is_some(), "deviceId": s.device.as_ref().map(|x| &x.id), "sharing":self.hosting_enabled(), "remoteWatch":self.auto_approve.load(Ordering::SeqCst) & 1 == 1, "sharePreferences":preferences});
+        let mut result = json!({"server": s.base, "signedIn": s.login.is_some(), "deviceId": s.device.as_ref().map(|x| &x.id), "deviceRestoreError": s.device_restore_error, "sharing":self.hosting_enabled(), "remoteWatch":self.auto_approve.load(Ordering::SeqCst) & 1 == 1, "sharePreferences":preferences});
         result["defaultRelay"] = json!(
             default_transport_config(&s.base)
                 .ok()
@@ -696,6 +698,8 @@ impl NativeClient {
         }
     }
     fn clear_auth(&self, s: &mut State) -> Result<()> {
+        let remembered = self.remember_device(s);
+        s.device_restore_error = None;
         let preferences = self.forget_sharing_preferences();
         if let Ok(mut sessions) = self.transport_sessions.try_lock() {
             for session in sessions.values() {
@@ -710,7 +714,8 @@ impl NativeClient {
         s.grant.clear();
         self.store.delete("login")?;
         self.store.delete("device-token")?;
-        preferences
+        preferences?;
+        remembered
     }
     async fn user(
         &self,
@@ -892,6 +897,7 @@ impl NativeClient {
                     .user(&mut s, Method::GET, "/v1/me", None, false)
                     .await?;
                 s.owner = me.get("id").and_then(Value::as_str).map(str::to_owned);
+                self.try_restore_device(&mut s).await;
                 Ok(me)
             }
             "resume" | "me" => {
@@ -910,6 +916,7 @@ impl NativeClient {
                     s.generation = None;
                     self.store.delete("device-token")?;
                 }
+                self.try_restore_device(&mut s).await;
                 Ok(me)
             }
             "password" => {
@@ -927,68 +934,11 @@ impl NativeClient {
                     .as_str()
                     .ok_or_else(|| Error::Invalid("missing account id".into()))?
                     .to_owned();
-                let key_name = format!(
-                    "identity-{}-{}",
-                    hex::encode(Sha256::digest(s.base.as_bytes())),
-                    owner
-                );
-                let signing = match self.store.read(&key_name)? {
-                    Some(bytes) => SigningKey::from_bytes(
-                        &bytes
-                            .try_into()
-                            .map_err(|_| Error::Store("invalid signing key".into()))?,
-                    ),
-                    None => {
-                        let key = SigningKey::generate(&mut OsRng);
-                        self.store.write(&key_name, &key.to_bytes())?;
-                        key
-                    }
-                };
-                let challenge = self
-                    .user(
-                        &mut s,
-                        Method::POST,
-                        "/v1/devices/challenge",
-                        Some(json!({"public_key":hex::encode(signing.verifying_key().to_bytes())})),
-                        false,
-                    )
-                    .await?;
-                let message = challenge["message"]
-                    .as_str()
-                    .ok_or_else(|| Error::Invalid("missing challenge message".into()))?;
-                let bind = self.user(&mut s, Method::POST, "/v1/devices/bind", Some(json!({"challenge_id":challenge["challenge_id"], "signature":hex::encode(signing.sign(message.as_bytes()).to_bytes()), "name":string("name")?, "platform":std::env::consts::OS, "can_host":false, "can_files":false})), false).await?;
-                let credential = DeviceCredential {
-                    id: bind["id"]
-                        .as_str()
-                        .ok_or_else(|| Error::Invalid("missing device id".into()))?
-                        .into(),
-                    device_token: bind["device_token"]
-                        .as_str()
-                        .ok_or_else(|| Error::Invalid("missing device credential".into()))?
-                        .into(),
-                    owner_id: owner,
-                    session_id: s.login.as_ref().unwrap().session_id.clone(),
-                };
-                self.forget_sharing_preferences()?;
-                self.store
-                    .write("device-token", &serde_json::to_vec(&credential).unwrap())?;
-                s.device = Some(credential);
-                s.generation = None;
+                self.bind_device(&mut s, owner, string("name")?).await?;
+                s.device_restore_error = None;
                 Ok(json!({"id":s.device.as_ref().unwrap().id}))
             }
-            "heartbeat" => {
-                let generation = s.generation;
-                let v = self
-                    .device(
-                        &mut s,
-                        Method::POST,
-                        "/v1/devices/heartbeat",
-                        Some(json!({"generation":generation})),
-                    )
-                    .await?;
-                s.generation = v["generation"].as_i64();
-                Ok(v)
-            }
+            "heartbeat" => self.send_heartbeat(&mut s).await,
             "rename_device" => {
                 self.user(
                     &mut s,
@@ -1018,6 +968,13 @@ impl NativeClient {
                     s.generation = None;
                     self.store.delete("device-token")?;
                 }
+                if let Some(owner) = &s.owner {
+                    let key = Self::identity_key(&s, owner, "binding");
+                    if read_json::<String>(&*self.store, &key)?.as_deref() == Some(&id) {
+                        self.store.delete(&key)?;
+                    }
+                }
+                s.device_restore_error = None;
                 Ok(v)
             }
             "sessions" => {
@@ -1179,6 +1136,133 @@ impl NativeClient {
             }
             _ => Err(Error::Invalid("unknown action".into())),
         }
+    }
+    fn identity_key(s: &State, owner: &str, kind: &str) -> String {
+        format!(
+            "{kind}-{}-{owner}",
+            hex::encode(Sha256::digest(s.base.as_bytes()))
+        )
+    }
+    // Keep only the server/account-scoped device id across logout, never its revoked token.
+    fn remember_device(&self, s: &State) -> Result<()> {
+        if let Some(device) = &s.device {
+            self.store.write(
+                &Self::identity_key(s, &device.owner_id, "binding"),
+                &serde_json::to_vec(&device.id).unwrap(),
+            )?;
+        }
+        Ok(())
+    }
+    async fn send_heartbeat(&self, s: &mut State) -> Result<Value> {
+        let generation = s.generation;
+        let v = self
+            .device(
+                s,
+                Method::POST,
+                "/v1/devices/heartbeat",
+                Some(json!({"generation":generation})),
+            )
+            .await?;
+        s.generation = v["generation"].as_i64();
+        Ok(v)
+    }
+    async fn bind_device(&self, s: &mut State, owner: String, name: String) -> Result<()> {
+        let key_name = Self::identity_key(s, &owner, "identity");
+        let signing = match self.store.read(&key_name)? {
+            Some(bytes) => SigningKey::from_bytes(
+                &bytes
+                    .try_into()
+                    .map_err(|_| Error::Store("invalid signing key".into()))?,
+            ),
+            None => {
+                let key = SigningKey::generate(&mut OsRng);
+                self.store.write(&key_name, &key.to_bytes())?;
+                key
+            }
+        };
+        let challenge = self
+            .user(
+                s,
+                Method::POST,
+                "/v1/devices/challenge",
+                Some(json!({"public_key":hex::encode(signing.verifying_key().to_bytes())})),
+                false,
+            )
+            .await?;
+        let message = challenge["message"]
+            .as_str()
+            .ok_or_else(|| Error::Invalid("missing challenge message".into()))?;
+        let bind = self.user(s, Method::POST, "/v1/devices/bind", Some(json!({"challenge_id":challenge["challenge_id"], "signature":hex::encode(signing.sign(message.as_bytes()).to_bytes()), "name":name, "platform":std::env::consts::OS, "can_host":false, "can_files":false})), false).await?;
+        let credential = DeviceCredential {
+            id: bind["id"]
+                .as_str()
+                .ok_or_else(|| Error::Invalid("missing device id".into()))?
+                .into(),
+            device_token: bind["device_token"]
+                .as_str()
+                .ok_or_else(|| Error::Invalid("missing device credential".into()))?
+                .into(),
+            owner_id: owner,
+            session_id: s.login.as_ref().unwrap().session_id.clone(),
+        };
+        self.forget_sharing_preferences()?;
+        self.store
+            .write("device-token", &serde_json::to_vec(&credential).unwrap())?;
+        s.device = Some(credential);
+        s.generation = None;
+        self.remember_device(s)?;
+        self.send_heartbeat(s).await?;
+        Ok(())
+    }
+    async fn try_restore_device(&self, s: &mut State) {
+        // Login succeeds independently of device recovery; resume can retry transient failures.
+        s.device_restore_error = self.restore_device(s).await.err().map(|e| e.to_string());
+    }
+    async fn restore_device(&self, s: &mut State) -> Result<()> {
+        if s.device.is_some() {
+            if s.generation.is_none() {
+                self.remember_device(s)?; // Migrate credentials saved by older versions.
+                self.send_heartbeat(s).await?;
+            }
+            return Ok(());
+        }
+        let owner = s.owner.clone().ok_or(Error::SignedOut)?;
+        let key = Self::identity_key(s, &owner, "binding");
+        let Some(id) = read_json::<String>(&*self.store, &key)? else {
+            return Ok(());
+        };
+        if self
+            .store
+            .read(&Self::identity_key(s, &owner, "identity"))?
+            .is_none()
+        {
+            return Err(Error::Store("saved device identity is unavailable".into()));
+        }
+        // Do not recreate devices removed remotely or restore an administrator-disabled device.
+        let device = match self
+            .user(
+                s,
+                Method::GET,
+                &format!("/v1/devices/{}", uuid(&id)?),
+                None,
+                false,
+            )
+            .await
+        {
+            Err(Error::Http(404, _)) => {
+                self.store.delete(&key)?;
+                return Ok(());
+            }
+            result => result?,
+        };
+        if device["enabled"] != true {
+            return Err(Error::Invalid("saved device is disabled".into()));
+        }
+        let name = device["name"]
+            .as_str()
+            .ok_or_else(|| Error::Invalid("missing device name".into()))?
+            .to_owned();
+        self.bind_device(s, owner, name).await
     }
     async fn list_devices(&self) -> Result<Value> {
         let mut all = Vec::new();

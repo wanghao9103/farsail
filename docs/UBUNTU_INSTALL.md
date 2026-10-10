@@ -20,6 +20,8 @@ Configure the coordinator address in Settings, sign in and add this computer. De
 
 The coordinator must also be upgraded to accept `linux`; startup applies the additive `20261009000000_linux_platform.sql` migration without changing historical migration checksums. Linux devices cannot publish host or file capabilities.
 
+Add this computer once on first use. Reopening the app or signing back into the same account restores the existing device connection and immediately updates its online lease, preserving its id and name; logout still revokes the previous login and device credential. Identity is scoped to the coordinator and account, and disabled or unbound devices are never restored automatically. Clearing the keyring/profile, or having already signed out with an older client that discarded its binding record, still requires adding the computer once. Being online on Ubuntu means the controller is connected, not that local screen sharing is supported. Recovery failures report a reason; check the network and refresh to retry.
+
 ## Build a Debian package
 
 ```bash

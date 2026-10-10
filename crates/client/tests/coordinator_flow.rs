@@ -139,6 +139,9 @@ async fn native_client_against_real_coordinator() {
         .as_str()
         .unwrap()
         .to_owned();
+    // Binding publishes the online lease before returning, including controller-only Linux.
+    let initial = a.call("devices", Value::Null).await.unwrap();
+    assert_eq!(initial[0]["online"], true);
     #[cfg(not(windows))]
     {
         // The target simulates a Windows host; the source retains its real Linux platform.
@@ -460,9 +463,99 @@ async fn native_client_against_real_coordinator() {
             .unwrap()
             .is_empty()
     );
+    #[cfg(not(windows))]
+    for entry in std::fs::read_dir(a_dir.path()).unwrap() {
+        let path = entry.unwrap().path();
+        if path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("binding-")
+        {
+            std::fs::remove_file(path).unwrap(); // Simulate an older client's token-only profile.
+        }
+    }
     a.call("logout", Value::Null).await.unwrap();
     assert!(a.call("me", Value::Null).await.is_err());
     assert!(a.call("heartbeat", Value::Null).await.is_err());
+    // A fresh login renews the device credential without asking to add this computer again.
+    let login = json!({"email":"native-a@example.test","password":"correct horse battery staple"});
+    drop(a);
+    let a = client(a_dir.path().to_path_buf(), &base);
+    a.call("login", login.clone()).await.unwrap();
+    assert_eq!(a.public_state().await["deviceId"], dev_a);
+    assert!(a.public_state().await["deviceRestoreError"].is_null());
+    let devices = a.call("devices", Value::Null).await.unwrap();
+    let restored = devices
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["id"] == dev_a)
+        .unwrap();
+    assert_eq!(restored["online"], true);
+    assert_eq!(restored["name"], "Source Windows");
+    assert_eq!(devices.as_array().unwrap().len(), 1);
+    assert_eq!(a.public_state().await["sharing"], false);
+    a.call("logout", Value::Null).await.unwrap();
+    // The remembered binding is scoped to both coordinator and account.
+    a.call(
+        "login",
+        json!({"email":"native-b@example.test","password":"correct horse battery staple"}),
+    )
+    .await
+    .unwrap();
+    assert!(a.public_state().await["deviceId"].is_null());
+    a.call("logout", Value::Null).await.unwrap();
+    a.set_server(&base.replace("127.0.0.1", "localhost"))
+        .await
+        .unwrap();
+    a.call("login", login.clone()).await.unwrap();
+    assert!(a.public_state().await["deviceId"].is_null());
+    a.call("logout", Value::Null).await.unwrap();
+    a.set_server(&base).await.unwrap();
+    // Administrator disable cannot be undone by automatic recovery.
+    sqlx::query("UPDATE devices SET enabled=false WHERE id=$1")
+        .bind(Uuid::parse_str(&dev_a).unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    a.call("login", login.clone()).await.unwrap();
+    assert!(a.public_state().await["deviceId"].is_null());
+    assert!(a.public_state().await["deviceRestoreError"].is_string());
+    sqlx::query("UPDATE devices SET enabled=true WHERE id=$1")
+        .bind(Uuid::parse_str(&dev_a).unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    a.call("resume", Value::Null).await.unwrap();
+    assert_eq!(a.public_state().await["deviceId"], dev_a);
+    assert!(a.public_state().await["deviceRestoreError"].is_null());
+    // Devices removed remotely are not silently re-created by the saved local key.
+    a.call("logout", Value::Null).await.unwrap();
+    sqlx::query("UPDATE devices SET bound=false WHERE id=$1")
+        .bind(Uuid::parse_str(&dev_a).unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    a.call("login", login.clone()).await.unwrap();
+    assert!(a.public_state().await["deviceId"].is_null());
+    assert!(a.public_state().await["deviceRestoreError"].is_null());
+    sqlx::query("UPDATE devices SET bound=true WHERE id=$1")
+        .bind(Uuid::parse_str(&dev_a).unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    // Re-enabling the row doesn't restore the discarded local hint.
+    a.call("resume", Value::Null).await.unwrap();
+    assert!(a.public_state().await["deviceId"].is_null());
+    a.call("bind", json!({"name":"Source Windows"}))
+        .await
+        .unwrap();
+    // Explicit unbind also removes the recovery hint; relogin must not re-add it.
+    a.call("unbind_device", json!({"id":dev_a})).await.unwrap();
+    a.call("logout", Value::Null).await.unwrap();
+    a.call("login", login).await.unwrap();
+    assert!(a.public_state().await["deviceId"].is_null());
     server.abort();
     pool.close().await;
     sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
