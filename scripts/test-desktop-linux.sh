@@ -29,7 +29,7 @@ export FARSAIL_LINUX_TARGET="$native_target"
 xvfb-run -a dbus-run-session -- bash -euo pipefail <<'NATIVE'
   printf "%s" "farsail-test-only" | gnome-keyring-daemon --unlock --components=secrets
   cargo test --locked -p farsail-client native_keyring_roundtrip_and_profile_isolation --lib -- --ignored | tee "$XDG_RUNTIME_DIR/linux-store.log"
-  rg 'test linux_store::tests::native_keyring_roundtrip_and_profile_isolation \.\.\. ok' "$XDG_RUNTIME_DIR/linux-store.log" >/dev/null
+  grep -Fq 'test linux_store::tests::native_keyring_roundtrip_and_profile_isolation ... ok' "$XDG_RUNTIME_DIR/linux-store.log"
   (cd apps/desktop && exec ../../node_modules/.bin/vite) >"$XDG_RUNTIME_DIR/vite.log" 2>&1 &
   vite=$!
   app=""

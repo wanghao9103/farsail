@@ -31,7 +31,13 @@ dpkg-deb -x "$package" "$extract"
 binary="$extract/usr/bin/farsail-desktop"
 node scripts/verify-linux-architecture.mjs "$binary" "$target"
 ldd "$binary" | tee .local/deb-dependencies.txt
-! rg 'not found' .local/deb-dependencies.txt
+if grep -Fq 'not found' .local/deb-dependencies.txt; then
+  printf 'Debian package has missing native dependencies\n' >&2
+  exit 1
+else
+  dependency_check=$?
+  [[ $dependency_check == 1 ]] || exit "$dependency_check"
+fi
 cp "$package" .local/client-artifacts/
 if [[ -n ${TAURI_SIGNING_PRIVATE_KEY:-} ]]; then cp "$package.sig" .local/client-artifacts/; fi
 FARSAIL_PACKAGE_ARCHITECTURE="$architecture" FARSAIL_PACKAGE_TARGET="$target" FARSAIL_PACKAGE_BINARY="$binary" node --input-type=module <<'JS'
