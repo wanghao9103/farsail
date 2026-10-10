@@ -43,6 +43,8 @@ jobs:
             $env:NODE_PATH = Join-Path $PWD 'node_modules'
             node scripts/test-desktop-ui.cjs
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            node scripts/test-file-transfer-ui.cjs
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             node scripts/test-remote-viewer.cjs
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           } finally { if (!$vite.HasExited) { Stop-Process -Id $vite.Id -Force } }
@@ -53,3 +55,21 @@ jobs:
           path: |
             .local/native-viewer-verification.json
             .local/ui-verification/*.png
+  native-input:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.93.0
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-native-input
+      - name: Recorded input and activation policy regressions
+        run: cargo test -p farsail-windows --lib
+      - name: Owned overlapping-window mouse activation and release
+        timeout-minutes: 3
+        run: cargo test -p farsail-windows --lib real_input_into_own_foreground_window -- --ignored --test-threads=1
+      - run: cargo clippy -p farsail-windows --all-targets -- -D warnings

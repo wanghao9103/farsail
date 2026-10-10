@@ -19,6 +19,8 @@ use std::{
 };
 use tokio::sync::{Mutex, broadcast, watch};
 use url::Url;
+pub mod file_runtime;
+pub mod files;
 #[cfg(target_os = "linux")]
 mod linux_store;
 mod preferences;
@@ -248,6 +250,12 @@ struct DeviceCredential {
     owner_id: String,
     session_id: String,
 }
+#[derive(Clone)]
+struct LocalGrant {
+    token: String,
+    permission: RemotePermission,
+    permission_epoch: u64,
+}
 struct State {
     base: String,
     login: Option<Login>,
@@ -255,7 +263,8 @@ struct State {
     owner: Option<String>,
     device: Option<DeviceCredential>,
     generation: Option<i64>,
-    grant: std::collections::HashMap<String, String>,
+    grant: std::collections::HashMap<String, LocalGrant>,
+    device_restore_error: Option<String>,
 }
 struct DeviceSnapshot {
     base: String,
@@ -298,6 +307,7 @@ pub struct NativeClient {
     signing_out: AtomicBool,
     cancel_tx: watch::Sender<u64>,
     host_state: std::sync::atomic::AtomicU64,
+    files_state: std::sync::atomic::AtomicU64,
     auto_approve: std::sync::atomic::AtomicU64,
     session_tx: broadcast::Sender<(Session, bool)>,
     capability_lock: Mutex<()>,
@@ -323,6 +333,7 @@ impl NativeClient {
             device,
             generation: None,
             grant: Default::default(),
+            device_restore_error: None,
         };
         let preferences = preferences::Preferences::load(&*store, &state);
         Ok(Self {
@@ -339,6 +350,7 @@ impl NativeClient {
             signing_out: AtomicBool::new(false),
             cancel_tx,
             host_state: std::sync::atomic::AtomicU64::new(0),
+            files_state: std::sync::atomic::AtomicU64::new(0),
             auto_approve: std::sync::atomic::AtomicU64::new(0),
             session_tx,
             capability_lock: Mutex::new(()),
@@ -348,7 +360,7 @@ impl NativeClient {
     pub async fn public_state(&self) -> Value {
         let s = self.state.lock().await;
         let preferences = self.preferences.lock().unwrap().public(&s);
-        let mut result = json!({"server": s.base, "signedIn": s.login.is_some(), "deviceId": s.device.as_ref().map(|x| &x.id), "sharing":self.hosting_enabled(), "remoteWatch":self.auto_approve.load(Ordering::SeqCst) & 1 == 1, "sharePreferences":preferences});
+        let mut result = json!({"server": s.base, "signedIn": s.login.is_some(), "deviceId": s.device.as_ref().map(|x| &x.id), "deviceRestoreError": s.device_restore_error, "filesEnabled": self.files_enabled(), "sharing":self.hosting_enabled(), "remoteWatch":self.auto_approve.load(Ordering::SeqCst) & 1 == 1, "sharePreferences":preferences});
         result["defaultRelay"] = json!(
             default_transport_config(&s.base)
                 .ok()
@@ -450,14 +462,31 @@ impl NativeClient {
             if let Ok(v) = result
                 && let Some(token) = v["grant_token"].as_str()
             {
-                s.grant.insert(id, token.into());
+                let permission = serde_json::from_value(row["permission"].clone())
+                    .map_err(|_| Error::Invalid("invalid remote permission".into()))?;
+                s.grant.insert(
+                    id,
+                    LocalGrant {
+                        token: token.into(),
+                        permission,
+                        permission_epoch: host_epoch,
+                    },
+                );
             }
         }
         Ok(())
     }
     pub async fn revoke_host_approvals(&self) -> Result<()> {
         let mut s = self.state.lock().await;
-        let ids: Vec<_> = s.grant.drain().map(|(id, _)| id).collect();
+        let ids: Vec<_> = s
+            .grant
+            .iter()
+            .filter(|(_, grant)| grant.permission != RemotePermission::Files)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in &ids {
+            s.grant.remove(id);
+        }
         let mut failed = None;
         for id in ids {
             if let Err(e) = self
@@ -580,6 +609,123 @@ impl NativeClient {
         .await?;
         Ok(())
     }
+    pub fn files_enabled(&self) -> bool {
+        self.files_state.load(Ordering::SeqCst) & 1 == 1
+    }
+    pub fn disable_files_local(&self) {
+        self.files_state
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |v| {
+                Some(v.wrapping_add(2) & !1)
+            })
+            .ok();
+    }
+    pub async fn close_file_sessions(&self) {
+        let local = self.transport.lock().await.as_ref().map(Transport::id);
+        let sessions: Vec<_> = self
+            .transport_sessions
+            .lock()
+            .await
+            .iter()
+            .filter(|(_, session)| {
+                session.permission() == RemotePermission::Files
+                    && local.is_some_and(|id| session.is_host(id))
+            })
+            .map(|(id, session)| (id.clone(), session.clone()))
+            .collect();
+        let mut ids: std::collections::HashSet<String> = self
+            .state
+            .lock()
+            .await
+            .grant
+            .iter()
+            .filter(|(_, grant)| grant.permission == RemotePermission::Files)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for (id, session) in sessions {
+            session.close();
+            ids.insert(id);
+        }
+        for id in ids {
+            self.invalidate_transport_grant(&id).await;
+        }
+    }
+    pub async fn set_files_capability(&self, enabled: bool) -> Result<Value> {
+        if !enabled {
+            self.disable_files_local();
+            self.close_file_sessions().await;
+        }
+        let started = self.files_state.load(Ordering::SeqCst);
+        let _guard = self.capability_lock.lock().await;
+        if !enabled && self.files_enabled() {
+            self.disable_files_local();
+            self.close_file_sessions().await;
+        }
+        if enabled
+            && (self.files_state.load(Ordering::SeqCst) != started
+                || !self.transport_running().await)
+        {
+            return Err(Error::Invalid("文件接收开启已取消，请重试。".into()));
+        }
+        let identity = DeviceSnapshot::from_state(&*self.state.lock().await)?;
+        let result = self
+            .transport_request_as(
+                &identity,
+                Method::POST,
+                "/v1/devices/capability",
+                None,
+                Some(json!({"generation":identity.generation,"can_files":enabled})),
+            )
+            .await;
+        let current = self.files_state.load(Ordering::SeqCst) == started
+            && !self.signing_out.load(Ordering::SeqCst)
+            && self.transport_running().await
+            && identity.current(&*self.state.lock().await);
+        if enabled
+            && (result.is_err()
+                || !current
+                || self
+                    .files_state
+                    .compare_exchange(started, started | 1, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_err())
+        {
+            self.disable_files_local();
+            let _ = tokio::time::timeout(
+                Duration::from_secs(2),
+                self.transport_request_as(
+                    &identity,
+                    Method::POST,
+                    "/v1/devices/capability",
+                    None,
+                    Some(json!({"generation":identity.generation,"can_files":false})),
+                ),
+            )
+            .await;
+            return match result {
+                Err(Error::Http(422, _)) => Err(Error::Invalid(
+                    "当前协调服务尚不支持文件传输，请先升级服务端。".into(),
+                )),
+                Err(e) => Err(e),
+                Ok(_) => Err(Error::Invalid("文件接收开启已取消，请重试。".into())),
+            };
+        }
+        result
+    }
+    pub async fn clear_stale_files_capability(&self) -> Result<()> {
+        let _guard = self.capability_lock.lock().await;
+        if self.files_enabled() {
+            return Ok(());
+        }
+        let identity = DeviceSnapshot::from_state(&*self.state.lock().await)?;
+        self.transport_request_as(
+            &identity,
+            Method::POST,
+            "/v1/devices/capability",
+            None,
+            Some(json!({"generation":identity.generation,"can_files":false})),
+        )
+        .await?;
+        Ok(())
+    }
     pub async fn set_server(&self, base: &str) -> Result<Value> {
         let base = validate_base(base)?;
         let mut s = self.state.lock().await;
@@ -696,6 +842,9 @@ impl NativeClient {
         }
     }
     fn clear_auth(&self, s: &mut State) -> Result<()> {
+        self.disable_files_local();
+        let remembered = self.remember_device(s);
+        s.device_restore_error = None;
         let preferences = self.forget_sharing_preferences();
         if let Ok(mut sessions) = self.transport_sessions.try_lock() {
             for session in sessions.values() {
@@ -710,7 +859,8 @@ impl NativeClient {
         s.grant.clear();
         self.store.delete("login")?;
         self.store.delete("device-token")?;
-        preferences
+        preferences?;
+        remembered
     }
     async fn user(
         &self,
@@ -892,6 +1042,7 @@ impl NativeClient {
                     .user(&mut s, Method::GET, "/v1/me", None, false)
                     .await?;
                 s.owner = me.get("id").and_then(Value::as_str).map(str::to_owned);
+                self.try_restore_device(&mut s).await;
                 Ok(me)
             }
             "resume" | "me" => {
@@ -910,6 +1061,7 @@ impl NativeClient {
                     s.generation = None;
                     self.store.delete("device-token")?;
                 }
+                self.try_restore_device(&mut s).await;
                 Ok(me)
             }
             "password" => {
@@ -927,68 +1079,11 @@ impl NativeClient {
                     .as_str()
                     .ok_or_else(|| Error::Invalid("missing account id".into()))?
                     .to_owned();
-                let key_name = format!(
-                    "identity-{}-{}",
-                    hex::encode(Sha256::digest(s.base.as_bytes())),
-                    owner
-                );
-                let signing = match self.store.read(&key_name)? {
-                    Some(bytes) => SigningKey::from_bytes(
-                        &bytes
-                            .try_into()
-                            .map_err(|_| Error::Store("invalid signing key".into()))?,
-                    ),
-                    None => {
-                        let key = SigningKey::generate(&mut OsRng);
-                        self.store.write(&key_name, &key.to_bytes())?;
-                        key
-                    }
-                };
-                let challenge = self
-                    .user(
-                        &mut s,
-                        Method::POST,
-                        "/v1/devices/challenge",
-                        Some(json!({"public_key":hex::encode(signing.verifying_key().to_bytes())})),
-                        false,
-                    )
-                    .await?;
-                let message = challenge["message"]
-                    .as_str()
-                    .ok_or_else(|| Error::Invalid("missing challenge message".into()))?;
-                let bind = self.user(&mut s, Method::POST, "/v1/devices/bind", Some(json!({"challenge_id":challenge["challenge_id"], "signature":hex::encode(signing.sign(message.as_bytes()).to_bytes()), "name":string("name")?, "platform":std::env::consts::OS, "can_host":false, "can_files":false})), false).await?;
-                let credential = DeviceCredential {
-                    id: bind["id"]
-                        .as_str()
-                        .ok_or_else(|| Error::Invalid("missing device id".into()))?
-                        .into(),
-                    device_token: bind["device_token"]
-                        .as_str()
-                        .ok_or_else(|| Error::Invalid("missing device credential".into()))?
-                        .into(),
-                    owner_id: owner,
-                    session_id: s.login.as_ref().unwrap().session_id.clone(),
-                };
-                self.forget_sharing_preferences()?;
-                self.store
-                    .write("device-token", &serde_json::to_vec(&credential).unwrap())?;
-                s.device = Some(credential);
-                s.generation = None;
+                self.bind_device(&mut s, owner, string("name")?).await?;
+                s.device_restore_error = None;
                 Ok(json!({"id":s.device.as_ref().unwrap().id}))
             }
-            "heartbeat" => {
-                let generation = s.generation;
-                let v = self
-                    .device(
-                        &mut s,
-                        Method::POST,
-                        "/v1/devices/heartbeat",
-                        Some(json!({"generation":generation})),
-                    )
-                    .await?;
-                s.generation = v["generation"].as_i64();
-                Ok(v)
-            }
+            "heartbeat" => self.send_heartbeat(&mut s).await,
             "rename_device" => {
                 self.user(
                     &mut s,
@@ -1018,6 +1113,13 @@ impl NativeClient {
                     s.generation = None;
                     self.store.delete("device-token")?;
                 }
+                if let Some(owner) = &s.owner {
+                    let key = Self::identity_key(&s, owner, "binding");
+                    if read_json::<String>(&*self.store, &key)?.as_deref() == Some(&id) {
+                        self.store.delete(&key)?;
+                    }
+                }
+                s.device_restore_error = None;
                 Ok(v)
             }
             "sessions" => {
@@ -1071,7 +1173,11 @@ impl NativeClient {
                     .await
             }
             "revoke_remote" => {
-                s.grant.remove(&uuid(&string("id")?)?);
+                let id = uuid(&string("id")?)?;
+                s.grant.remove(&id);
+                if let Some(session) = self.transport_sessions.lock().await.remove(&id) {
+                    session.close();
+                }
                 self.user(
                     &mut s,
                     Method::POST,
@@ -1082,6 +1188,8 @@ impl NativeClient {
                 .await
             }
             "decide" => {
+                let files_epoch = self.files_state.load(Ordering::SeqCst);
+                let host_epoch = self.host_state.load(Ordering::SeqCst);
                 let id = uuid(&string("id")?)?;
                 let v = self
                     .device(
@@ -1091,8 +1199,38 @@ impl NativeClient {
                         Some(json!({"approve":args["approve"]})),
                     )
                     .await?;
+                if v["permission"] == "files"
+                    && args["approve"] == true
+                    && (files_epoch & 1 == 0
+                        || self.files_state.load(Ordering::SeqCst) != files_epoch)
+                {
+                    let _ = self
+                        .device(
+                            &mut s,
+                            Method::POST,
+                            &format!("/v1/remote/{id}/revoke"),
+                            None,
+                        )
+                        .await;
+                    return Err(Error::Invalid(
+                        "文件接收已关闭，请重新开启并批准连接。".into(),
+                    ));
+                }
                 if let Some(token) = v.get("grant_token").and_then(Value::as_str) {
-                    s.grant.insert(id, token.into());
+                    let permission = serde_json::from_value(v["permission"].clone())
+                        .map_err(|_| Error::Invalid("invalid remote permission".into()))?;
+                    s.grant.insert(
+                        id,
+                        LocalGrant {
+                            token: token.into(),
+                            permission,
+                            permission_epoch: if permission == RemotePermission::Files {
+                                files_epoch
+                            } else {
+                                host_epoch
+                            },
+                        },
+                    );
                 }
                 Ok(json!({"approved":v.is_object()}))
             }
@@ -1179,6 +1317,133 @@ impl NativeClient {
             }
             _ => Err(Error::Invalid("unknown action".into())),
         }
+    }
+    fn identity_key(s: &State, owner: &str, kind: &str) -> String {
+        format!(
+            "{kind}-{}-{owner}",
+            hex::encode(Sha256::digest(s.base.as_bytes()))
+        )
+    }
+    // Keep only the server/account-scoped device id across logout, never its revoked token.
+    fn remember_device(&self, s: &State) -> Result<()> {
+        if let Some(device) = &s.device {
+            self.store.write(
+                &Self::identity_key(s, &device.owner_id, "binding"),
+                &serde_json::to_vec(&device.id).unwrap(),
+            )?;
+        }
+        Ok(())
+    }
+    async fn send_heartbeat(&self, s: &mut State) -> Result<Value> {
+        let generation = s.generation;
+        let v = self
+            .device(
+                s,
+                Method::POST,
+                "/v1/devices/heartbeat",
+                Some(json!({"generation":generation})),
+            )
+            .await?;
+        s.generation = v["generation"].as_i64();
+        Ok(v)
+    }
+    async fn bind_device(&self, s: &mut State, owner: String, name: String) -> Result<()> {
+        let key_name = Self::identity_key(s, &owner, "identity");
+        let signing = match self.store.read(&key_name)? {
+            Some(bytes) => SigningKey::from_bytes(
+                &bytes
+                    .try_into()
+                    .map_err(|_| Error::Store("invalid signing key".into()))?,
+            ),
+            None => {
+                let key = SigningKey::generate(&mut OsRng);
+                self.store.write(&key_name, &key.to_bytes())?;
+                key
+            }
+        };
+        let challenge = self
+            .user(
+                s,
+                Method::POST,
+                "/v1/devices/challenge",
+                Some(json!({"public_key":hex::encode(signing.verifying_key().to_bytes())})),
+                false,
+            )
+            .await?;
+        let message = challenge["message"]
+            .as_str()
+            .ok_or_else(|| Error::Invalid("missing challenge message".into()))?;
+        let bind = self.user(s, Method::POST, "/v1/devices/bind", Some(json!({"challenge_id":challenge["challenge_id"], "signature":hex::encode(signing.sign(message.as_bytes()).to_bytes()), "name":name, "platform":std::env::consts::OS, "can_host":false, "can_files":false})), false).await?;
+        let credential = DeviceCredential {
+            id: bind["id"]
+                .as_str()
+                .ok_or_else(|| Error::Invalid("missing device id".into()))?
+                .into(),
+            device_token: bind["device_token"]
+                .as_str()
+                .ok_or_else(|| Error::Invalid("missing device credential".into()))?
+                .into(),
+            owner_id: owner,
+            session_id: s.login.as_ref().unwrap().session_id.clone(),
+        };
+        self.forget_sharing_preferences()?;
+        self.store
+            .write("device-token", &serde_json::to_vec(&credential).unwrap())?;
+        s.device = Some(credential);
+        s.generation = None;
+        self.remember_device(s)?;
+        self.send_heartbeat(s).await?;
+        Ok(())
+    }
+    async fn try_restore_device(&self, s: &mut State) {
+        // Login succeeds independently of device recovery; resume can retry transient failures.
+        s.device_restore_error = self.restore_device(s).await.err().map(|e| e.to_string());
+    }
+    async fn restore_device(&self, s: &mut State) -> Result<()> {
+        if s.device.is_some() {
+            if s.generation.is_none() {
+                self.remember_device(s)?; // Migrate credentials saved by older versions.
+                self.send_heartbeat(s).await?;
+            }
+            return Ok(());
+        }
+        let owner = s.owner.clone().ok_or(Error::SignedOut)?;
+        let key = Self::identity_key(s, &owner, "binding");
+        let Some(id) = read_json::<String>(&*self.store, &key)? else {
+            return Ok(());
+        };
+        if self
+            .store
+            .read(&Self::identity_key(s, &owner, "identity"))?
+            .is_none()
+        {
+            return Err(Error::Store("saved device identity is unavailable".into()));
+        }
+        // Do not recreate devices removed remotely or restore an administrator-disabled device.
+        let device = match self
+            .user(
+                s,
+                Method::GET,
+                &format!("/v1/devices/{}", uuid(&id)?),
+                None,
+                false,
+            )
+            .await
+        {
+            Err(Error::Http(404, _)) => {
+                self.store.delete(&key)?;
+                return Ok(());
+            }
+            result => result?,
+        };
+        if device["enabled"] != true {
+            return Err(Error::Invalid("saved device is disabled".into()));
+        }
+        let name = device["name"]
+            .as_str()
+            .ok_or_else(|| Error::Invalid("missing device name".into()))?
+            .to_owned();
+        self.bind_device(s, owner, name).await
     }
     async fn list_devices(&self) -> Result<Value> {
         let mut all = Vec::new();
@@ -1541,7 +1806,8 @@ impl NativeClient {
     }
     pub async fn close_transport_session(&self, id: &str) -> Result<()> {
         let id = uuid(id)?;
-        if let Some(s) = self.transport_sessions.lock().await.remove(&id) {
+        let removed = self.transport_sessions.lock().await.remove(&id);
+        if let Some(s) = removed {
             s.close();
             self.invalidate_transport_grant(&id).await;
         }
@@ -1554,7 +1820,13 @@ impl NativeClient {
             return false;
         };
         let is_host = session.is_host(local);
-        if is_host && !self.hosting_enabled() {
+        if is_host
+            && if session.permission() == RemotePermission::Files {
+                !self.files_enabled()
+            } else {
+                !self.hosting_enabled()
+            }
+        {
             session.close();
             return false;
         }
@@ -1566,12 +1838,33 @@ impl NativeClient {
             self.invalidate_transport_grant(&id).await;
             return false;
         }
+        let approval = if is_host && session.permission() == RemotePermission::Files {
+            Some(self.state.lock().await)
+        } else {
+            None
+        };
+        let files_epoch = self.files_state.load(Ordering::SeqCst);
+        if let Some(state) = &approval
+            && (files_epoch & 1 == 0
+                || state.grant.get(session.id()).is_none_or(|grant| {
+                    grant.permission != RemotePermission::Files
+                        || grant.permission_epoch != files_epoch
+                }))
+        {
+            session.close();
+            return false;
+        }
         let mut sessions = self.transport_sessions.lock().await;
+        if approval.is_some() && self.files_state.load(Ordering::SeqCst) != files_epoch {
+            session.close();
+            return false;
+        }
         // Expired entries are removed on close by the task below; cap live sessions.
         if sessions.len() >= 16 || sessions.contains_key(session.id()) {
             let id = session.id().to_owned();
             session.close();
             drop(sessions);
+            drop(approval);
             drop(current);
             self.invalidate_transport_grant(&id).await;
             return false;
@@ -1580,6 +1873,7 @@ impl NativeClient {
         let connection_id = session.stable_id();
         sessions.insert(id.clone(), session.clone());
         drop(sessions);
+        drop(approval);
         drop(current);
         let _ = self.session_tx.send((session.clone(), is_host));
         let owner = self.clone();
@@ -1599,7 +1893,9 @@ impl NativeClient {
     }
     pub async fn stop_transport(&self) -> u64 {
         let was_host = self.hosting_enabled();
+        let was_files = self.files_enabled();
         self.disable_host_local();
+        self.disable_files_local();
         let mut epoch = self.transport_epoch.lock().await;
         *epoch = epoch.wrapping_add(1);
         let next = *epoch;
@@ -1622,6 +1918,10 @@ impl NativeClient {
         if was_host {
             let _ =
                 tokio::time::timeout(Duration::from_secs(2), self.set_host_capability(false)).await;
+        }
+        if was_files {
+            let _ = tokio::time::timeout(Duration::from_secs(2), self.set_files_capability(false))
+                .await;
         }
         next
     }
@@ -1671,14 +1971,25 @@ impl Authority for NativeClient {
         Ok(claims)
     }
     async fn issue(&self, id: &str, renew: bool) -> farsail_transport::Result<String> {
-        if !self.hosting_enabled() {
+        let grant = self
+            .state
+            .lock()
+            .await
+            .grant
+            .get(id)
+            .cloned()
+            .ok_or(farsail_transport::Error::Denied)?;
+        let flag = if grant.permission == RemotePermission::Files {
+            &self.files_state
+        } else {
+            &self.host_state
+        };
+        let permission_epoch = flag.load(Ordering::SeqCst);
+        if permission_epoch & 1 == 0 || permission_epoch != grant.permission_epoch {
             return Err(farsail_transport::Error::Denied);
         }
         if !renew {
-            if let Some(token) = self.state.lock().await.grant.get(id).cloned() {
-                return Ok(token);
-            }
-            return Err(farsail_transport::Error::Denied);
+            return Ok(grant.token);
         }
         let epoch = *self.transport_epoch.lock().await;
         let v = self
@@ -1694,15 +2005,28 @@ impl Authority for NativeClient {
             .as_str()
             .ok_or(farsail_transport::Error::Denied)?
             .to_owned();
+        let permission: RemotePermission = serde_json::from_value(v["permission"].clone())
+            .map_err(|_| farsail_transport::Error::Denied)?;
         let current = self.transport_epoch.lock().await;
-        if *current != epoch {
-            return Err(farsail_transport::Error::Closed);
-        }
         let mut state = self.state.lock().await;
-        if !state.grant.contains_key(id) {
+        if *current != epoch
+            || flag.load(Ordering::SeqCst) != permission_epoch
+            || permission != grant.permission
+            || !state.grant.contains_key(id)
+        {
+            drop(state);
+            drop(current);
+            self.invalidate_transport_grant(id).await;
             return Err(farsail_transport::Error::Closed);
         }
-        state.grant.insert(id.to_owned(), token.clone());
+        state.grant.insert(
+            id.to_owned(),
+            LocalGrant {
+                token: token.clone(),
+                permission,
+                permission_epoch,
+            },
+        );
         Ok(token)
     }
 }
@@ -1906,9 +2230,14 @@ mod tests {
                 session_id: "login".into(),
             });
             state.generation = Some(1);
-            state
-                .grant
-                .insert("pending".into(), "synthetic-approved-grant".into());
+            state.grant.insert(
+                "pending".into(),
+                LocalGrant {
+                    token: "synthetic-approved-grant".into(),
+                    permission: RemotePermission::Control,
+                    permission_epoch: 0,
+                },
+            );
         }
         let old = Transport::bind([99; 32], TransportConfig::default())
             .await
@@ -2087,6 +2416,373 @@ mod tests {
         );
         server.abort();
     }
+    #[tokio::test]
+    async fn delayed_files_enable_cannot_survive_transport_stop() {
+        use axum::{Json, Router, extract::State as AxumState, routing::post};
+        use std::sync::atomic::AtomicUsize;
+        struct Gate {
+            entered: tokio::sync::Notify,
+            release: tokio::sync::Notify,
+            disabled: AtomicUsize,
+        }
+        async fn capability(
+            AxumState(gate): AxumState<Arc<Gate>>,
+            Json(body): Json<Value>,
+        ) -> Json<Value> {
+            if body["can_files"] == true {
+                gate.entered.notify_one();
+                gate.release.notified().await;
+            } else {
+                gate.disabled.fetch_add(1, Ordering::SeqCst);
+            }
+            Json(json!({"can_files":body["can_files"]}))
+        }
+        let gate = Arc::new(Gate {
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+            disabled: AtomicUsize::new(0),
+        });
+        let app = Router::new()
+            .route("/v1/devices/capability", post(capability))
+            .with_state(gate.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = Arc::new(NativeClient::new(Arc::new(MemoryStore::default())).unwrap());
+        client.set_server(&base).await.unwrap();
+        {
+            let mut state = client.state.lock().await;
+            state.device = Some(DeviceCredential {
+                id: "device".into(),
+                device_token: "token".into(),
+                owner_id: "owner".into(),
+                session_id: "session".into(),
+            });
+            state.generation = Some(1);
+        }
+        *client.transport.lock().await = Some(
+            Transport::bind([33; 32], TransportConfig::default())
+                .await
+                .unwrap(),
+        );
+        let task = tokio::spawn({
+            let client = client.clone();
+            async move { client.set_files_capability(true).await }
+        });
+        gate.entered.notified().await;
+        client.stop_transport().await;
+        gate.release.notify_one();
+        assert!(task.await.unwrap().is_err());
+        assert!(!client.files_enabled());
+        for _ in 0..50 {
+            if gate.disabled.load(Ordering::SeqCst) > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            gate.disabled.load(Ordering::SeqCst) > 0,
+            "late enable must be compensated on server"
+        );
+        server.abort();
+    }
+    #[tokio::test]
+    async fn delayed_files_enable_cannot_survive_local_opt_out() {
+        use axum::{Json, Router, extract::State as AxumState, routing::post};
+        use std::sync::atomic::AtomicUsize;
+        struct Gate {
+            entered: tokio::sync::Notify,
+            release: tokio::sync::Notify,
+            disabled: AtomicUsize,
+        }
+        async fn capability(
+            AxumState(gate): AxumState<Arc<Gate>>,
+            Json(body): Json<Value>,
+        ) -> Json<Value> {
+            if body["can_files"] == true {
+                gate.entered.notify_one();
+                gate.release.notified().await;
+            } else {
+                gate.disabled.fetch_add(1, Ordering::SeqCst);
+            }
+            Json(json!({"can_files":body["can_files"]}))
+        }
+        let gate = Arc::new(Gate {
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+            disabled: AtomicUsize::new(0),
+        });
+        let app = Router::new()
+            .route("/v1/devices/capability", post(capability))
+            .with_state(gate.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = Arc::new(NativeClient::new(Arc::new(MemoryStore::default())).unwrap());
+        client.set_server(&base).await.unwrap();
+        {
+            let mut state = client.state.lock().await;
+            state.device = Some(DeviceCredential {
+                id: "device".into(),
+                device_token: "token".into(),
+                owner_id: "owner".into(),
+                session_id: "session".into(),
+            });
+            state.generation = Some(1);
+        }
+        *client.transport.lock().await = Some(
+            Transport::bind([33; 32], TransportConfig::default())
+                .await
+                .unwrap(),
+        );
+        let task = tokio::spawn({
+            let client = client.clone();
+            async move { client.set_files_capability(true).await }
+        });
+        gate.entered.notified().await;
+        client.disable_files_local();
+        gate.release.notify_one();
+        assert!(task.await.unwrap().is_err());
+        assert!(!client.files_enabled());
+        for _ in 0..50 {
+            if gate.disabled.load(Ordering::SeqCst) > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(
+            gate.disabled.load(Ordering::SeqCst) > 0,
+            "late enable must be compensated on server"
+        );
+        server.abort();
+    }
+    #[tokio::test]
+    async fn delayed_file_approval_is_revoked_after_receiving_disabled() {
+        use axum::{Json, Router, routing::post};
+        let seen = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let revoked = Arc::new(AtomicBool::new(false));
+        let id = "00000000-0000-0000-0000-000000000009";
+        let app = Router::new()
+            .route(
+                &format!("/v1/remote/{id}/decide"),
+                post({
+                    let seen = seen.clone();
+                    let release = release.clone();
+                    move || {
+                        let seen = seen.clone();
+                        let release = release.clone();
+                        async move {
+                            seen.notify_one();
+                            release.notified().await;
+                            Json(json!({"grant_token":"synthetic","permission":"files"}))
+                        }
+                    }
+                }),
+            )
+            .route(
+                &format!("/v1/remote/{id}/revoke"),
+                post({
+                    let revoked = revoked.clone();
+                    move || {
+                        let revoked = revoked.clone();
+                        async move {
+                            revoked.store(true, Ordering::SeqCst);
+                            Json(json!({}))
+                        }
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = Arc::new(NativeClient::new(Arc::new(MemoryStore::default())).unwrap());
+        client.set_server(&base).await.unwrap();
+        client.state.lock().await.device = Some(DeviceCredential {
+            id: "device".into(),
+            device_token: "synthetic".into(),
+            owner_id: "owner".into(),
+            session_id: "session".into(),
+        });
+        client.files_state.store(1, Ordering::SeqCst);
+        let task = tokio::spawn({
+            let client = client.clone();
+            async move { client.call("decide", json!({"id":id,"approve":true})).await }
+        });
+        seen.notified().await;
+        client.disable_files_local();
+        release.notify_one();
+        assert!(task.await.unwrap().is_err());
+        assert!(revoked.load(Ordering::SeqCst));
+        assert!(!client.files_enabled());
+        assert!(!client.state.lock().await.grant.contains_key(id));
+        server.abort();
+    }
+    #[tokio::test]
+    async fn file_grants_use_only_file_receiving_permission() {
+        let client = NativeClient::new(Arc::new(MemoryStore::default())).unwrap();
+        client.state.lock().await.grant.insert(
+            "file".into(),
+            LocalGrant {
+                token: "file-token".into(),
+                permission: RemotePermission::Files,
+                permission_epoch: 1,
+            },
+        );
+        client.state.lock().await.grant.insert(
+            "screen".into(),
+            LocalGrant {
+                token: "screen-token".into(),
+                permission: RemotePermission::View,
+                permission_epoch: 1,
+            },
+        );
+        client.files_state.store(1, Ordering::SeqCst);
+        assert_eq!(
+            Authority::issue(&client, "file", false).await.unwrap(),
+            "file-token"
+        );
+        assert!(Authority::issue(&client, "screen", false).await.is_err());
+        client.host_state.store(1, Ordering::SeqCst);
+        client.disable_files_local();
+        assert!(Authority::issue(&client, "file", false).await.is_err());
+        assert_eq!(
+            Authority::issue(&client, "screen", false).await.unwrap(),
+            "screen-token"
+        );
+    }
+    #[tokio::test]
+    async fn disabling_remote_watch_preserves_manual_file_grants() {
+        use axum::{Json, Router, routing::post};
+        let revoked = Arc::new(AtomicBool::new(false));
+        let app = Router::new().route(
+            "/v1/remote/screen/revoke",
+            post({
+                let revoked = revoked.clone();
+                move || {
+                    let revoked = revoked.clone();
+                    async move {
+                        revoked.store(true, Ordering::SeqCst);
+                        Json(json!({}))
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = NativeClient::new(Arc::new(MemoryStore::default())).unwrap();
+        client.set_server(&base).await.unwrap();
+        {
+            let mut state = client.state.lock().await;
+            state.device = Some(DeviceCredential {
+                id: "device".into(),
+                device_token: "synthetic".into(),
+                owner_id: "owner".into(),
+                session_id: "session".into(),
+            });
+            state.grant.insert(
+                "file".into(),
+                LocalGrant {
+                    token: "file-token".into(),
+                    permission: RemotePermission::Files,
+                    permission_epoch: 1,
+                },
+            );
+            state.grant.insert(
+                "screen".into(),
+                LocalGrant {
+                    token: "screen-token".into(),
+                    permission: RemotePermission::Control,
+                    permission_epoch: 1,
+                },
+            );
+        }
+        client.revoke_host_approvals().await.unwrap();
+        assert!(revoked.load(Ordering::SeqCst));
+        let state = client.state.lock().await;
+        assert!(state.grant.contains_key("file"));
+        assert!(!state.grant.contains_key("screen"));
+        server.abort();
+    }
+    #[tokio::test]
+    async fn failed_receive_disable_then_reenable_does_not_restore_old_approval() {
+        use axum::{Json, Router, http::StatusCode, routing::post};
+        let app = Router::new().route(
+            "/v1/devices/capability",
+            post(|Json(body): Json<Value>| async move {
+                if body["can_files"] == false {
+                    (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({})))
+                } else {
+                    (StatusCode::OK, Json(json!({"can_files":true})))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = Arc::new(NativeClient::new(Arc::new(MemoryStore::default())).unwrap());
+        client.set_server(&base).await.unwrap();
+        {
+            let mut state = client.state.lock().await;
+            state.device = Some(DeviceCredential {
+                id: "device".into(),
+                device_token: "synthetic".into(),
+                owner_id: "owner".into(),
+                session_id: "session".into(),
+            });
+            state.generation = Some(1);
+            state.grant.insert(
+                "old-file".into(),
+                LocalGrant {
+                    token: "synthetic-old-file".into(),
+                    permission: RemotePermission::Files,
+                    permission_epoch: 1,
+                },
+            );
+            state.grant.insert(
+                "screen".into(),
+                LocalGrant {
+                    token: "screen-token".into(),
+                    permission: RemotePermission::View,
+                    permission_epoch: 1,
+                },
+            );
+        }
+        *client.transport.lock().await = Some(
+            Transport::bind([54; 32], TransportConfig::default())
+                .await
+                .unwrap(),
+        );
+        client.files_state.store(1, Ordering::SeqCst);
+        assert!(client.set_files_capability(false).await.is_err());
+        assert!(!client.state.lock().await.grant.contains_key("old-file"));
+        assert!(client.state.lock().await.grant.contains_key("screen"));
+        client.set_files_capability(true).await.unwrap();
+        assert!(client.files_enabled());
+        assert!(
+            Authority::issue(client.as_ref(), "old-file", false)
+                .await
+                .is_err()
+        );
+        // An old token already handed to an in-flight handshake also belongs
+        // to the old receiving epoch, even if it reappears in memory.
+        client.state.lock().await.grant.insert(
+            "old-file".into(),
+            LocalGrant {
+                token: "synthetic-old-file".into(),
+                permission: RemotePermission::Files,
+                permission_epoch: 1,
+            },
+        );
+        assert!(
+            Authority::issue(client.as_ref(), "old-file", false)
+                .await
+                .is_err()
+        );
+        client.stop_transport().await;
+        server.abort();
+    }
     struct TestAuthority {
         source: iroh::EndpointId,
         target: iroh::EndpointId,
@@ -2109,6 +2805,79 @@ mod tests {
         async fn issue(&self, _: &str, _: bool) -> farsail_transport::Result<String> {
             Ok("grant".into())
         }
+    }
+    struct FileTestAuthority(TestAuthority);
+    impl Authority for FileTestAuthority {
+        async fn inspect(&self, id: &str, token: &str) -> farsail_transport::Result<Claims> {
+            let mut claims = self.0.inspect(id, token).await?;
+            claims.permission = RemotePermission::Files;
+            Ok(claims)
+        }
+        async fn issue(&self, id: &str, renew: bool) -> farsail_transport::Result<String> {
+            self.0.issue(id, renew).await
+        }
+    }
+    #[tokio::test]
+    async fn files_handshake_issued_before_opt_out_cannot_register_after_reenable() {
+        let source = Transport::bind([71; 32], TransportConfig::default())
+            .await
+            .unwrap();
+        let target = Transport::bind([72; 32], TransportConfig::default())
+            .await
+            .unwrap();
+        let auth = Arc::new(FileTestAuthority(TestAuthority {
+            source: source.id(),
+            target: target.id(),
+        }));
+        let host = tokio::spawn({
+            let target = target.clone();
+            let auth = auth.clone();
+            async move { target.accept(auth).await.unwrap() }
+        });
+        let session = source
+            .connect(target.addr(), "old-file", RemotePermission::Files, auth)
+            .await
+            .unwrap();
+        let peer = host.await.unwrap();
+        let owner = Arc::new(NativeClient::new(Arc::new(MemoryStore::default())).unwrap());
+        *owner.transport.lock().await = Some(target.clone());
+        owner.files_state.store(1, Ordering::SeqCst);
+        owner.state.lock().await.grant.insert(
+            "old-file".into(),
+            LocalGrant {
+                token: "grant".into(),
+                permission: RemotePermission::Files,
+                permission_epoch: 1,
+            },
+        );
+        let epoch = *owner.transport_epoch.lock().await;
+        // Hold the map so registration has checked the old approval but must
+        // await insertion. Opting out and back in while it waits must still
+        // invalidate this already completed handshake.
+        let sessions = owner.transport_sessions.lock().await;
+        let registration = tokio::spawn({
+            let owner = owner.clone();
+            let peer = peer.clone();
+            async move { owner.register_transport_session(epoch, peer).await }
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while owner.state.try_lock().is_ok() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        owner.disable_files_local();
+        owner.files_state.fetch_or(1, Ordering::SeqCst); // a new explicit receiving enable
+        assert!(owner.files_enabled());
+        drop(sessions);
+        assert!(!registration.await.unwrap());
+        assert!(!peer.is_open_now());
+        assert!(owner.transport_sessions.lock().await.is_empty());
+        session.close();
+        owner.stop_transport().await;
+        source.close().await;
+        target.close().await;
     }
     #[tokio::test]
     async fn completed_dial_from_old_lifecycle_is_rejected() {

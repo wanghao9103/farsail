@@ -1,5 +1,6 @@
 name: Ubuntu client
 on:
+  workflow_dispatch:
   push:
     paths:
       [
@@ -15,6 +16,8 @@ on:
         "Cargo.*",
         "rust-toolchain.toml",
         "scripts/test-*",
+        "scripts/package-linux.sh",
+        "scripts/verify-linux-architecture.mjs",
         ".github/workflows/linux-client.yml",
       ]
   pull_request:
@@ -32,11 +35,24 @@ on:
         "Cargo.*",
         "rust-toolchain.toml",
         "scripts/test-*",
+        "scripts/package-linux.sh",
+        "scripts/verify-linux-architecture.mjs",
         ".github/workflows/linux-client.yml",
       ]
 jobs:
   build:
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            artifact: ubuntu-client
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            artifact: ubuntu-client-arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     services:
       postgres:
         image: postgres:17-alpine
@@ -49,6 +65,7 @@ jobs:
           --health-cmd "pg_isready -U farsail -d farsail_test"
           --health-interval 2s --health-timeout 2s --health-retries 30
     env:
+      FARSAIL_LINUX_TARGET: ${{ matrix.target }}
       FARSAIL_TEST_DATABASE_URL: postgres://farsail:disposable_ci_password@127.0.0.1:5432/farsail_test
     steps:
       - uses: actions/checkout@v4
@@ -57,15 +74,18 @@ jobs:
           toolchain: 1.93.0
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ubuntu-client-${{ matrix.target }}
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
           cache: npm
       - name: Ubuntu native dependencies
-        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev patchelf gnome-keyring xvfb dbus-x11 fonts-noto-cjk pkexec
+        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev patchelf gnome-keyring xvfb dbus-x11 fonts-noto-cjk pkexec
       - run: bash scripts/test-desktop-linux.sh
       - run: cargo test -p farsail-core -p farsail-coordinator
-      - run: cargo test -p farsail-client --test coordinator_flow
+      - run: cargo test -p farsail-client --test coordinator_flow --test files_flow
+      - run: cargo test --locked -p farsail-transport --lib
       - name: WebKit UI and viewer regressions
         run: |
           npm install --no-save --package-lock=false playwright
@@ -75,10 +95,12 @@ jobs:
           trap 'kill "$vite"' EXIT
           for n in {1..30}; do curl -fsS http://127.0.0.1:1420/ >/dev/null 2>&1 && break; sleep 1; done
           UI_ENGINE=webkit node scripts/test-desktop-ui.cjs
+          UI_ENGINE=webkit node scripts/test-file-transfer-ui.cjs
           UI_ENGINE=webkit node scripts/test-remote-viewer.cjs
       - name: Debian package
-        run: npm run tauri -w @farsail/desktop -- build --bundles deb --config src-tauri/tauri.linux.conf.json --config '{"bundle":{"createUpdaterArtifacts":false}}' -- --locked
+        run: bash scripts/package-linux.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: ubuntu-client
-          path: target/release/bundle/deb/*.deb
+          name: ${{ matrix.artifact }}
+          path: .local/client-artifacts/*
+          if-no-files-found: error

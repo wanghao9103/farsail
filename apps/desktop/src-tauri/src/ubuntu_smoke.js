@@ -17,6 +17,16 @@
       !state.computerName
     )
       throw Error("incorrect native platform metadata");
+    const files = await invoke("files_status");
+    if (state.filesEnabled || files.enabled || files.sessions.length)
+      throw Error("file receiving must start disabled");
+    let pathBlocked = false;
+    try {
+      await invoke("plugin:fs|read_file", { path: "/etc/hostname" });
+    } catch (error) {
+      pathBlocked = String(error).includes("not allowed");
+    }
+    if (!pathBlocked) throw Error("filesystem plugin must not grant webview path access");
     const settings = await waitFor(() =>
       Array.from(document.querySelectorAll("nav button")).find((b) =>
         b.textContent.includes("共享与设置"),
@@ -57,6 +67,8 @@
       result: JSON.stringify({
         ok: true,
         platform: state.platform,
+        filesDefaultOff: true,
+        webviewFilesystemDenied: true,
         hostControlsHidden: true,
         workspaceFits: true,
         mediaBytes: media.length,

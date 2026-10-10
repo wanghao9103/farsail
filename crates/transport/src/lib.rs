@@ -20,6 +20,7 @@ use tokio::sync::Mutex;
 
 pub const ALPN: &[u8] = b"farsail/session/1";
 const TIMEOUT: Duration = Duration::from_secs(10);
+const FILES_DIRECT_WINDOW: Duration = Duration::from_secs(3);
 const MEDIA_TIMEOUT: Duration = Duration::from_millis(400);
 fn media_timeout(bytes: usize) -> Duration {
     MEDIA_TIMEOUT + Duration::from_millis((bytes.saturating_sub(1_000_000) / 1000).min(3600) as u64)
@@ -54,6 +55,28 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 fn io(e: impl std::fmt::Display) -> Error {
     Error::Io(e.to_string())
+}
+async fn prefer_direct_until(conn: Connection, deadline: Instant) -> Result<Connection> {
+    loop {
+        if conn.close_reason().is_some() {
+            return Err(Error::Closed);
+        }
+        if conn
+            .paths()
+            .iter()
+            .any(|path| path.is_selected() && path.is_ip())
+            || Instant::now() >= deadline
+        {
+            return Ok(conn);
+        }
+        let pause = deadline
+            .saturating_duration_since(Instant::now())
+            .min(Duration::from_millis(25));
+        tokio::select! {
+            _ = tokio::time::sleep(pause) => (),
+            _ = conn.closed() => return Err(Error::Closed),
+        }
+    }
 }
 async fn within<T>(f: impl std::future::Future<Output = Result<T>>) -> Result<T> {
     tokio::time::timeout(TIMEOUT, f)
@@ -310,7 +333,7 @@ impl Transport {
         let target = addr.id;
         // Discovery failure must not prevent the encrypted relay fallback.
         let _ = self.refresh_discovery().await;
-        let conn = within(async { self.endpoint.connect(addr, ALPN).await.map_err(io) }).await?;
+        let conn = self.dial(addr, permission).await?;
         if conn.remote_id() != target {
             return Err(Error::Denied);
         }
@@ -353,6 +376,45 @@ impl Transport {
         )?;
         session.watch_source(authority, offer.token);
         Ok(session)
+    }
+    async fn dial(&self, addr: EndpointAddr, permission: RemotePermission) -> Result<Connection> {
+        let direct_deadline = (permission == RemotePermission::Files && !self.force_relay)
+            .then(|| Instant::now() + FILES_DIRECT_WINDOW);
+        if let Some(deadline) = direct_deadline
+            && addr.ip_addrs().next().is_some()
+        {
+            // Give known IP paths a bounded head start before supplying the
+            // configured relay address. Use the same endpoint/identity so an
+            // existing screen connection and its discovery state are retained.
+            let direct = addr
+                .ip_addrs()
+                .copied()
+                .fold(EndpointAddr::new(addr.id), EndpointAddr::with_ip_addr);
+            if let Ok(Ok(conn)) = tokio::time::timeout(
+                deadline.saturating_duration_since(Instant::now()),
+                self.endpoint.connect(direct, ALPN),
+            )
+            .await
+            {
+                // Iroh may already know this peer's relay from an earlier
+                // connection. Supplying IP-only addresses does not filter its
+                // cached relay paths; keep the same direct-upgrade budget.
+                if let Ok(conn) = prefer_direct_until(conn, deadline).await {
+                    return Ok(conn);
+                }
+            }
+        }
+        // Relay signalling may discover usable IP paths even when the supplied
+        // address contains none. Wait before the FarSail hello, Files grant or
+        // file payload, while allowing transport discovery/holepunching traffic.
+        // A consumed IP-only budget is never followed by a second window.
+        // View/Control and explicit forced relay keep their existing flow.
+        let conn = within(async { self.endpoint.connect(addr, ALPN).await.map_err(io) }).await?;
+        if let Some(deadline) = direct_deadline {
+            prefer_direct_until(conn, deadline).await
+        } else {
+            Ok(conn)
+        }
     }
     pub async fn accept<A: Authority>(&self, authority: Arc<A>) -> Result<Session> {
         let incoming = self.next_incoming().await?;
@@ -911,6 +973,309 @@ mod tests {
             }
             Ok(format!("grant-{n}"))
         }
+    }
+    struct FilesAuthority(TestAuthority);
+    impl Authority for FilesAuthority {
+        async fn inspect(&self, id: &str, token: &str) -> Result<Claims> {
+            if !matches!(id, "test-session" | "next-files") {
+                return Err(Error::Denied);
+            }
+            let mut claims = self.0.inspect("test-session", token).await?;
+            claims.session_id = id.into();
+            claims.permission = RemotePermission::Files;
+            Ok(claims)
+        }
+        async fn issue(&self, id: &str, renew: bool) -> Result<String> {
+            self.0.issue(id, renew).await
+        }
+    }
+    fn files_authority(source: &Transport, target: &Transport) -> Arc<FilesAuthority> {
+        Arc::new(FilesAuthority(TestAuthority {
+            source: source.id(),
+            target: target.id(),
+            current: Mutex::new(0),
+            revoked: AtomicBool::new(false),
+            stalled: AtomicBool::new(false),
+        }))
+    }
+    async fn assert_files_exchange(source: &Session, target: &Session) {
+        assert_eq!(source.permission(), RemotePermission::Files);
+        assert_eq!(target.permission(), RemotePermission::Files);
+        assert_eq!(
+            source.verification_code().unwrap(),
+            target.verification_code().unwrap()
+        );
+        for channel in [Channel::Control, Channel::Media] {
+            assert!(matches!(
+                source
+                    .send(Frame {
+                        channel,
+                        bytes: vec![1]
+                    })
+                    .await,
+                Err(Error::Denied)
+            ));
+        }
+        // More than three transport frame limits in each direction; this is
+        // actual authenticated QUIC traffic, with complete byte equality.
+        let original: Vec<u8> = (0..Channel::File.max() * 3 + 29)
+            .map(|offset| (offset.wrapping_mul(31) % 251) as u8)
+            .collect();
+        for (sender, receiver) in [(source, target), (target, source)] {
+            let mut received = Vec::with_capacity(original.len());
+            for chunk in original.chunks(64 * 1024) {
+                let (sent, frame) = tokio::join!(
+                    sender.send(Frame {
+                        channel: Channel::File,
+                        bytes: chunk.to_vec()
+                    }),
+                    receiver.receive()
+                );
+                sent.unwrap();
+                let frame = frame.unwrap();
+                assert!(matches!(frame.channel, Channel::File));
+                received.extend_from_slice(&frame.bytes);
+            }
+            assert_eq!(received, original);
+        }
+        assert!(source.is_open().await && target.is_open().await);
+    }
+    async fn tls_files_fixture(
+        force_source: bool,
+        force_target: bool,
+    ) -> (
+        iroh_relay::server::Server,
+        Transport,
+        Transport,
+        Arc<FilesAuthority>,
+    ) {
+        use iroh_relay::server::{CertConfig, RelayConfig, Server, ServerConfig, TlsConfig};
+        use rustls_pki_types::PrivatePkcs8KeyDer;
+        let certified = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let cert = certified.cert.der().clone();
+        let tls = rustls::ServerConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![cert.clone()],
+            PrivatePkcs8KeyDer::from(certified.signing_key.serialize_der()).into(),
+        )
+        .unwrap();
+        let mut relay = RelayConfig::new("127.0.0.1:0".parse::<SocketAddr>().unwrap());
+        relay.tls = Some(TlsConfig::new(
+            "127.0.0.1:0".parse::<SocketAddr>().unwrap(),
+            CertConfig::Manual { server_config: tls },
+        ));
+        let mut server_config = ServerConfig::default();
+        server_config.relay = Some(relay);
+        let server = Server::spawn(server_config).await.unwrap();
+        let url: RelayUrl = format!("https://localhost:{}/", server.https_addr().unwrap().port())
+            .parse()
+            .unwrap();
+        let config = Config {
+            relay: Some(url),
+            relay_ca_der: vec![cert.to_vec()],
+            ..Config::default()
+        };
+        let source = Transport::bind(
+            [61; 32],
+            Config {
+                force_relay: force_source,
+                ..config.clone()
+            },
+        )
+        .await
+        .unwrap();
+        let target = Transport::bind(
+            [62; 32],
+            Config {
+                force_relay: force_target,
+                ..config
+            },
+        )
+        .await
+        .unwrap();
+        tokio::time::timeout(TIMEOUT, source.wait_online())
+            .await
+            .unwrap();
+        tokio::time::timeout(TIMEOUT, target.wait_online())
+            .await
+            .unwrap();
+        let authority = files_authority(&source, &target);
+        (server, source, target, authority)
+    }
+    #[tokio::test]
+    async fn files_prefer_direct_with_configured_tls_relay() {
+        let (server, source, target, authority) = tls_files_fixture(false, false).await;
+        let addr = target.addr();
+        assert!(addr.ip_addrs().next().is_some());
+        assert!(addr.relay_urls().next().is_some());
+        let incoming = tokio::spawn({
+            let target = target.clone();
+            let authority = authority.clone();
+            async move { target.accept(authority).await.unwrap() }
+        });
+        let src = source
+            .connect(addr, "test-session", RemotePermission::Files, authority)
+            .await
+            .unwrap();
+        let dst = incoming.await.unwrap();
+        assert_eq!(src.path().0, "direct");
+        assert_eq!(dst.path().0, "direct");
+        assert_files_exchange(&src, &dst).await;
+        src.close();
+        dst.close();
+        source.close().await;
+        target.close().await;
+        server.shutdown().await.unwrap();
+    }
+    #[tokio::test]
+    async fn files_fall_back_to_verified_tls_relay_after_direct_timeout() {
+        let (server, source, target, authority) = tls_files_fixture(false, true).await;
+        assert!(target.addr().ip_addrs().next().is_none());
+        let black_hole = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let addr = target.addr().with_ip_addr(black_hole.local_addr().unwrap());
+        let incoming = tokio::spawn({
+            let target = target.clone();
+            let authority = authority.clone();
+            async move { target.accept(authority).await.unwrap() }
+        });
+        let started = Instant::now();
+        let src = source
+            .connect(addr, "test-session", RemotePermission::Files, authority)
+            .await
+            .unwrap();
+        let dst = incoming.await.unwrap();
+        assert!(started.elapsed() >= FILES_DIRECT_WINDOW);
+        assert_eq!(src.path().0, "relay");
+        assert_eq!(dst.path().0, "relay");
+        assert_files_exchange(&src, &dst).await;
+        src.close();
+        dst.close();
+        source.close().await;
+        target.close().await;
+        server.shutdown().await.unwrap();
+    }
+    #[tokio::test]
+    async fn files_relay_only_address_discovers_direct_before_payload() {
+        let (server, source, target, authority) = tls_files_fixture(false, false).await;
+        let relay_only = target
+            .addr()
+            .relay_urls()
+            .cloned()
+            .fold(EndpointAddr::new(target.id()), EndpointAddr::with_relay_url);
+        assert!(relay_only.ip_addrs().next().is_none());
+        assert!(relay_only.relay_urls().next().is_some());
+        assert!(source.endpoint.remote_info(target.id()).await.is_none());
+        let incoming = tokio::spawn({
+            let target = target.clone();
+            let authority = authority.clone();
+            async move { target.accept(authority).await.unwrap() }
+        });
+        let src = source
+            .connect(
+                relay_only,
+                "test-session",
+                RemotePermission::Files,
+                authority,
+            )
+            .await
+            .unwrap();
+        let dst = incoming.await.unwrap();
+        assert_eq!(src.path().0, "direct");
+        assert_eq!(dst.path().0, "direct");
+        assert_files_exchange(&src, &dst).await;
+        src.close();
+        dst.close();
+        source.close().await;
+        target.close().await;
+        server.shutdown().await.unwrap();
+    }
+    #[tokio::test]
+    async fn files_relay_only_address_waits_before_verified_relay_fallback() {
+        let (server, source, target, authority) = tls_files_fixture(false, true).await;
+        let relay_only = target.addr();
+        assert!(relay_only.ip_addrs().next().is_none());
+        assert!(relay_only.relay_urls().next().is_some());
+        let incoming = tokio::spawn({
+            let target = target.clone();
+            let authority = authority.clone();
+            async move { target.accept(authority).await.unwrap() }
+        });
+        let started = Instant::now();
+        let src = source
+            .connect(
+                relay_only,
+                "test-session",
+                RemotePermission::Files,
+                authority,
+            )
+            .await
+            .unwrap();
+        let dst = incoming.await.unwrap();
+        assert!(started.elapsed() >= FILES_DIRECT_WINDOW);
+        assert_eq!(src.path().0, "relay");
+        assert_eq!(dst.path().0, "relay");
+        assert_files_exchange(&src, &dst).await;
+        src.close();
+        dst.close();
+        source.close().await;
+        target.close().await;
+        server.shutdown().await.unwrap();
+    }
+    #[tokio::test]
+    async fn files_cached_relay_waits_for_direct_window_without_rebuilding_endpoint() {
+        let (server, source, target, authority) = tls_files_fixture(false, true).await;
+        let incoming = tokio::spawn({
+            let target = target.clone();
+            let authority = authority.clone();
+            async move { target.accept(authority).await.unwrap() }
+        });
+        let first = source
+            .connect(
+                target.addr(),
+                "test-session",
+                RemotePermission::Files,
+                authority.clone(),
+            )
+            .await
+            .unwrap();
+        let peer = incoming.await.unwrap();
+        assert_eq!(first.path().0, "relay");
+        first.close();
+        peer.close();
+        let source_id = source.id();
+        let target_id = target.id();
+        let black_hole = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let incoming = tokio::spawn({
+            let target = target.clone();
+            let authority = authority.clone();
+            async move { target.accept(authority).await.unwrap() }
+        });
+        let started = Instant::now();
+        let src = source
+            .connect(
+                target.addr().with_ip_addr(black_hole.local_addr().unwrap()),
+                "next-files",
+                RemotePermission::Files,
+                authority,
+            )
+            .await
+            .unwrap();
+        let dst = incoming.await.unwrap();
+        assert!(started.elapsed() >= FILES_DIRECT_WINDOW);
+        assert_eq!(source.id(), source_id);
+        assert_eq!(target.id(), target_id);
+        assert_eq!(src.path().0, "relay");
+        assert_files_exchange(&src, &dst).await;
+        src.close();
+        dst.close();
+        source.close().await;
+        target.close().await;
+        server.shutdown().await.unwrap();
     }
     async fn pair() -> (Transport, Transport, Arc<TestAuthority>) {
         let source = Transport::bind([1; 32], Config::default()).await.unwrap();

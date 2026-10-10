@@ -4,6 +4,12 @@
 
 # FarSail implementation and handoff record
 
+## Current file-transfer source candidate (2026-10-10)
+
+The current candidate adds independent Files sessions, explicit receiver enablement, per-connection approval and per-file native Open/Save As selection for Ubuntu and Windows. It streams bounded chunks with full SHA-256 verification, a shared file bandwidth budget and non-overwriting publication. The usage, storage/authorization boundaries and known limits are in [file transfer](FILES.md).
+
+The frontend build and synthetic file/account/device regressions have passed locally. Native/service/transport tests and Windows CI are recorded separately as they finish; this paragraph does not claim a new installer was released or physical Windows transfer was accepted. The historical WI-005 plan below also requires resume, compression and broader performance validation; those requirements remain unimplemented or unverified and the full work item is not complete.
+
 <a id="input-021--0111-鼠标释放与持续控制2026-10-08"></a>
 
 ## INPUT-021 — 0.1.11 mouse release and continuous control (2026-10-08)
@@ -73,19 +79,19 @@ This file is the authoritative entry point for development status. `PROJECT_DESI
 
 ## Work items and order
 
-| Work Item | Verifiable result                                                                                               | Status                                                                                                               |
-| --------- | --------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| WI-001    | Rust workspace, PostgreSQL account/device/authorization service, isolated local execution and permission tests  | Complete: local acceptance passed, code pushed                                                                       |
-| WI-002    | Tauri client login, device registration/list, secure credential storage, user/administrator interface           | Complete: local and Windows CI passed, code pushed                                                                   |
-| WI-003    | iroh end-to-end connection, application authorization, direct/relay configuration and revocation                | Complete: focused local verification and remote CI passed                                                            |
-| WI-004    | Windows screen capture, user confirmation, mouse/keyboard input and usable remote-control baseline              | Local and three remote CI workflows passed                                                                           |
-| WI-008A   | Public-IP deployment bundle, prebuilt Linux artifacts and integration preparation                               | Complete: pinned six-image artifact, anonymous downloads, cross-Docker-storage import and two Linux CI rounds passed |
-| WI-008B   | Windows x64 preview installer, production build and public-artifact acceptance                                  | Complete: NSIS, native installation lifecycle, CI and complete anonymous downloads passed                            |
-| WI-008C   | Deployment download HTTP/1.1, reliable resume and cache reuse                                                   | ready: prioritize the actual deployment blocker                                                                      |
-| WI-005    | Chunked bidirectional file transfer, lossless compression, verification/resume, authorization and rate limiting | In progress: temporarily yielded write access to WI-008C; unverified WIP retained                                    |
-| WI-006    | Actual hardware encoding/decoding, multiple monitors and adaptive rates, capability negotiation and 4:4:4 path  | planned                                                                                                              |
-| WI-007    | Android/iOS mobile control and file interfaces, executable platform builds and validation                       | planned                                                                                                              |
-| WI-008    | Full-chain regression, deployment/packaging, public repository and real-environment validation                  | planned                                                                                                              |
+| Work Item | Verifiable result                                                                                               | Status                                                                                                                  |
+| --------- | --------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| WI-001    | Rust workspace, PostgreSQL account/device/authorization service, isolated local execution and permission tests  | Complete: local acceptance passed, code pushed                                                                          |
+| WI-002    | Tauri client login, device registration/list, secure credential storage, user/administrator interface           | Complete: local and Windows CI passed, code pushed                                                                      |
+| WI-003    | iroh end-to-end connection, application authorization, direct/relay configuration and revocation                | Complete: focused local verification and remote CI passed                                                               |
+| WI-004    | Windows screen capture, user confirmation, mouse/keyboard input and usable remote-control baseline              | Local and three remote CI workflows passed                                                                              |
+| WI-008A   | Public-IP deployment bundle, prebuilt Linux artifacts and integration preparation                               | Complete: pinned six-image artifact, anonymous downloads, cross-Docker-storage import and two Linux CI rounds passed    |
+| WI-008B   | Windows x64 preview installer, production build and public-artifact acceptance                                  | Complete: NSIS, native installation lifecycle, CI and complete anonymous downloads passed                               |
+| WI-008C   | Deployment download HTTP/1.1, reliable resume and cache reuse                                                   | ready: prioritize the actual deployment blocker                                                                         |
+| WI-005    | Chunked bidirectional file transfer, lossless compression, verification/resume, authorization and rate limiting | Partial source candidate: safe single files and independent approval; resume/compression and Windows acceptance pending |
+| WI-006    | Actual hardware encoding/decoding, multiple monitors and adaptive rates, capability negotiation and 4:4:4 path  | planned                                                                                                                 |
+| WI-007    | Android/iOS mobile control and file interfaces, executable platform builds and validation                       | planned                                                                                                                 |
+| WI-008    | Full-chain regression, deployment/packaging, public repository and real-environment validation                  | planned                                                                                                                 |
 
 Any work item may be split into smaller consecutive items based on measured dependencies, but unimplemented scope must not be marked complete. Mobile hosting, unattended access and other later extensions remain future routes under the original design.
 

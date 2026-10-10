@@ -69,7 +69,8 @@ pub struct RenameInput {
 #[derive(Deserialize)]
 pub struct CapabilityInput {
     pub generation: i64,
-    pub can_host: bool,
+    pub can_host: Option<bool>,
+    pub can_files: Option<bool>,
 }
 #[derive(Deserialize)]
 pub struct HeartbeatInput {
@@ -126,9 +127,9 @@ pub async fn bind(
 ) -> Result<Json<BindOutput>> {
     let p = principal(&state, &headers).await?;
     let name = valid_name(&input.name)?;
-    if input.platform == DevicePlatform::Linux && (input.can_host || input.can_files) {
+    if input.platform == DevicePlatform::Linux && input.can_host {
         return Err(Error::Invalid(
-            "Linux devices currently support controller mode only",
+            "Linux devices do not support screen hosting",
         ));
     }
     let signature = Signature::from_bytes(&bytes_hex::<64>(&input.signature)?);
@@ -260,22 +261,30 @@ pub async fn rename(
     };
     Ok(Json(owned(&state, p.user_id, id).await?))
 }
-/// A live device may change only its implemented host capability. Disabling
-/// invalidates outstanding requests and grants before the response is sent.
+/// Update only the capabilities supplied by a live device. The native file
+/// switch is independent of screen sharing; disabling either invalidates only
+/// its outstanding requests and grants before the response is sent.
 pub async fn capability(
     State(state): State<AppState>,
     headers: HeaderMap,
     Json(input): Json<CapabilityInput>,
 ) -> Result<Json<DeviceView>> {
     let (id, owner) = device_principal(&state, &headers).await?;
+    if input.can_host.is_none() && input.can_files.is_none() {
+        return Err(Error::Invalid("no capability supplied"));
+    }
     let mut tx = state.pool.begin().await?;
-    let changed = sqlx::query("UPDATE devices SET can_host=$2 WHERE id=$1 AND generation=$3 AND lease_until>now() AND enabled AND bound AND (platform='windows' OR NOT $2)")
-        .bind(id).bind(input.can_host).bind(input.generation).execute(&mut *tx).await?;
+    let changed = sqlx::query("UPDATE devices SET can_host=COALESCE($2,can_host),can_files=COALESCE($4,can_files) WHERE id=$1 AND generation=$3 AND lease_until>now() AND enabled AND bound AND ($2::boolean IS NULL OR platform='windows' OR NOT $2)")
+        .bind(id).bind(input.can_host).bind(input.generation).bind(input.can_files).execute(&mut *tx).await?;
     if changed.rows_affected() != 1 {
         return Err(Error::Conflict);
     }
-    if !input.can_host {
+    if input.can_host == Some(false) {
         sqlx::query("UPDATE remote_sessions SET state='revoked',grant_until=NULL WHERE target_device_id=$1 AND permission IN ('view','control') AND state IN ('pending','approved')")
+            .bind(id).execute(&mut *tx).await?;
+    }
+    if input.can_files == Some(false) {
+        sqlx::query("UPDATE remote_sessions SET state='revoked',grant_until=NULL WHERE target_device_id=$1 AND permission='files' AND state IN ('pending','approved')")
             .bind(id).execute(&mut *tx).await?;
     }
     tx.commit().await?;

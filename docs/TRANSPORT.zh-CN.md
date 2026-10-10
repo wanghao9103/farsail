@@ -27,6 +27,8 @@
 
 `Session::path()` 读取 iroh 当前 **selected path**，显示 `direct`、`relay` 或 `connecting` 及该路径的 RTT。配置 relay URL 只是允许使用该服务器，并不证明数据实际经过它。`force_relay` 调用 `clear_ip_transports()`，本机测试确认双方无 IP transport 且 selected path 为 `relay`。本地测试绑定 `127.0.0.1`，不访问默认公共 lookup 或公共 relay，不修改防火墙。relay URL 必须为无凭据、查询、片段的 HTTPS，且协调服务只接受 `FARSAIL_RELAY_URLS` 名单中的 URL；客户端也拒绝拨打与本机配置不一致的 relay。TLS 使用标准证书验证，本地测试显式添加临时证书根，不存在 accept-all verifier。
 
+Files 会话优先直连：未强制中继时，拨号共享一个三秒直连窗口。已知对方 IP 时先仅包含 IP 拨号，再加入配置的中继地址；只有中继地址时，可信连接可先承载发现和穿透信令，但文件业务认证及负载仍等待窗口内的实际直连升级。已有直连立即使用；没有直连则在窗口结束后允许可信中继文件负载，回退不重复等待。完整地址拨号沿用十秒连接上限，随后进行各步骤均有时限的业务认证。iroh 的跨连接路径缓存不会让文件提前使用中继；整个过程复用当前端点和设备身份，保留屏幕会话，文件字节不经过协调服务 API。直连恢复后仍可升级。View/Control 拨号及明确选择的强制中继设置保持原有流程。能否穿透 NAT 取决于实际网络环境，界面显示实际选中的路径。
+
 自建服务器示例见 [deploy/relay](../deploy/relay/README.zh-CN.md)。公网 IP 可以作为 HTTPS 主机名使用，但证书必须匹配该 IP。公网部署、跨 NAT 穿透率、第二台真实 Windows、移动真机和长期链路性能仍待 WI-008 验证。
 
 <a id="address-refresh-without-restart-p2p-019--019"></a>

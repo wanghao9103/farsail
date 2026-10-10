@@ -1,13 +1,15 @@
 #[cfg(target_os = "linux")]
 use farsail_client::LinuxStore as PlatformStore;
-use farsail_client::NativeClient;
 #[cfg(windows)]
 use farsail_client::WindowsStore as PlatformStore;
+use farsail_client::{NativeClient, file_runtime::NativeFiles};
 use farsail_core::RemotePermission;
 use farsail_transport::Config as TransportConfig;
 use std::sync::Arc;
 use tauri::Manager;
 mod computer;
+mod files;
+use files::{files_accept, files_cancel, files_enable, files_reject, files_send, files_status};
 mod updater;
 use updater::{update_check, update_download, update_install, update_preferences, update_status};
 mod input_recovery;
@@ -51,6 +53,7 @@ async fn call(
     window: tauri::WebviewWindow,
     client: tauri::State<'_, Arc<NativeClient>>,
     remote: tauri::State<'_, Arc<RemoteRuntime>>,
+    files: tauri::State<'_, Arc<NativeFiles>>,
     op: String,
     args: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
@@ -60,6 +63,8 @@ async fn call(
         "logout" | "password" | "unbind_device" | "bind"
     ) {
         viewer::cancel_all(window.app_handle());
+        client.disable_files_local();
+        files.stop_all();
         // Cancel remembered permission before awaiting runtime cleanup.
         let preference = if op != "logout" {
             client.cancel_sharing_restore();
@@ -76,6 +81,7 @@ async fn call(
         && let Some(id) = args.get("id").and_then(serde_json::Value::as_str)
     {
         viewer::cancel_session(window.app_handle(), id);
+        files.stop(id);
         remote.stop(id).await;
     }
     // Local sign-out must still clear credentials when the optional preference store fails.
@@ -249,6 +255,7 @@ async fn transport_close(
     window: tauri::WebviewWindow,
     client: tauri::State<'_, Arc<NativeClient>>,
     remote: tauri::State<'_, Arc<RemoteRuntime>>,
+    files: tauri::State<'_, Arc<NativeFiles>>,
     id: String,
 ) -> Result<(), String> {
     viewer::scoped(&window, &id)?;
@@ -257,6 +264,7 @@ async fn transport_close(
     } else {
         viewer::cancel_session(window.app_handle(), &id);
     }
+    files.stop(&id);
     remote.stop(&id).await;
     let _ = client
         .call("revoke_remote", serde_json::json!({"id":id}))
@@ -324,6 +332,7 @@ pub fn run() {
     farsail_windows::ensure_dpi_awareness().expect("FarSail requires per-monitor DPI awareness");
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
         .on_page_load(|webview, _| {
             #[cfg(all(debug_assertions, target_os = "linux"))]
             if std::env::var_os("FARSAIL_UBUNTU_SMOKE").is_some() {
@@ -377,6 +386,9 @@ pub fn run() {
             let store = Arc::new(PlatformStore::new(dir)?);
             let client = Arc::new(NativeClient::new(store)?);
             let remote=RemoteRuntime::new(client.clone());
+            let files=NativeFiles::new(client.clone());
+            tauri::async_runtime::spawn(files.clone().listen());
+            app.manage(files);
             let heartbeat = client.clone();
             tauri::async_runtime::spawn(async move {
                 // Runs on every ordinary application start, regardless of the selected UI page.
@@ -391,6 +403,7 @@ pub fn run() {
                         && heartbeat.call("heartbeat", serde_json::Value::Null).await.is_ok() {
                         let _ = heartbeat.refresh_transport_address().await;
                         let _=heartbeat.clear_stale_host_capability().await;
+                        let _=heartbeat.clear_stale_files_capability().await;
                     }
                 }
             });
@@ -432,6 +445,8 @@ pub fn run() {
             }
             viewer::cancel_all(window.app_handle());
             window.state::<Arc<NativeClient>>().cancel_sharing_restore();
+            window.state::<Arc<NativeClient>>().disable_files_local();
+            window.state::<Arc<NativeFiles>>().stop_all();
             static CLOSING: std::sync::atomic::AtomicBool =
                 std::sync::atomic::AtomicBool::new(false);
             if !CLOSING.swap(true, std::sync::atomic::Ordering::SeqCst) {
@@ -455,6 +470,9 @@ pub fn run() {
                         client.set_host_capability(false),
                     )
                     .await;
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_secs(2), client.set_files_capability(false),
+                    ).await;
                     client.stop_transport().await;
                     for (label, child) in window.app_handle().webview_windows() {
                         if label != "main" {
@@ -468,6 +486,12 @@ pub fn run() {
     });
     #[cfg(debug_assertions)]
     let builder = builder.invoke_handler(tauri::generate_handler![
+        files_enable,
+        files_status,
+        files_send,
+        files_accept,
+        files_reject,
+        files_cancel,
         update_status,
         update_preferences,
         update_check,
@@ -500,6 +524,12 @@ pub fn run() {
     ]);
     #[cfg(not(debug_assertions))]
     let builder = builder.invoke_handler(tauri::generate_handler![
+        files_enable,
+        files_status,
+        files_send,
+        files_accept,
+        files_reject,
+        files_cancel,
         update_status,
         update_preferences,
         update_check,

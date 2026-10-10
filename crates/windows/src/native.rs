@@ -294,6 +294,10 @@ fn send_raw(inputs: &[INPUT]) -> (u32, u32) {
     if let Some(result) = test_injection::record(inputs) {
         return result;
     }
+    #[cfg(test)]
+    if !test_injection::owned_input_allowed(inputs) {
+        return (0, 0);
+    }
     unsafe {
         SetLastError(WIN32_ERROR(0));
         let inserted = SendInput(inputs, size_of::<INPUT>() as i32);
@@ -308,9 +312,99 @@ mod test_injection {
     #[derive(Default)]
     struct Recorder {
         flags: Vec<u32>,
+        activations: Vec<(i32, i32)>,
         results: VecDeque<(u32, u32)>,
     }
     thread_local! { static RECORDER: RefCell<Option<Recorder>> = const { RefCell::new(None) }; }
+    struct OwnedSafety {
+        cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        windows: [usize; 2],
+    }
+    thread_local! { static OWNED: RefCell<Option<OwnedSafety>> = const { RefCell::new(None) }; }
+    pub struct OwnedGuard;
+    impl Drop for OwnedGuard {
+        fn drop(&mut self) {
+            OWNED.with(|owned| {
+                owned.borrow_mut().take();
+            });
+        }
+    }
+    pub fn guard_owned(
+        cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        windows: [usize; 2],
+    ) -> OwnedGuard {
+        OWNED.with(|owned| {
+            assert!(owned.borrow().is_none());
+            *owned.borrow_mut() = Some(OwnedSafety { cancelled, windows });
+        });
+        OwnedGuard
+    }
+    pub fn update_owned_windows(windows: [usize; 2]) {
+        OWNED.with(|owned| {
+            owned
+                .borrow_mut()
+                .as_mut()
+                .expect("owned guard must be active")
+                .windows = windows;
+        });
+    }
+    fn owned_window(window: windows::Win32::Foundation::HWND, safety: &OwnedSafety) -> bool {
+        use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
+        let mut owner = 0;
+        unsafe { GetWindowThreadProcessId(window, Some(&mut owner)) };
+        safety.windows.contains(&(window.0 as usize)) && owner == std::process::id()
+    }
+    pub fn owned_activation_allowed(point: (i32, i32)) -> bool {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GA_ROOT, GetAncestor, GetForegroundWindow, WindowFromPoint,
+        };
+        OWNED.with(|owned| {
+            let owned = owned.borrow();
+            let Some(safety) = owned.as_ref() else {
+                return true;
+            };
+            !safety.cancelled.load(std::sync::atomic::Ordering::Acquire)
+                && owned_window(unsafe { GetForegroundWindow() }, safety)
+                && owned_window(
+                    unsafe {
+                        GetAncestor(
+                            WindowFromPoint(windows::Win32::Foundation::POINT {
+                                x: point.0,
+                                y: point.1,
+                            }),
+                            GA_ROOT,
+                        )
+                    },
+                    safety,
+                )
+        })
+    }
+    pub fn owned_input_allowed(inputs: &[INPUT]) -> bool {
+        use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+        OWNED.with(|owned| {
+            let owned = owned.borrow();
+            let Some(safety) = owned.as_ref() else {
+                return true;
+            };
+            if !owned_window(unsafe { GetForegroundWindow() }, safety) {
+                return false;
+            }
+            // Once the deadline expires no later move/down/activation is allowed.
+            // Drop may still release owned keys/buttons while an owned window is
+            // foreground; after destruction or external focus even cleanup skips.
+            !safety.cancelled.load(std::sync::atomic::Ordering::Acquire)
+                || inputs.iter().all(|input| unsafe {
+                    match input.r#type {
+                        INPUT_MOUSE => matches!(
+                            input.Anonymous.mi.dwFlags,
+                            MOUSEEVENTF_LEFTUP | MOUSEEVENTF_RIGHTUP
+                        ),
+                        INPUT_KEYBOARD => input.Anonymous.ki.dwFlags.0 & KEYEVENTF_KEYUP.0 != 0,
+                        _ => false,
+                    }
+                })
+        })
+    }
     pub struct Guard;
     impl Drop for Guard {
         fn drop(&mut self) {
@@ -324,6 +418,7 @@ mod test_injection {
             assert!(r.borrow().is_none());
             *r.borrow_mut() = Some(Recorder {
                 flags: vec![],
+                activations: vec![],
                 results: results.into_iter().collect(),
             });
         });
@@ -331,6 +426,19 @@ mod test_injection {
     }
     pub fn flags() -> Vec<u32> {
         RECORDER.with(|r| r.borrow().as_ref().unwrap().flags.clone())
+    }
+    pub fn activations() -> Vec<(i32, i32)> {
+        RECORDER.with(|r| r.borrow().as_ref().unwrap().activations.clone())
+    }
+    pub fn record_activation(point: (i32, i32)) -> bool {
+        RECORDER.with(|r| {
+            let mut r = r.borrow_mut();
+            let Some(recorder) = r.as_mut() else {
+                return false;
+            };
+            recorder.activations.push(point);
+            true
+        })
     }
     pub fn record(inputs: &[INPUT]) -> Option<(u32, u32)> {
         RECORDER.with(|r| {
@@ -424,6 +532,8 @@ impl InputSink {
                 button,
                 down,
             } => {
+                let activate =
+                    super::input_context::click_activation::fresh_down(down, self.left, self.right);
                 let (slot, down_flag, up_flag) = match button {
                     Button::Left => (&mut self.left, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP),
                     Button::Right => (&mut self.right, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP),
@@ -445,6 +555,10 @@ impl InputSink {
                 move_to(display, layout, id, expected, x, y)?;
                 if *slot == down {
                     return Ok(());
+                }
+                if activate {
+                    let point = map_point(display.ok_or(Error::Geometry)?, x, y)?;
+                    activate_at(point);
                 }
                 send(&[mouse(if down { down_flag } else { up_flag }, 0)])?;
                 *slot = down;
@@ -563,6 +677,18 @@ impl Drop for InputSink {
         let _ = self.release_all();
     }
 }
+fn activate_at(point: (i32, i32)) {
+    // Fake SendInput tests must also skip every real foreground side effect.
+    #[cfg(test)]
+    if test_injection::record_activation(point) {
+        return;
+    }
+    #[cfg(test)]
+    if !test_injection::owned_activation_allowed(point) {
+        return;
+    }
+    super::input_context::try_activate_at(point.0, point.1);
+}
 fn move_to(
     display: Option<&Display>,
     layout: u64,
@@ -597,6 +723,28 @@ fn move_to(
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn pointer_display() -> Display {
+        Display {
+            id: 1,
+            name: "test pointer origin".into(),
+            x: unsafe { GetSystemMetrics(SM_XVIRTUALSCREEN) },
+            y: unsafe { GetSystemMetrics(SM_YVIRTUALSCREEN) },
+            width: 1,
+            height: 1,
+            dpi: 96,
+            rotation: 1,
+        }
+    }
+    fn pointer_button(button: Button, down: bool) -> Input {
+        Input::Button {
+            display: 1,
+            layout: 7,
+            x: 0.0,
+            y: 0.0,
+            button,
+            down,
+        }
+    }
     fn stale_up(button: Button) -> Input {
         Input::Button {
             display: 1,
@@ -605,6 +753,95 @@ mod tests {
             y: 0.5,
             button,
             down: false,
+        }
+    }
+    #[test]
+    fn only_fresh_pointer_down_attempts_activation_and_fake_input_never_activates_windows() {
+        let _recording = test_injection::start([]);
+        let display = pointer_display();
+        let mut sink = InputSink::default();
+        sink.apply(pointer_button(Button::Left, true), Some(&display), 7)
+            .unwrap();
+        assert_eq!(test_injection::activations(), [(display.x, display.y)]);
+        // The fake activation never confirms a real foreground. Input still
+        // reaches SendInput; only its own result determines apply's success.
+        assert!(test_injection::flags().contains(&MOUSEEVENTF_LEFTDOWN.0));
+        sink.apply(pointer_button(Button::Left, true), Some(&display), 7)
+            .unwrap();
+        sink.apply(pointer_button(Button::Right, true), Some(&display), 7)
+            .unwrap();
+        sink.apply(
+            Input::Move {
+                display: 1,
+                layout: 7,
+                x: 0.0,
+                y: 0.0,
+            },
+            Some(&display),
+            7,
+        )
+        .unwrap();
+        sink.apply(pointer_button(Button::Left, false), Some(&display), 7)
+            .unwrap();
+        sink.apply(pointer_button(Button::Right, false), Some(&display), 7)
+            .unwrap();
+        assert_eq!(test_injection::activations(), [(display.x, display.y)]);
+        assert!(!sink.left && !sink.right);
+        sink.apply(pointer_button(Button::Right, true), Some(&display), 7)
+            .unwrap();
+        assert_eq!(test_injection::activations().len(), 2);
+        sink.release_all().unwrap();
+    }
+
+    #[test]
+    fn invalid_layout_or_position_cannot_attempt_pointer_activation() {
+        let _recording = test_injection::start([]);
+        let display = pointer_display();
+        let mut sink = InputSink::default();
+        assert!(matches!(
+            sink.apply(pointer_button(Button::Left, true), Some(&display), 8),
+            Err(Error::Geometry)
+        ));
+        assert!(matches!(
+            sink.apply(pointer_button(Button::Left, true), None, 7),
+            Err(Error::Geometry)
+        ));
+        assert!(matches!(
+            sink.apply(
+                Input::Button {
+                    display: 1,
+                    layout: 7,
+                    x: f64::NAN,
+                    y: 0.0,
+                    button: Button::Left,
+                    down: true,
+                },
+                Some(&display),
+                7,
+            ),
+            Err(Error::Geometry)
+        ));
+        assert!(test_injection::activations().is_empty());
+        assert!(test_injection::flags().is_empty());
+        assert!(!sink.left);
+    }
+
+    #[test]
+    fn failed_pointer_move_does_not_activate_and_button_failure_retains_diagnostics() {
+        let display = pointer_display();
+        for (results, activation_count) in [(vec![(0, 5)], 0), (vec![(1, 0), (0, 5)], 1)] {
+            let _recording = test_injection::start(results);
+            let mut sink = InputSink::default();
+            assert!(matches!(
+                sink.apply(pointer_button(Button::Left, true), Some(&display), 7),
+                Err(Error::Injection {
+                    inserted: 0,
+                    expected: 1,
+                    code: 5,
+                })
+            ));
+            assert_eq!(test_injection::activations().len(), activation_count);
+            assert!(!sink.left);
         }
     }
     #[test]
@@ -862,14 +1099,73 @@ mod tests {
     fn real_input_into_own_foreground_window() {
         ensure_dpi_awareness().unwrap();
         use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
-        use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, SetFocus};
+        use windows::Win32::UI::Input::KeyboardAndMouse::{
+            GetAsyncKeyState, GetCapture, ReleaseCapture, SetCapture, SetFocus,
+        };
         use windows::Win32::UI::WindowsAndMessaging::{
-            CreateWindowExW, DestroyWindow, DispatchMessageW, GetForegroundWindow, GetWindowTextW,
-            GetWindowThreadProcessId, HWND_TOPMOST, MSG, PM_REMOVE, PeekMessageW, SWP_NOMOVE,
-            SWP_NOSIZE, SWP_SHOWWINDOW, SetForegroundWindow, SetWindowPos, TranslateMessage,
-            WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+            CallWindowProcW, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW,
+            GWLP_WNDPROC, GetForegroundWindow, GetWindowInfo, GetWindowLongPtrW, GetWindowTextW,
+            GetWindowThreadProcessId, HTCAPTION, HWND_TOPMOST, IsWindowVisible, MSG, PM_REMOVE,
+            PeekMessageW, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SetForegroundWindow,
+            SetWindowLongPtrW, SetWindowPos, TranslateMessage, WINDOWINFO, WM_LBUTTONDOWN,
+            WM_LBUTTONUP, WM_NCLBUTTONDOWN, WM_NCLBUTTONUP, WNDPROC, WS_OVERLAPPEDWINDOW,
+            WS_VISIBLE, WindowFromPoint,
         };
         use windows::core::w;
+        #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+        struct ClickCounts {
+            client_down: u32,
+            client_up: u32,
+            caption_down: u32,
+            caption_up: u32,
+        }
+        struct WindowProbe {
+            original: WNDPROC,
+            clicks: ClickCounts,
+        }
+        thread_local! {
+            static PROBES: std::cell::RefCell<std::collections::HashMap<usize, WindowProbe>>
+                = std::cell::RefCell::new(std::collections::HashMap::new());
+        }
+        unsafe extern "system" fn probe_window(
+            hwnd: windows::Win32::Foundation::HWND,
+            message: u32,
+            wparam: windows::Win32::Foundation::WPARAM,
+            lparam: windows::Win32::Foundation::LPARAM,
+        ) -> windows::Win32::Foundation::LRESULT {
+            let original = PROBES.with(|probes| {
+                let mut probes = probes.borrow_mut();
+                let probe = probes.get_mut(&(hwnd.0 as usize))?;
+                match message {
+                    WM_LBUTTONDOWN => probe.clicks.client_down += 1,
+                    WM_LBUTTONUP => probe.clicks.client_up += 1,
+                    WM_NCLBUTTONDOWN if wparam.0 == HTCAPTION as usize => {
+                        probe.clicks.caption_down += 1
+                    }
+                    WM_NCLBUTTONUP if wparam.0 == HTCAPTION as usize => {
+                        probe.clicks.caption_up += 1
+                    }
+                    _ => {}
+                }
+                Some(probe.original)
+            });
+            // Count a real non-client click without entering the system title-bar
+            // move modal loop. Client dragging retains the actual EDIT procedure.
+            if matches!(message, WM_NCLBUTTONDOWN | WM_NCLBUTTONUP)
+                && wparam.0 == HTCAPTION as usize
+            {
+                return windows::Win32::Foundation::LRESULT(0);
+            }
+            match original {
+                Some(original) => unsafe {
+                    CallWindowProcW(original, hwnd, message, wparam, lparam)
+                },
+                None => unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },
+            }
+        }
+        fn click_counts(hwnd: windows::Win32::Foundation::HWND) -> ClickCounts {
+            PROBES.with(|probes| probes.borrow().get(&(hwnd.0 as usize)).unwrap().clicks)
+        }
         let display = displays().unwrap().remove(0);
         let hwnd = unsafe {
             CreateWindowExW(
@@ -889,12 +1185,41 @@ mod tests {
         }
         .unwrap();
         struct TestWindow(windows::Win32::Foundation::HWND);
+        impl TestWindow {
+            fn new(hwnd: windows::Win32::Foundation::HWND) -> Self {
+                let window = Self(hwnd);
+                let original = unsafe { GetWindowLongPtrW(hwnd, GWLP_WNDPROC) };
+                assert_ne!(original, 0, "owned window has no procedure to subclass");
+                PROBES.with(|probes| {
+                    probes.borrow_mut().insert(
+                        hwnd.0 as usize,
+                        WindowProbe {
+                            original: unsafe { std::mem::transmute::<isize, WNDPROC>(original) },
+                            clicks: ClickCounts::default(),
+                        },
+                    );
+                });
+                assert_eq!(
+                    unsafe {
+                        SetWindowLongPtrW(hwnd, GWLP_WNDPROC, probe_window as *const () as isize)
+                    },
+                    original
+                );
+                window
+            }
+        }
         impl Drop for TestWindow {
             fn drop(&mut self) {
+                if let Some(probe) =
+                    PROBES.with(|probes| probes.borrow_mut().remove(&(self.0.0 as usize)))
+                {
+                    let original = probe.original.unwrap() as *const () as isize;
+                    let _ = unsafe { SetWindowLongPtrW(self.0, GWLP_WNDPROC, original) };
+                }
                 let _ = unsafe { DestroyWindow(self.0) };
             }
         }
-        let _window = TestWindow(hwnd);
+        let _window = TestWindow::new(hwnd);
         let _ = unsafe {
             SetWindowPos(
                 hwnd,
@@ -944,6 +1269,12 @@ mod tests {
             pid,
             std::process::id(),
             "foreground belongs to another process; no input injected"
+        );
+        // Declare before the sink: its panic/drop cleanup must still refuse an
+        // external foreground even after a worker returns held state to main.
+        let _main_owned_guard = test_injection::guard_owned(
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            [hwnd.0 as usize, hwnd.0 as usize],
         );
         let mut sink = InputSink::default();
         sink.apply(Input::Text { text: "FS".into() }, None, 0)
@@ -1156,58 +1487,344 @@ mod tests {
             )
         }
         .unwrap();
-        let _second_window = TestWindow(second);
-        for target in [second, hwnd, second, hwnd] {
-            let _ = unsafe {
-                SetWindowPos(
-                    target,
-                    Some(HWND_TOPMOST),
-                    0,
-                    0,
-                    0,
-                    0,
-                    SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
-                )
-            };
-            let _ = unsafe { SetForegroundWindow(target) };
-            let _ = unsafe { SetFocus(Some(target)) };
-            let mut pid = 0;
-            unsafe { GetWindowThreadProcessId(GetForegroundWindow(), Some(&mut pid)) };
-            assert_eq!(
-                pid,
-                std::process::id(),
-                "foreground changed before owned-window focus test"
+        let _second_window = TestWindow::new(second);
+        test_injection::update_owned_windows([hwnd.0 as usize, second.0 as usize]);
+        struct CaptureCleanup;
+        impl Drop for CaptureCleanup {
+            fn drop(&mut self) {
+                let _ = unsafe { ReleaseCapture() };
+            }
+        }
+        let _capture_cleanup = CaptureCleanup;
+        assert!(
+            display.width >= 600 && display.height >= 350,
+            "display lacks room for owned overlapping windows; no further input injected"
+        );
+        // CreateWindow may have activated the new window. Establish the initial
+        // front window once, then only injected clicks may switch foreground.
+        let _ = unsafe {
+            SetWindowPos(
+                second,
+                Some(HWND_TOPMOST),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+            )
+        };
+        let _ = unsafe {
+            SetWindowPos(
+                hwnd,
+                Some(HWND_TOPMOST),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+            )
+        };
+        let _ = unsafe { SetForegroundWindow(hwnd) };
+        let _ = unsafe { SetFocus(Some(hwnd)) };
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        fn pump_until(deadline: std::time::Instant, ready: impl FnMut() -> bool, failure: &str) {
+            assert!(pump_until_check(deadline, ready), "{failure}");
+        }
+        fn pump_until_check(deadline: std::time::Instant, mut ready: impl FnMut() -> bool) -> bool {
+            loop {
+                let mut message = MSG::default();
+                while unsafe { PeekMessageW(&mut message, None, 0, 0, PM_REMOVE) }.as_bool() {
+                    if std::time::Instant::now() >= deadline {
+                        return false;
+                    }
+                    unsafe {
+                        let _ = TranslateMessage(&message);
+                        DispatchMessageW(&message);
+                    }
+                }
+                if ready() {
+                    return true;
+                }
+                if std::time::Instant::now() >= deadline {
+                    return false;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+        fn owned_pointer(
+            deadline: std::time::Instant,
+            sink: &mut InputSink,
+            display: &Display,
+            expected: windows::Win32::Foundation::HWND,
+            x: f64,
+            y: f64,
+            input: Input,
+        ) {
+            owned_pointer_batch(deadline, sink, display, expected, x, y, vec![input]);
+        }
+        fn owned_pointer_batch(
+            deadline: std::time::Instant,
+            sink: &mut InputSink,
+            display: &Display,
+            expected: windows::Win32::Foundation::HWND,
+            x: f64,
+            y: f64,
+            inputs: Vec<Input>,
+        ) {
+            let expected = expected.0 as usize;
+            let display = display.clone();
+            let point = map_point(&display, x, y).unwrap();
+            struct CancelWorker(std::sync::Arc<std::sync::atomic::AtomicBool>);
+            impl Drop for CancelWorker {
+                fn drop(&mut self) {
+                    self.0.store(true, std::sync::atomic::Ordering::Release);
+                }
+            }
+            let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let _cancel_worker = CancelWorker(cancelled.clone());
+            let allowed = [expected, unsafe { GetForegroundWindow() }.0 as usize];
+            // The injection worker owns no GUI window, like the host input
+            // task. Check hit-test ownership immediately before every event.
+            let (reply, response) = std::sync::mpsc::sync_channel(1);
+            let worker_sink = std::mem::take(sink);
+            let worker = std::thread::spawn(move || {
+                let _owned_guard = test_injection::guard_owned(cancelled, allowed);
+                // Declare the sink after the guard so panic/drop cleanup still
+                // passes through its cancellation and owned-foreground checks.
+                let mut worker_sink = worker_sink;
+                let hit = unsafe {
+                    WindowFromPoint(windows::Win32::Foundation::POINT {
+                        x: point.0,
+                        y: point.1,
+                    })
+                };
+                assert_eq!(
+                    hit.0 as usize, expected,
+                    "pointer no longer hits the visible owned target; no input injected"
+                );
+                assert!(
+                    unsafe { IsWindowVisible(hit) }.as_bool(),
+                    "target is no longer visible; no input injected"
+                );
+                let mut owner = 0;
+                unsafe { GetWindowThreadProcessId(hit, Some(&mut owner)) };
+                assert_eq!(
+                    owner,
+                    std::process::id(),
+                    "hit window belongs to another process; no input injected"
+                );
+                owner = 0;
+                unsafe { GetWindowThreadProcessId(GetForegroundWindow(), Some(&mut owner)) };
+                assert_eq!(
+                    owner,
+                    std::process::id(),
+                    "foreground belongs to another process; no input injected"
+                );
+                let result = inputs
+                    .into_iter()
+                    .try_for_each(|input| worker_sink.apply(input, Some(&display), 7));
+                let _ = reply.send((worker_sink, result));
+            });
+            let mut completed = None;
+            // Cross-thread foreground activation requires the target GUI thread
+            // to process messages. Do not join the worker before pumping it.
+            pump_until(
+                deadline,
+                || match response.try_recv() {
+                    Ok(result) => {
+                        completed = Some(result);
+                        true
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => false,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        panic!("owned pointer worker failed before replying")
+                    }
+                },
+                "owned pointer worker exceeded the bounded message-pump deadline",
             );
-            assert_eq!(unsafe { GetForegroundWindow() }, target);
-            let px = if target == second { 310.0 } else { 150.0 };
-            let nx = (px / display.width as f64).min(0.99);
-            sink.apply(
+            let (returned_sink, result) = completed.unwrap();
+            *sink = returned_sink;
+            worker.join().unwrap();
+            result.unwrap();
+        }
+        let ny = 150.0 / (display.height - 1) as f64;
+        pump_until(
+            deadline,
+            || unsafe { GetForegroundWindow() } == hwnd,
+            "could not establish owned initial foreground; no click injected",
+        );
+        // The first window spans x=100..500 and the second x=260..560.
+        // x=530 exposes the rear second window; x=150 exposes the rear first.
+        let mut info = WINDOWINFO {
+            cbSize: size_of::<WINDOWINFO>() as u32,
+            ..Default::default()
+        };
+        unsafe { GetWindowInfo(hwnd, &mut info) }.unwrap();
+        assert!(info.rcClient.top > info.rcWindow.top);
+        // Use the middle of the non-client top area, away from the icon and
+        // window buttons, to test the rear window's exposed title bar safely.
+        let caption_y = ((f64::from(info.rcWindow.top) + f64::from(info.rcClient.top)) / 2.0
+            - f64::from(display.y))
+            / f64::from(display.height - 1);
+        // An independent capture in this same GUI queue is not a session-owned
+        // drag. Preserve its observed fallback routing as a separate boundary;
+        // SetForegroundWindow must not be assumed to cancel this capture.
+        assert!(!sink.left && !sink.right);
+        let _ = unsafe { SetCapture(hwnd) };
+        assert_eq!(unsafe { GetCapture() }, hwnd);
+        let captured_x = 530.0 / (display.width - 1) as f64;
+        owned_pointer(
+            deadline,
+            &mut sink,
+            &display,
+            second,
+            captured_x,
+            ny,
+            Input::Move {
+                display: display.id,
+                layout: 7,
+                x: captured_x,
+                y: ny,
+            },
+        );
+        assert_eq!(unsafe { GetForegroundWindow() }, hwnd);
+        assert_eq!(unsafe { GetCapture() }, hwnd);
+        let captured_before = click_counts(hwnd);
+        let rear_before = click_counts(second);
+        assert_eq!(rear_before, ClickCounts::default());
+        owned_pointer_batch(
+            deadline,
+            &mut sink,
+            &display,
+            second,
+            captured_x,
+            ny,
+            vec![
                 Input::Button {
                     display: display.id,
                     layout: 7,
-                    x: nx,
-                    y,
+                    x: captured_x,
+                    y: ny,
                     button: Button::Left,
                     down: true,
                 },
-                Some(&display),
-                7,
-            )
-            .unwrap();
-            sink.apply(
                 Input::Button {
                     display: display.id,
                     layout: 7,
-                    x: nx,
-                    y,
+                    x: captured_x,
+                    y: ny,
                     button: Button::Left,
                     down: false,
                 },
-                Some(&display),
-                7,
-            )
-            .unwrap();
+            ],
+        );
+        let captured_routed = pump_until_check(deadline, || {
+            let after = click_counts(hwnd);
+            after.client_down == captured_before.client_down + 1
+                && after.client_up == captured_before.client_up + 1
+                && click_counts(second) == rear_before
+                && unsafe { GetForegroundWindow() } == hwnd
+                && unsafe { GetCapture() }.0.is_null()
+        });
+        assert!(
+            captured_routed,
+            "same-GUI artificial capture fallback changed: foreground={:?}, capture={:?}, front_before={captured_before:?}, front_after={:?}, rear_before={rear_before:?}, rear_after={:?}",
+            unsafe { GetForegroundWindow() },
+            unsafe { GetCapture() },
+            click_counts(hwnd),
+            click_counts(second)
+        );
+        assert!(!sink.left);
+        assert_eq!(unsafe { GetAsyncKeyState(1) } & i16::MIN, 0);
+        eprintln!(
+            "same-GUI artificial capture fallback verified: front={:?}, rear={:?}, foreground={:?}, capture={:?}; this condition did not activate the rear window",
+            click_counts(hwnd),
+            click_counts(second),
+            unsafe { GetForegroundWindow() },
+            unsafe { GetCapture() }
+        );
+        // Only the fixture owner ends its artificial capture. The production
+        // input path neither releases foreign capture nor pre-focuses the rear.
+        let _ = unsafe { ReleaseCapture() };
+        assert!(unsafe { GetCapture() }.0.is_null());
+        assert_eq!(unsafe { GetForegroundWindow() }, hwnd);
+        for (index, (target, px, y)) in [
+            (second, 530.0, ny),
+            (hwnd, 150.0, ny),
+            (second, 530.0, ny),
+            (hwnd, 150.0, ny),
+            (second, 530.0, ny),
+            (hwnd, 220.0, caption_y),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_ne!(
+                unsafe { GetForegroundWindow() },
+                target,
+                "test target must begin behind the other owned window"
+            );
+            let nx = px / (display.width - 1) as f64;
+            let before = click_counts(target);
+            owned_pointer_batch(
+                deadline,
+                &mut sink,
+                &display,
+                target,
+                nx,
+                y,
+                vec![
+                    Input::Button {
+                        display: display.id,
+                        layout: 7,
+                        x: nx,
+                        y,
+                        button: Button::Left,
+                        down: true,
+                    },
+                    Input::Button {
+                        display: display.id,
+                        layout: 7,
+                        x: nx,
+                        y,
+                        button: Button::Left,
+                        down: false,
+                    },
+                ],
+            );
+            let clicked = pump_until_check(deadline, || {
+                let after = click_counts(target);
+                let delivered = if index == 5 {
+                    after.caption_down == before.caption_down + 1
+                        && after.caption_up == before.caption_up + 1
+                } else {
+                    after.client_down == before.client_down + 1
+                        && after.client_up == before.client_up + 1
+                };
+                delivered
+                    && unsafe { GetForegroundWindow() } == target
+                    && unsafe { GetCapture() }.0.is_null()
+            });
+            assert!(
+                clicked,
+                "rear click {index} failed: caption={}, target={target:?}, foreground={:?}, capture={:?}, hit={:?}, point={:?}, before={before:?}, after={:?}, first={:?}, second={:?}",
+                index == 5,
+                unsafe { GetForegroundWindow() },
+                unsafe { GetCapture() },
+                unsafe {
+                    WindowFromPoint(windows::Win32::Foundation::POINT {
+                        x: map_point(&display, nx, y).unwrap().0,
+                        y: map_point(&display, nx, y).unwrap().1,
+                    })
+                },
+                map_point(&display, nx, y).unwrap(),
+                click_counts(target),
+                click_counts(hwnd),
+                click_counts(second)
+            );
             assert_eq!(unsafe { GetForegroundWindow() }, target);
+            assert!(!sink.left);
+            assert_eq!(unsafe { GetAsyncKeyState(1) } & i16::MIN, 0);
             sink.apply(
                 Input::Key {
                     vk: 0x41,
@@ -1230,5 +1847,95 @@ mod tests {
             .unwrap();
             sink.release_all().unwrap();
         }
+        // Begin a selection in the front window, move onto the other owned
+        // window, and release there. The original window's mouse capture must
+        // end so a subsequent click can activate the rear window again.
+        let left = 150.0 / (display.width - 1) as f64;
+        let right = 530.0 / (display.width - 1) as f64;
+        owned_pointer(
+            deadline,
+            &mut sink,
+            &display,
+            hwnd,
+            left,
+            ny,
+            Input::Button {
+                display: display.id,
+                layout: 7,
+                x: left,
+                y: ny,
+                button: Button::Left,
+                down: true,
+            },
+        );
+        pump_until(
+            deadline,
+            || unsafe { GetCapture() } == hwnd,
+            "owned edit window did not begin the controlled drag",
+        );
+        owned_pointer(
+            deadline,
+            &mut sink,
+            &display,
+            second,
+            right,
+            ny,
+            Input::Move {
+                display: display.id,
+                layout: 7,
+                x: right,
+                y: ny,
+            },
+        );
+        owned_pointer(
+            deadline,
+            &mut sink,
+            &display,
+            second,
+            right,
+            ny,
+            Input::Button {
+                display: display.id,
+                layout: 7,
+                x: right,
+                y: ny,
+                button: Button::Left,
+                down: false,
+            },
+        );
+        pump_until(
+            deadline,
+            || unsafe { GetCapture() }.0.is_null(),
+            "dragging out left mouse capture active after release",
+        );
+        assert!(!sink.left);
+        assert_eq!(unsafe { GetAsyncKeyState(1) } & i16::MIN, 0);
+        assert_eq!(unsafe { GetForegroundWindow() }, hwnd);
+        for down in [true, false] {
+            owned_pointer(
+                deadline,
+                &mut sink,
+                &display,
+                second,
+                right,
+                ny,
+                Input::Button {
+                    display: display.id,
+                    layout: 7,
+                    x: right,
+                    y: ny,
+                    button: Button::Left,
+                    down,
+                },
+            );
+        }
+        pump_until(
+            deadline,
+            || unsafe { GetForegroundWindow() } == second,
+            "rear window could not activate after controlled drag release",
+        );
+        assert!(!sink.left);
+        assert_eq!(unsafe { GetAsyncKeyState(1) } & i16::MIN, 0);
+        sink.release_all().unwrap();
     }
 }

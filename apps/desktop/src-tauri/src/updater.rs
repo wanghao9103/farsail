@@ -1,5 +1,5 @@
 use crate::{remote::RemoteRuntime, viewer};
-use farsail_client::NativeClient;
+use farsail_client::{NativeClient, file_runtime::NativeFiles};
 use serde::{Deserialize, Serialize};
 use std::{
     path::PathBuf,
@@ -117,18 +117,20 @@ impl Runtime {
             .map_err(|_| "更新任务正在进行，请稍候。")?;
         self.phase("checking", "正在检查更新…");
         let result = async {
-            let builder = app.updater_builder().timeout(Duration::from_secs(20));
-            // Explicit Windows target preserves the established byte-identical installer verification.
-            #[cfg(windows)]
-            let builder = builder.target("windows-x86_64-nsis");
+            // A custom target is an exact manifest key; never fall back to another architecture.
+            let target = update_target(std::env::consts::OS, std::env::consts::ARCH)?;
+            let builder = app
+                .updater_builder()
+                .target(target)
+                .timeout(Duration::from_secs(20));
             let mut update = builder
                 .build()
                 .map_err(|e| e.to_string())?
                 .check()
                 .await
-                .map_err(|e| e.to_string())?;
+                .map_err(check_error)?;
             if let Some(update) = update.as_mut() {
-                validate_download(&update.download_url, &update.version)?;
+                validate_download(&update.download_url, &update.version, target)?;
                 update.timeout = Some(Duration::from_secs(300));
             }
             Ok::<_, String>(update)
@@ -226,12 +228,14 @@ impl Runtime {
             )
         };
         let remote = app.state::<Arc<RemoteRuntime>>().inner().clone();
-        if app.webview_windows().keys().any(|label| label != "main") || !remote.begin_update().await
-        {
-            self.phase(
-                "waiting",
-                "更新已就绪，等待远程连接结束。请关闭远程窗口后安装。",
-            );
+        let files = app.state::<Arc<NativeFiles>>().inner().clone();
+        if app.webview_windows().keys().any(|label| label != "main") || !files.begin_update() {
+            self.phase("waiting", "更新已就绪，等待屏幕或文件连接结束后安装。");
+            return Ok(self.snapshot());
+        }
+        if !remote.begin_update().await {
+            files.finish_update();
+            self.phase("waiting", "更新已就绪，等待屏幕或文件连接结束后安装。");
             return Ok(self.snapshot());
         }
         self.phase(
@@ -241,9 +245,13 @@ impl Runtime {
         let client = app.state::<Arc<NativeClient>>().inner().clone();
         client.cancel_sharing_restore();
         client.disable_host_local();
+        client.disable_files_local();
+        files.stop_all();
         remote.stop_all().await;
         let _ =
             tokio::time::timeout(Duration::from_secs(2), client.set_host_capability(false)).await;
+        let _ =
+            tokio::time::timeout(Duration::from_secs(2), client.set_files_capability(false)).await;
         client.stop_transport().await;
         let result = tokio::task::spawn_blocking(move || update.install(bytes.as_slice())).await;
         match result {
@@ -252,10 +260,12 @@ impl Runtime {
             }
             Ok(Err(e)) => {
                 remote.finish_update();
+                files.finish_update();
                 Err(self.failed(format!("{e} 请重新开启共享或连接后重试。")))
             }
             Err(e) => {
                 remote.finish_update();
+                files.finish_update();
                 Err(self.failed(e))
             }
         }
@@ -289,10 +299,32 @@ impl Runtime {
         });
     }
 }
-fn validate_download(url: &tauri::Url, version: &str) -> Result<(), String> {
+fn update_target(os: &str, arch: &str) -> Result<&'static str, String> {
+    match (os, arch) {
+        ("linux", "x86_64") => Ok("linux-x86_64-deb"),
+        ("linux", "aarch64") => Ok("linux-aarch64-deb"),
+        ("windows", "x86_64") => Ok("windows-x86_64-nsis"),
+        _ => Err("当前系统架构暂不支持在线更新，请联系维护者。".into()),
+    }
+}
+fn check_error(error: tauri_plugin_updater::Error) -> String {
+    match error {
+        tauri_plugin_updater::Error::TargetNotFound(_)
+        | tauri_plugin_updater::Error::TargetsNotFound(_) => {
+            "更新通道暂无适用于当前系统架构的安装包，请稍后再检查。".into()
+        }
+        _ => error.to_string(),
+    }
+}
+fn validate_download(url: &tauri::Url, version: &str, target: &str) -> Result<(), String> {
+    let suffix = match target {
+        "linux-x86_64-deb" => "amd64.deb",
+        "linux-aarch64-deb" => "arm64.deb",
+        "windows-x86_64-nsis" => "x64-setup.exe",
+        _ => return Err("当前系统架构暂不支持在线更新，请联系维护者。".into()),
+    };
     let expected = format!(
-        "/wanghao9103/farsail/releases/download/client-v{}/",
-        version
+        "/wanghao9103/farsail/releases/download/client-v{version}/FarSail_{version}_{suffix}"
     );
     if url.scheme() != "https"
         || url.host_str() != Some("github.com")
@@ -301,7 +333,7 @@ fn validate_download(url: &tauri::Url, version: &str) -> Result<(), String> {
         || url.query().is_some()
         || url.fragment().is_some()
         || url.port().is_some_and(|p| p != 443)
-        || !url.path().starts_with(&expected)
+        || url.path() != expected
     {
         return Err("更新来源无效，请联系维护者。".into());
     }
@@ -355,7 +387,7 @@ mod tests {
     #[test]
     fn update_source_must_match_repository_and_signed_version() {
         let url = "https://github.com/wanghao9103/farsail/releases/download/client-v0.1.21/FarSail_0.1.21_amd64.deb";
-        assert!(validate_download(&url.parse().unwrap(), "0.1.21").is_ok());
+        assert!(validate_download(&url.parse().unwrap(), "0.1.21", "linux-x86_64-deb").is_ok());
         for invalid in [
             url.replace("https:", "http:"),
             url.replace("github.com", "github.com.example.org"),
@@ -364,7 +396,82 @@ mod tests {
             format!("{url}?redirect=elsewhere"),
             url.replace("github.com", "user@github.com"),
         ] {
-            assert!(validate_download(&invalid.parse().unwrap(), "0.1.21").is_err());
+            assert!(
+                validate_download(&invalid.parse().unwrap(), "0.1.21", "linux-x86_64-deb").is_err()
+            );
+        }
+    }
+    #[test]
+    fn architecture_selects_exact_target_and_rejects_cross_architecture_installers() {
+        let targets = [
+            ("linux", "x86_64", "linux-x86_64-deb", "amd64.deb"),
+            ("linux", "aarch64", "linux-aarch64-deb", "arm64.deb"),
+            ("windows", "x86_64", "windows-x86_64-nsis", "x64-setup.exe"),
+        ];
+        for (os, arch, target, suffix) in targets {
+            assert_eq!(update_target(os, arch).unwrap(), target);
+            for (_, _, _, candidate_suffix) in targets {
+                let url = format!(
+                    "https://github.com/wanghao9103/farsail/releases/download/client-v0.1.21/FarSail_0.1.21_{candidate_suffix}"
+                );
+                assert_eq!(
+                    validate_download(&url.parse().unwrap(), "0.1.21", target).is_ok(),
+                    candidate_suffix == suffix
+                );
+            }
+        }
+        for (os, arch) in [
+            ("linux", "arm"),
+            ("windows", "aarch64"),
+            ("macos", "aarch64"),
+        ] {
+            assert!(update_target(os, arch).is_err());
+        }
+    }
+    #[test]
+    fn missing_arm64_entry_does_not_use_the_existing_x86_64_entry() {
+        let release: tauri_plugin_updater::RemoteRelease = serde_json::from_value(serde_json::json!({
+            "version": "0.1.20",
+            "platforms": {
+                "linux-x86_64-deb": {
+                    "url": "https://github.com/wanghao9103/farsail/releases/download/client-v0.1.20/FarSail_0.1.20_amd64.deb",
+                    "signature": "test signature"
+                },
+                "windows-x86_64-nsis": {
+                    "url": "https://github.com/wanghao9103/farsail/releases/download/client-v0.1.20/FarSail_0.1.20_x64-setup.exe",
+                    "signature": "test signature"
+                }
+            }
+        })).unwrap();
+        let target = update_target("linux", "aarch64").unwrap();
+        let error = release.download_url(target).unwrap_err();
+        assert!(matches!(
+            error,
+            tauri_plugin_updater::Error::TargetNotFound(_)
+        ));
+        assert_eq!(
+            check_error(error),
+            "更新通道暂无适用于当前系统架构的安装包，请稍后再检查。"
+        );
+        assert!(release.signature(target).is_err());
+        assert!(release.download_url("linux-x86_64-deb").is_ok());
+        assert!(release.download_url("windows-x86_64-nsis").is_ok());
+    }
+    #[test]
+    fn architecture_url_must_be_the_exact_installer_name() {
+        let url = "https://github.com/wanghao9103/farsail/releases/download/client-v0.1.21/FarSail_0.1.21_arm64.deb";
+        for invalid in [
+            url.replace("FarSail_0.1.21_", "FarSail_0.1.20_"),
+            format!("{url}/extra"),
+            format!("{url}.sig"),
+            url.replace("arm64.deb", "aarch64.deb"),
+            url.replace("arm64.deb", "amd64.deb"),
+            url.replace("FarSail_", "%46arSail_"),
+        ] {
+            assert!(
+                validate_download(&invalid.parse().unwrap(), "0.1.21", "linux-aarch64-deb")
+                    .is_err()
+            );
         }
     }
     #[test]
