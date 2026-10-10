@@ -37,14 +37,14 @@
 
 客户端生成长期 Ed25519 密钥对，并将私钥保存在平台安全存储中。32 字节公钥以小写十六进制发送。向 `POST /v1/devices/challenge` 发送 `{public_key}`，返回 `{challenge_id,nonce,message,expires_in}`。对返回的 UTF-8 `message` 原样签名，再向 `POST /v1/devices/bind` 发送 `{challenge_id,signature,name,platform,can_host,can_files}`。签名为 64 字节小写十六进制；`platform` 为 `windows`、`linux`、`android` 或 `ios`。响应为 `{id,device_token}`。挑战只能使用一次，五分钟后过期。同一所有者重新绑定会轮换设备令牌；其他所有者不能接管同一公钥。管理员禁用的设备必须经管理员明确启用后才能重新绑定。
 
-| 方法与路径                                              | 请求体 / 结果                                                                                                        | 凭据 |
-| ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- | ---- |
-| `GET /v1/devices?limit=50&after=<uuid>&host_only=false` | 当前绑定到自己的所有设备，按 UUID 排序，包括离线和管理员禁用的设备；包含 `online`、`enabled`、`last_seen_at`         | 用户 |
-| `GET /v1/devices/{id}`                                  | 自己绑定的设备                                                                                                       | 用户 |
-| `PATCH /v1/devices/{id}`                                | `{name}`                                                                                                             | 用户 |
-| `DELETE /v1/devices/{id}`                               | 解绑自己已启用的设备，撤销凭据、邀请和授权                                                                           | 用户 |
-| `POST /v1/devices/heartbeat`                            | `{generation:null}` 开始新的连接代次；后续 `{generation:n}` 续期 60 秒租约                                           | 设备 |
-| `POST /v1/devices/capability`                           | `{generation:n,can_host?:true\|false,can_files?:true\|false}` 更新指定的在线设备能力；至少提供一个开关             | 设备 |
+| 方法与路径                                              | 请求体 / 结果                                                                                                | 凭据 |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ | ---- |
+| `GET /v1/devices?limit=50&after=<uuid>&host_only=false` | 当前绑定到自己的所有设备，按 UUID 排序，包括离线和管理员禁用的设备；包含 `online`、`enabled`、`last_seen_at` | 用户 |
+| `GET /v1/devices/{id}`                                  | 自己绑定的设备                                                                                               | 用户 |
+| `PATCH /v1/devices/{id}`                                | `{name}`                                                                                                     | 用户 |
+| `DELETE /v1/devices/{id}`                               | 解绑自己已启用的设备，撤销凭据、邀请和授权                                                                   | 用户 |
+| `POST /v1/devices/heartbeat`                            | `{generation:null}` 开始新的连接代次；后续 `{generation:n}` 续期 60 秒租约                                   | 设备 |
+| `POST /v1/devices/capability`                           | `{generation:n,can_host?:true\|false,can_files?:true\|false}` 更新指定的在线设备能力；至少提供一个开关       | 设备 |
 
 过时的代次收到 409，不能更改较新连接的租约。设备凭据关联到签发它的登录会话；退出登录、撤销登录、修改/找回密码及禁用账户都会使其失效并清除在线状态。之后再次登录时，需签署新的绑定挑战以获取新令牌。解绑会保留非活动的历史行供审计引用，并释放其公钥，以便通过新的明确证明重新绑定；管理员禁用保留绑定，必须经管理员启用后才能重新证明。`device_token` 不能调用账户或列表接口。
 

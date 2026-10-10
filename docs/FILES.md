@@ -2,7 +2,7 @@
 
 # Desktop file transfer
 
-The current source candidate adds bidirectional single-file transfer to Ubuntu and Windows desktops. This page describes that candidate, not the capabilities of an older published installer. Upgrade both desktops and the coordinator together: the coordinator must accept Linux file capability and keep file approval independent from screen sharing. Windows native file-dialog and filesystem operation have not yet been accepted on a physical Windows machine; Windows CI and a new public installer remain pending.
+The current source candidate adds bidirectional single-file transfer to Ubuntu and Windows desktops. This page describes that candidate, not the capabilities of an older published installer. Upgrade both desktops and the coordinator together: the coordinator must accept Linux file capability and keep file approval independent from screen sharing. Windows code, NTFS and native viewer CI checks passed; installer lifecycle acceptance remains under review. Native file dialogs have not yet been accepted on a physical Windows machine, and a new public installer has not been published.
 
 ## Send and receive
 
@@ -39,12 +39,12 @@ TypeScript/Vite, Chromium/WebKit file-interface and existing desktop-interface r
 
 Separately, five integration cases passed with isolated PostgreSQL, coordinator HTTP, two Linux native clients, QUIC and filesystem actors; 44 client, 15 transport and 39 desktop unit checks passed. Real transport checks cover direct preference, trusted-relay fallback after a UDP black hole, and honoring the direct window with a cached relay. Ubuntu native probes confirm receiving defaults off, viewer windows cannot invoke file commands and WebView filesystem reads are denied. Real Open/Save dialogs, physical Windows and internet two-machine acceptance remain pending; explicit fixture paths and synthetic IPC cannot prove those checks. See [FILES-031 verification](verification/WI-FILES-031.md) for scope and evidence.
 
-| Symptom | Check |
-| --- | --- |
-| File action is unavailable | The local device is bound; the recipient is online/enabled and has enabled receiving. |
-| No received file appears | Approve the file connection, then choose a destination for the individual offer. Screen approval alone is insufficient. |
-| Saving fails | Choose a new filename, check free space and directory permissions, and use a filesystem with hard-link support. |
-| No direct connection | Check the configured trusted relay and the actual path shown in the panel. Direct connectivity depends on the network. |
+| Symptom                          | Check                                                                                                                            |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| File action is unavailable       | The local device is bound; the recipient is online/enabled and has enabled receiving.                                            |
+| No received file appears         | Approve the file connection, then choose a destination for the individual offer. Screen approval alone is insufficient.          |
+| Saving fails                     | Choose a new filename, check free space and directory permissions, and use a filesystem with hard-link support.                  |
+| No direct connection             | Check the configured trusted relay and the actual path shown in the panel. Direct connectivity depends on the network.           |
 | Transfer ends or integrity fails | Confirm both apps remain signed in, receiving/authorization is valid and the source file was not modified; request/choose again. |
 
 Related: [Ubuntu installation](UBUNTU_INSTALL.md), [Windows installation](WINDOWS_INSTALL.md), [authenticated transport](TRANSPORT.md), [screen/control permissions](REMOTE.md), and [implementation status](IMPLEMENTATION.md).
