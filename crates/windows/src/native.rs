@@ -1112,7 +1112,7 @@ mod tests {
             WS_VISIBLE, WindowFromPoint,
         };
         use windows::core::w;
-        #[derive(Clone, Copy, Default, Debug)]
+        #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
         struct ClickCounts {
             client_down: u32,
             client_up: u32,
@@ -1666,6 +1666,88 @@ mod tests {
         let caption_y = ((f64::from(info.rcWindow.top) + f64::from(info.rcClient.top)) / 2.0
             - f64::from(display.y))
             / f64::from(display.height - 1);
+        // An independent capture in this same GUI queue is not a session-owned
+        // drag. Preserve its observed fallback routing as a separate boundary;
+        // SetForegroundWindow must not be assumed to cancel this capture.
+        assert!(!sink.left && !sink.right);
+        let _ = unsafe { SetCapture(hwnd) };
+        assert_eq!(unsafe { GetCapture() }, hwnd);
+        let captured_x = 530.0 / (display.width - 1) as f64;
+        owned_pointer(
+            deadline,
+            &mut sink,
+            &display,
+            second,
+            captured_x,
+            ny,
+            Input::Move {
+                display: display.id,
+                layout: 7,
+                x: captured_x,
+                y: ny,
+            },
+        );
+        assert_eq!(unsafe { GetForegroundWindow() }, hwnd);
+        assert_eq!(unsafe { GetCapture() }, hwnd);
+        let captured_before = click_counts(hwnd);
+        let rear_before = click_counts(second);
+        assert_eq!(rear_before, ClickCounts::default());
+        owned_pointer_batch(
+            deadline,
+            &mut sink,
+            &display,
+            second,
+            captured_x,
+            ny,
+            vec![
+                Input::Button {
+                    display: display.id,
+                    layout: 7,
+                    x: captured_x,
+                    y: ny,
+                    button: Button::Left,
+                    down: true,
+                },
+                Input::Button {
+                    display: display.id,
+                    layout: 7,
+                    x: captured_x,
+                    y: ny,
+                    button: Button::Left,
+                    down: false,
+                },
+            ],
+        );
+        let captured_routed = pump_until_check(deadline, || {
+            let after = click_counts(hwnd);
+            after.client_down == captured_before.client_down + 1
+                && after.client_up == captured_before.client_up + 1
+                && click_counts(second) == rear_before
+                && unsafe { GetForegroundWindow() } == hwnd
+                && unsafe { GetCapture() }.0.is_null()
+        });
+        assert!(
+            captured_routed,
+            "same-GUI artificial capture fallback changed: foreground={:?}, capture={:?}, front_before={captured_before:?}, front_after={:?}, rear_before={rear_before:?}, rear_after={:?}",
+            unsafe { GetForegroundWindow() },
+            unsafe { GetCapture() },
+            click_counts(hwnd),
+            click_counts(second)
+        );
+        assert!(!sink.left);
+        assert_eq!(unsafe { GetAsyncKeyState(1) } & i16::MIN, 0);
+        eprintln!(
+            "same-GUI artificial capture fallback verified: front={:?}, rear={:?}, foreground={:?}, capture={:?}; this condition did not activate the rear window",
+            click_counts(hwnd),
+            click_counts(second),
+            unsafe { GetForegroundWindow() },
+            unsafe { GetCapture() }
+        );
+        // Only the fixture owner ends its artificial capture. The production
+        // input path neither releases foreign capture nor pre-focuses the rear.
+        let _ = unsafe { ReleaseCapture() };
+        assert!(unsafe { GetCapture() }.0.is_null());
+        assert_eq!(unsafe { GetForegroundWindow() }, hwnd);
         for (index, (target, px, y)) in [
             (second, 530.0, ny),
             (hwnd, 150.0, ny),
@@ -1682,31 +1764,6 @@ mod tests {
                 target,
                 "test target must begin behind the other owned window"
             );
-            if index == 0 {
-                // Simulate a game capturing the mouse independently of this
-                // session's button state. Only explicit click activation may
-                // switch away; a move alone must not steal foreground.
-                assert!(!sink.left && !sink.right);
-                let _ = unsafe { SetCapture(hwnd) };
-                assert_eq!(unsafe { GetCapture() }, hwnd);
-                let nx = 530.0 / (display.width - 1) as f64;
-                owned_pointer(
-                    deadline,
-                    &mut sink,
-                    &display,
-                    second,
-                    nx,
-                    ny,
-                    Input::Move {
-                        display: display.id,
-                        layout: 7,
-                        x: nx,
-                        y: ny,
-                    },
-                );
-                assert_eq!(unsafe { GetForegroundWindow() }, hwnd);
-                assert_eq!(unsafe { GetCapture() }, hwnd);
-            }
             let nx = px / (display.width - 1) as f64;
             let before = click_counts(target);
             owned_pointer_batch(
@@ -1750,8 +1807,7 @@ mod tests {
             });
             assert!(
                 clicked,
-                "rear click {index} failed: capture_simulation={}, caption={}, target={target:?}, foreground={:?}, capture={:?}, hit={:?}, point={:?}, before={before:?}, after={:?}, first={:?}, second={:?}",
-                index == 0,
+                "rear click {index} failed: caption={}, target={target:?}, foreground={:?}, capture={:?}, hit={:?}, point={:?}, before={before:?}, after={:?}, first={:?}, second={:?}",
                 index == 5,
                 unsafe { GetForegroundWindow() },
                 unsafe { GetCapture() },
