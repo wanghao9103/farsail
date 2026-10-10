@@ -21,9 +21,11 @@ Ubuntu 与 Windows 共用原生文件协议、文件 actor 和界面。每次连
 - 传输层的三项新增真实 QUIC/TLS 检查已通过：IP 与中继均可用时直连；已知 IP 的 UDP 黑洞等待窗口后使用中继；保留端点和缓存中继时仍等待直连窗口。每项检查双向 786,461 字节、TLS exporter 一致及屏幕/控制通道拒绝。
 - 服务端 PostgreSQL 文件权限回归与既有服务流程通过。Linux 允许 `can_files`，仍拒绝 `can_host`；单独关闭一个能力只撤销对应会话，发放、检查和续期均再次检查目标能力。
 - TypeScript/Vite、Chromium 与 WebKit 文件界面及既有桌面界面检查通过，正常与窄窗口截图已检查。界面测试为合成 IPC，不能替代上述原生集成。
-- Ubuntu 原生应用在隔离 profile、Secret Service、Xvfb/Openbox 环境检查通过：接收默认关闭、WebView 无文件读取权限、文件命令禁止查看器调用，窗口恢复/最大化/全屏/最小化及既有媒体检查正常。原生文件对话框命令编译通过，集成测试通过显式测试路径代替真实文件选择。
+- 客户端/桌面全目标 Clippy、原生构建、Rustfmt 和 51 对双语文档检查通过。Ubuntu 原生应用在隔离 profile、Secret Service、Xvfb/Openbox 环境确认接收默认关闭、WebView 无文件读取权限及既有媒体检查正常。早期文件候选的查看器探针通过 6 个文件命令拒绝和窗口恢复/最大化/全屏/最小化；最终源码重跑 Ubuntu 探针仍通过，但查看器阶段被 WebKit 内部页面加载错误阻断，没有生成断言报告。已排除 Vite 未启动和 URL/端口差异，未确定根因，不能把重跑算作通过或认定为生产故障。原生文件对话框命令编译通过，集成测试通过显式测试路径代替真实文件选择。
 
-测试只读取合成测试凭据，专用数据库 schema 与临时文件，不访问用户账号、系统凭据或真实设备配置。本地证据保存在 `.local/files-final-*.log`、`.local/files-native-smoke.log` 与 `.local/ui-verification/file-transfer*.png`；这些忽略文件不属于公开发布附件。专用数据库 URL 未设置时，数据库集成明确跳过；跳过不能计入真实集成通过。
+GitHub 源码提交 `f334a68` 的 [backend](https://github.com/wanghao9103/farsail/actions/runs/38021624985) 与 [transport](https://github.com/wanghao9103/farsail/actions/runs/38021624971) CI 成功，后者实际执行文件集成 5 项而非跳过。Windows 开发 CI 的协议/NTFS 单元、桌面单元、全目标 Clippy、原生构建及查看器/界面检查已通过。首轮 Windows 安装包验收在读取旧状态文案“本机未共享”时失败；可访问性日志显示新状态“本机屏幕未共享”与“文件接收已关闭”。更新断言与模拟服务的独立 capability 契约后重跑，安装包完整验收状态另行记录。
+
+测试只读取合成测试凭据，专用数据库 schema 与临时文件，不访问用户账号、系统凭据或真实设备配置。本地证据保存在 `.local/files-final-*.log`、`.local/files-native-smoke.log`、`.local/files-native-smoke-final.log` 与 `.local/ui-verification/file-transfer*.png`；这些忽略文件不属于公开发布附件。专用数据库 URL 未设置时，数据库集成明确跳过；跳过不能计入真实集成通过。
 
 ## 待验收与边界
 

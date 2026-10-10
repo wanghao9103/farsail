@@ -158,7 +158,8 @@ try {
     if ($preference.sharing -or $preference.watch) { throw 'Native sharing opt-out did not persist' }
     $optOutHash=(Get-FileHash $preferencePath).Hash
     Start-App $false
-    $null=Find-UI '本机未共享'
+    $null=Find-UI '本机屏幕未共享'
+    $null=Find-UI '文件接收已关闭'
     if ((Get-FileHash $preferencePath).Hash -ne $optOutHash) { throw 'Restart changed explicit opt-out' }
     Click-UI '*账号安全'; Click-UI '退出登录'
     $null=Find-UI '登录 FarSail'
