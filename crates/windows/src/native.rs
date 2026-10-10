@@ -763,6 +763,9 @@ mod tests {
         sink.apply(pointer_button(Button::Left, true), Some(&display), 7)
             .unwrap();
         assert_eq!(test_injection::activations(), [(display.x, display.y)]);
+        // The fake activation never confirms a real foreground. Input still
+        // reaches SendInput; only its own result determines apply's success.
+        assert!(test_injection::flags().contains(&MOUSEEVENTF_LEFTDOWN.0));
         sink.apply(pointer_button(Button::Left, true), Some(&display), 7)
             .unwrap();
         sink.apply(pointer_button(Button::Right, true), Some(&display), 7)

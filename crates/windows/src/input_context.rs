@@ -8,6 +8,7 @@ pub struct ForegroundWindow {
 
 #[cfg(any(windows, test))]
 pub(crate) mod click_activation {
+    pub(super) const CONFIRM_BUDGET_MS: u32 = 100;
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub struct Target {
         pub hit: usize,
@@ -40,6 +41,19 @@ pub(crate) mod click_activation {
                 && matches!((self.target_integrity, self.own_integrity),
                     (Some(target), Some(own)) if target <= own)
         }
+
+        fn same_destination(self, current: Self) -> bool {
+            // Becoming foreground is the intended change. All hit, identity,
+            // style, desktop and integrity facts must still match the witness.
+            let expected = Self {
+                foreground: current.foreground,
+                foreground_process_id: current.foreground_process_id,
+                ..self
+            };
+            current == expected
+                && current.foreground == self.root
+                && current.foreground_process_id == self.process_id
+        }
     }
 
     pub fn fresh_down(down: bool, left_held: bool, right_held: bool) -> bool {
@@ -50,7 +64,7 @@ pub(crate) mod click_activation {
     /// activation. A refused attempt never replaces ordinary SendInput diagnostics.
     pub fn attempt(
         mut inspect: impl FnMut() -> Option<Target>,
-        mut activate: impl FnMut(usize),
+        mut activate: impl FnMut(Target),
     ) -> bool {
         let Some(first) = inspect().filter(|target| target.eligible()) else {
             return false;
@@ -58,8 +72,20 @@ pub(crate) mod click_activation {
         if inspect() != Some(first) {
             return false;
         }
-        activate(first.root);
+        activate(first);
         true
+    }
+
+    pub fn confirm(
+        target: Target,
+        mut request: impl FnMut(usize) -> bool,
+        mut barrier: impl FnMut(usize, u32) -> bool,
+        mut inspect: impl FnMut() -> Option<Target>,
+    ) -> bool {
+        target.eligible()
+            && request(target.root)
+            && barrier(target.root, CONFIRM_BUDGET_MS)
+            && inspect().is_some_and(|current| target.same_destination(current))
     }
 
     #[cfg(test)]
@@ -92,7 +118,7 @@ pub(crate) mod click_activation {
                     reads += 1;
                     Some(target())
                 },
-                |window| attempts.push(window)
+                |target| attempts.push(target.root)
             ));
             assert_eq!(reads, 2);
             assert_eq!(attempts, [2]);
@@ -216,6 +242,118 @@ pub(crate) mod click_activation {
                 assert!(!fresh_down(false, held.0, held.1));
             }
         }
+
+        #[test]
+        fn accepted_activation_confirms_with_one_bounded_barrier_and_updated_foreground() {
+            let base = target();
+            let current = Target {
+                foreground: base.root,
+                foreground_process_id: base.process_id,
+                ..base
+            };
+            let events = std::cell::RefCell::new(Vec::new());
+            assert!(confirm(
+                base,
+                |root| {
+                    events.borrow_mut().push(("request", root, 0));
+                    true
+                },
+                |root, budget| {
+                    events.borrow_mut().push(("barrier", root, budget));
+                    true
+                },
+                || {
+                    events.borrow_mut().push(("inspect", 0, 0));
+                    Some(current)
+                },
+            ));
+            assert_eq!(
+                *events.borrow(),
+                [
+                    ("request", base.root, 0),
+                    ("barrier", base.root, 100),
+                    ("inspect", 0, 0)
+                ]
+            );
+        }
+
+        #[test]
+        fn refused_or_timed_out_activation_does_not_retry_or_claim_confirmation() {
+            for (accepted, responsive, expected_barriers) in [(false, true, 0), (true, false, 1)] {
+                let mut requests = 0;
+                let mut barriers = 0;
+                assert!(!confirm(
+                    target(),
+                    |_| {
+                        requests += 1;
+                        accepted
+                    },
+                    |_, budget| {
+                        barriers += 1;
+                        assert_eq!(budget, 100);
+                        responsive
+                    },
+                    || panic!("refused/timed out target must not count as confirmed"),
+                ));
+                assert_eq!(requests, 1);
+                assert_eq!(barriers, expected_barriers);
+            }
+        }
+
+        #[test]
+        fn confirmation_rechecks_hit_identity_desktop_and_integrity() {
+            let base = target();
+            let current = Target {
+                foreground: base.root,
+                foreground_process_id: base.process_id,
+                ..base
+            };
+            for changed in [
+                Some(Target { hit: 99, ..current }),
+                Some(Target {
+                    process_id: 99,
+                    ..current
+                }),
+                Some(Target {
+                    thread_id: 99,
+                    ..current
+                }),
+                Some(Target {
+                    input_desktop: false,
+                    ..current
+                }),
+                Some(Target {
+                    target_integrity: Some(0x3000),
+                    ..current
+                }),
+                Some(Target {
+                    own_integrity: None,
+                    ..current
+                }),
+                Some(Target {
+                    no_activate: true,
+                    ..current
+                }),
+                Some(base),
+                None,
+            ] {
+                assert!(!confirm(base, |_| true, |_, _| true, || changed));
+            }
+            let mut requested = false;
+            assert!(!confirm(
+                Target {
+                    enabled: false,
+                    ..base
+                },
+                |_| {
+                    requested = true;
+                    true
+                },
+                |_, _| true,
+                || Some(current)
+            ));
+            assert!(!requested);
+        }
     }
 }
 
@@ -226,7 +364,8 @@ mod platform {
     use windows::{
         Win32::{
             Foundation::{
-                CloseHandle, GetLastError, HANDLE, HWND, POINT, SetLastError, WIN32_ERROR,
+                CloseHandle, GetLastError, HANDLE, HWND, LPARAM, POINT, SetLastError, WIN32_ERROR,
+                WPARAM,
             },
             Security::{
                 GetSidSubAuthority, GetSidSubAuthorityCount, GetTokenInformation, IsValidSid,
@@ -244,8 +383,9 @@ mod platform {
                 Input::KeyboardAndMouse::IsWindowEnabled,
                 WindowsAndMessaging::{
                     GA_ROOT, GWL_EXSTYLE, GetAncestor, GetForegroundWindow, GetWindowLongPtrW,
-                    GetWindowThreadProcessId, IsWindowVisible, SetForegroundWindow,
-                    WS_EX_NOACTIVATE, WindowFromPoint,
+                    GetWindowThreadProcessId, IsWindowVisible, SMTO_ABORTIFHUNG, SMTO_BLOCK,
+                    SendMessageTimeoutW, SetForegroundWindow, WM_NULL, WS_EX_NOACTIVATE,
+                    WindowFromPoint,
                 },
             },
         },
@@ -414,15 +554,65 @@ mod platform {
                 );
                 target
             },
-            |root| {
-                let activated = unsafe { SetForegroundWindow(HWND(root as *mut std::ffi::c_void)) };
-                #[cfg(test)]
-                eprintln!(
-                    "owned click activation request: root={root}, accepted={}, foreground={:?}",
-                    activated.as_bool(),
-                    foreground_window()
+            |target| {
+                let confirmed = click_activation::confirm(
+                    target,
+                    |root| {
+                        let accepted =
+                            unsafe { SetForegroundWindow(HWND(root as *mut std::ffi::c_void)) }
+                                .as_bool();
+                        #[cfg(test)]
+                        eprintln!(
+                            "owned click activation request: root={root}, accepted={accepted}, foreground={:?}",
+                            foreground_window()
+                        );
+                        accepted
+                    },
+                    |root, budget| {
+                        // On the caller's GUI thread activation is synchronous.
+                        // SendMessageTimeout would call its procedure directly
+                        // and ignore the timeout, so only perform the post-check.
+                        if target.thread_id == unsafe { GetCurrentThreadId() } {
+                            #[cfg(test)]
+                            eprintln!(
+                                "owned click activation barrier: root={root}, skipped_same_thread=true"
+                            );
+                            return true;
+                        }
+                        // Cross-input-queue activation is asynchronous. WM_NULL
+                        // lets that queue process the activation before DOWN is
+                        // injected, with a short budget and no input-queue attach.
+                        let responsive = unsafe {
+                            SendMessageTimeoutW(
+                                HWND(root as *mut std::ffi::c_void),
+                                WM_NULL,
+                                WPARAM(0),
+                                LPARAM(0),
+                                SMTO_ABORTIFHUNG | SMTO_BLOCK,
+                                budget,
+                                None,
+                            )
+                        }
+                        .0 != 0;
+                        #[cfg(test)]
+                        eprintln!(
+                            "owned click activation barrier: root={root}, budget_ms={budget}, responsive={responsive}, foreground={:?}",
+                            foreground_window()
+                        );
+                        responsive
+                    },
+                    || {
+                        let current = click_target(x, y);
+                        #[cfg(test)]
+                        eprintln!("owned click activation post-barrier candidate: {current:?}");
+                        current
+                    },
                 );
-                let _ = activated;
+                #[cfg(test)]
+                eprintln!("owned click activation confirmation: confirmed={confirmed}");
+                // Failure never replaces or suppresses the ordinary SendInput
+                // path: it retains its own counts and error diagnostics.
+                let _ = confirmed;
             },
         );
         #[cfg(test)]
