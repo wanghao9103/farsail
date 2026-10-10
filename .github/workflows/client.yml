@@ -26,9 +26,6 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo test -p farsail-client
       - run: cargo test -p farsail-media -p farsail-windows -p farsail-desktop --lib
-      - name: Owned overlapping-window mouse activation and release
-        timeout-minutes: 3
-        run: cargo test -p farsail-windows --lib real_input_into_own_foreground_window -- --ignored --test-threads=1
       - run: cargo clippy -p farsail-client -p farsail-media -p farsail-windows -p farsail-desktop --all-targets -- -D warnings
       - run: cargo build -p farsail-desktop
       - name: Native viewer isolation and browser interaction regressions
@@ -58,3 +55,21 @@ jobs:
           path: |
             .local/native-viewer-verification.json
             .local/ui-verification/*.png
+  native-input:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.93.0
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-native-input
+      - name: Recorded input and activation policy regressions
+        run: cargo test -p farsail-windows --lib
+      - name: Owned overlapping-window mouse activation and release
+        timeout-minutes: 3
+        run: cargo test -p farsail-windows --lib real_input_into_own_foreground_window -- --ignored --test-threads=1
+      - run: cargo clippy -p farsail-windows --all-targets -- -D warnings

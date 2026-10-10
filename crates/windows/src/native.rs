@@ -1524,24 +1524,27 @@ mod tests {
         let _ = unsafe { SetForegroundWindow(hwnd) };
         let _ = unsafe { SetFocus(Some(hwnd)) };
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        fn pump_until(
-            deadline: std::time::Instant,
-            mut ready: impl FnMut() -> bool,
-            failure: &str,
-        ) {
+        fn pump_until(deadline: std::time::Instant, ready: impl FnMut() -> bool, failure: &str) {
+            assert!(pump_until_check(deadline, ready), "{failure}");
+        }
+        fn pump_until_check(deadline: std::time::Instant, mut ready: impl FnMut() -> bool) -> bool {
             loop {
                 let mut message = MSG::default();
                 while unsafe { PeekMessageW(&mut message, None, 0, 0, PM_REMOVE) }.as_bool() {
-                    assert!(std::time::Instant::now() < deadline, "{failure}");
+                    if std::time::Instant::now() >= deadline {
+                        return false;
+                    }
                     unsafe {
                         let _ = TranslateMessage(&message);
                         DispatchMessageW(&message);
                     }
                 }
                 if ready() {
-                    return;
+                    return true;
                 }
-                assert!(std::time::Instant::now() < deadline, "{failure}");
+                if std::time::Instant::now() >= deadline {
+                    return false;
+                }
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
         }
@@ -1729,22 +1732,36 @@ mod tests {
                     },
                 ],
             );
-            pump_until(
-                deadline,
-                || {
-                    let after = click_counts(target);
-                    let delivered = if index == 5 {
-                        after.caption_down == before.caption_down + 1
-                            && after.caption_up == before.caption_up + 1
-                    } else {
-                        after.client_down == before.client_down + 1
-                            && after.client_up == before.client_up + 1
-                    };
-                    delivered
-                        && unsafe { GetForegroundWindow() } == target
-                        && unsafe { GetCapture() }.0.is_null()
+            let clicked = pump_until_check(deadline, || {
+                let after = click_counts(target);
+                let delivered = if index == 5 {
+                    after.caption_down == before.caption_down + 1
+                        && after.caption_up == before.caption_up + 1
+                } else {
+                    after.client_down == before.client_down + 1
+                        && after.client_up == before.client_up + 1
+                };
+                delivered
+                    && unsafe { GetForegroundWindow() } == target
+                    && unsafe { GetCapture() }.0.is_null()
+            });
+            assert!(
+                clicked,
+                "rear click {index} failed: capture_simulation={}, caption={}, target={target:?}, foreground={:?}, capture={:?}, hit={:?}, point={:?}, before={before:?}, after={:?}, first={:?}, second={:?}",
+                index == 0,
+                index == 5,
+                unsafe { GetForegroundWindow() },
+                unsafe { GetCapture() },
+                unsafe {
+                    WindowFromPoint(windows::Win32::Foundation::POINT {
+                        x: map_point(&display, nx, y).unwrap().0,
+                        y: map_point(&display, nx, y).unwrap().1,
+                    })
                 },
-                "rear click failed to deliver both target messages, activate, or release capture",
+                map_point(&display, nx, y).unwrap(),
+                click_counts(target),
+                click_counts(hwnd),
+                click_counts(second)
             );
             assert_eq!(unsafe { GetForegroundWindow() }, target);
             assert!(!sink.left);

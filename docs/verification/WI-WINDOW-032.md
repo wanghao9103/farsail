@@ -24,7 +24,9 @@ The delayed-IPC outside-release regression failed before correction. Complete Ch
 
 The Windows module's six portable policy tests on Linux, Rustfmt and all-target Clippy pass. This does not prove cfg(windows) API compilation or native behavior; later Windows CI must provide compilation and owned overlapping-window evidence.
 
-The Windows workflow explicitly selects only `real_input_into_own_foreground_window` with `--ignored --test-threads=1` and a job timeout. It does not enable the separate real desktop-capture test. Ordinary recorded-input unit tests must not invoke real activation.
+The first [Windows CI](https://github.com/wanghao9103/farsail/actions/runs/38025377398) for `36bf83c` passes production/test compilation and 23 ordinary Windows tests. The real overlapping-window check fails after 11.08 seconds waiting for target messages, foreground and capture release; subsequent Clippy/native-viewer steps do not run. That combined failure lacks stage and message details, so test-only diagnostics are added before attributing a cause. No assertion is skipped or target pre-activated. Ubuntu's complete three-suite WebKit UI and actual coordinator/file integrations pass.
+
+The Windows workflow runs native input in an independent parallel job, so native failures need not wait for the complete desktop build. It explicitly selects only `real_input_into_own_foreground_window` with `--ignored --test-threads=1` and a job timeout. It does not enable the separate real desktop-capture test. Ordinary recorded-input unit tests must not invoke real activation.
 
 ## Limits and references
 

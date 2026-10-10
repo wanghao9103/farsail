@@ -24,7 +24,9 @@ Viewer 转发一张桌面图像上的坐标，没有按 Windows 前后台窗口�
 
 Linux portable Windows 模块 6 项策略检查、Rustfmt 和 all-target Clippy 通过。这不能证明 cfg(windows) 的 API 编译或原生行为；Windows 编译及真实自建交叠窗口结果由后续 CI 补证。
 
-Windows 工作流只显式选择 `real_input_into_own_foreground_window`，使用 `--ignored --test-threads=1` 与超时，不启用另一个真实桌面采集测试。普通输入记录器单元不能调用真实窗口激活。
+首轮提交 `36bf83c` 的 [Windows CI](https://github.com/wanghao9103/farsail/actions/runs/38025377398) 已通过生产代码/测试代码编译和 23 项普通 Windows 测试，但真实交叠检查 11.08 秒失败于目标点击、前台和捕获释放的联合等待，之后的 Clippy/原生查看器未执行。未带阶段与消息细分的失败日志不足以归因；补充测试专用诊断后继续调查，不跳过断言或逐次预激活目标。Ubuntu 完整 WebKit 三套 UI 与真实协调/文件集成已通过。
+
+Windows 工作流将原生输入放在独立并行 job，避免等待整个桌面构建才发现原生问题。它只显式选择 `real_input_into_own_foreground_window`，使用 `--ignored --test-threads=1` 与超时，不启用另一个真实桌面采集测试。普通输入记录器单元不能调用真实窗口激活。
 
 ## 边界与关联
 

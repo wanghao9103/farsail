@@ -25,7 +25,7 @@ pub(crate) mod click_activation {
     }
 
     impl Target {
-        fn eligible(self) -> bool {
+        pub(super) fn eligible(self) -> bool {
             self.hit != 0
                 && self.root != 0
                 && self.process_id != 0
@@ -404,12 +404,33 @@ mod platform {
     /// Best effort only: Windows foreground policy and application input handling
     /// still apply. Never attach input queues, change z-order, or elevate privileges.
     pub(crate) fn try_activate_at(x: i32, y: i32) {
-        click_activation::attempt(
-            || click_target(x, y),
+        let attempted = click_activation::attempt(
+            || {
+                let target = click_target(x, y);
+                #[cfg(test)]
+                eprintln!(
+                    "owned click activation candidate: {target:?}, eligible={}",
+                    target.is_some_and(|candidate| candidate.eligible())
+                );
+                target
+            },
             |root| {
-                let _ = unsafe { SetForegroundWindow(HWND(root as *mut std::ffi::c_void)) };
+                let activated = unsafe { SetForegroundWindow(HWND(root as *mut std::ffi::c_void)) };
+                #[cfg(test)]
+                eprintln!(
+                    "owned click activation request: root={root}, accepted={}, foreground={:?}",
+                    activated.as_bool(),
+                    foreground_window()
+                );
+                let _ = activated;
             },
         );
+        #[cfg(test)]
+        eprintln!(
+            "owned click activation finished: attempted={attempted}, foreground={:?}",
+            foreground_window()
+        );
+        let _ = attempted;
     }
 
     /// A conservative preflight, not proof that the next SendInput will succeed.
