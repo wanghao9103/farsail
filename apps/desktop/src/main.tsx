@@ -2903,8 +2903,10 @@ function Viewer({
     buttons: number;
     point: { display: number; layout: number; x: number; y: number } | null;
   }>({ id: null, buttons: 0, point: null });
-  const clearPointer = () => {
+  const releasedPointerLeave = useRef<number | null>(null);
+  const clearPointer = (releasedOutside = false) => {
     const id = pointer.current.id;
+    releasedPointerLeave.current = releasedOutside ? id : null;
     pointer.current = { id: null, buttons: 0, point: null };
     if (id != null && image.current?.hasPointerCapture(id))
       image.current.releasePointerCapture(id);
@@ -3173,6 +3175,15 @@ function Viewer({
     generation.current++;
     clearPointer();
     send({ kind: "resume_mouse" });
+  };
+  const switchRemoteWindow = () => {
+    if (!controlRef.current || !displayGate.current.canControl()) return;
+    releaseInputs();
+    send({ kind: "key", vk: 0xa4, down: true, repeat: false });
+    send({ kind: "key", vk: 0x09, down: true, repeat: false });
+    send({ kind: "key", vk: 0x09, down: false });
+    send({ kind: "key", vk: 0xa4, down: false });
+    screen.current?.focus({ preventScroll: true });
   };
   const resumeControl = () => {
     setRetryingInput(true);
@@ -3499,6 +3510,7 @@ function Viewer({
       e.preventDefault();
       screen.current?.focus({ preventScroll: true });
       if (held.id == null) {
+        releasedPointerLeave.current = null;
         held.id = e.pointerId;
         e.currentTarget.setPointerCapture(e.pointerId);
       }
@@ -3514,7 +3526,15 @@ function Viewer({
     held.buttons = next;
     if (e.type === "pointermove" && p) send({ kind: "move", ...held.point });
     // Clear our bookkeeping before implicit lost-capture, so a normal UP stays queued.
-    if (held.id != null && next === 0) clearPointer();
+    if (held.id != null && next === 0) {
+      const rect = e.currentTarget.getBoundingClientRect();
+      clearPointer(
+        e.clientX < rect.left ||
+          e.clientX >= rect.right ||
+          e.clientY < rect.top ||
+          e.clientY >= rect.bottom,
+      );
+    }
   };
   return (
     <section
@@ -3754,6 +3774,11 @@ function Viewer({
                     恢复鼠标控制
                   </button>
                 )}
+                {control && (
+                  <button type="button" onClick={switchRemoteWindow}>
+                    切换远端窗口（Alt+Tab）
+                  </button>
+                )}
                 {inputBlocked && !ended && (
                   <button
                     type="button"
@@ -3915,7 +3940,14 @@ function Viewer({
               onLostPointerCapture={() => {
                 if (pointer.current.buttons) releaseInputs();
               }}
-              onPointerLeave={() => {
+              onPointerLeave={(e) => {
+                // Capture release outside causes a leave after normal UP. Release
+                // keys in order without invalidating that final positioned UP.
+                if (releasedPointerLeave.current === e.pointerId) {
+                  releasedPointerLeave.current = null;
+                  send(null);
+                  return;
+                }
                 if (!pointer.current.buttons) releaseInputs();
               }}
               onContextMenu={(e) => e.preventDefault()}
