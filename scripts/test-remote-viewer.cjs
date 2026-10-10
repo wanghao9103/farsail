@@ -1,10 +1,17 @@
 // Synthetic UI contract tests; actual Windows input/IPC are separate checks.
-const { chromium } = require("playwright");
+const { chromium, webkit } = require("playwright");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 (async () => {
-  const browser = await chromium.launch({
-    channel: process.env.UI_BROWSER || "chrome",
+  const browser = await (
+    process.env.UI_ENGINE === "webkit" ? webkit : chromium
+  ).launch({
+    ...(process.env.UI_ENGINE === "webkit"
+      ? {}
+      : { channel: process.env.UI_BROWSER || "chrome" }),
+    ...(process.env.UI_ENGINE === "webkit" && process.env.UI_WEBKIT_EXECUTABLE
+      ? { executablePath: process.env.UI_WEBKIT_EXECUTABLE }
+      : {}),
     headless: true,
   });
   const page = await browser.newPage({
@@ -214,7 +221,7 @@ const fs = require("node:fs");
     document.querySelector(".viewer-status").textContent.includes("已直连"),
   );
   if (!(await page.locator(".viewer-toolbar").isVisible())) {
-    await page.getByRole("button", { name: "显示工具栏", exact: true }).click();
+    await page.getByRole("button", { name: "显示工具栏", exact: true }).hover();
   }
   assert(await page.locator(".viewer-titlebar").isVisible());
   assert.equal(await page.getByLabel("画面分辨率").inputValue(), "-2");
@@ -272,7 +279,7 @@ const fs = require("node:fs");
   await page.mouse.move(900, 600);
   await page.locator(".viewer-toolbar").waitFor({ state: "hidden" });
   assert((await page.locator(".remote-screen").boundingBox()).height >= 763);
-  await page.getByRole("button", { name: "显示工具栏", exact: true }).click();
+  await page.getByRole("button", { name: "显示工具栏", exact: true }).hover();
   await page.locator(".viewer-toolbar").waitFor({ state: "visible" });
   await page.getByText("全屏切换", { exact: true }).click();
   assert.equal(await page.locator(".viewer-titlebar").count(), 0);
@@ -365,14 +372,14 @@ const fs = require("node:fs");
   await page.screenshot({
     path: ".local/ui-verification/viewer-fill-tall.png",
   });
-  await page.getByRole("button", { name: "显示工具栏", exact: true }).click();
+  await page.getByRole("button", { name: "显示工具栏", exact: true }).hover();
   await page.getByText("全屏切换", { exact: true }).click();
   await page.setViewportSize({ width: 1920, height: 1080 });
   await verifyFillPixels();
   await page.screenshot({
     path: ".local/ui-verification/viewer-fill-wide.png",
   });
-  await page.getByRole("button", { name: "显示工具栏", exact: true }).click();
+  await page.getByRole("button", { name: "显示工具栏", exact: true }).hover();
   await page.getByText("全屏切换", { exact: true }).click();
   await page.setViewportSize({ width: 1200, height: 800 });
   await verifyFillPixels();
@@ -407,7 +414,7 @@ const fs = require("node:fs");
       Math.abs(mappedFill.y - 0.75) < 0.005,
     "fill coordinates must follow independent axis scaling",
   );
-  await page.getByRole("button", { name: "显示工具栏", exact: true }).click();
+  await page.getByRole("button", { name: "显示工具栏", exact: true }).hover();
   await page.getByText("更多操作", { exact: true }).click();
   assert.equal(
     await page

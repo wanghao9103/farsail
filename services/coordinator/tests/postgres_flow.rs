@@ -91,7 +91,14 @@ async fn register(app: &Router, mailer: &Mailer, email: &str) -> (Uuid, String) 
     assert_eq!(s, StatusCode::OK, "{v}");
     let id = Uuid::parse_str(v["id"].as_str().unwrap()).unwrap();
     let token = mailer.messages().last().unwrap().token.clone();
-    let (s, _) = post(app, "/v1/auth/verify", json!({"token":token}), None, None).await;
+    let (s, _) = post(
+        app,
+        "/v1/auth/verify",
+        json!({"email":email,"token":token}),
+        None,
+        None,
+    )
+    .await;
     assert_eq!(s, StatusCode::OK);
     let (s, v) = post(
         app,
@@ -169,7 +176,18 @@ async fn postgres_identity_device_and_grant_lifecycle() {
         .connect(&url)
         .await
         .unwrap();
-    sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+    let mut previous = sqlx::migrate!("./migrations");
+    previous.migrations = std::borrow::Cow::Owned(
+        previous
+            .iter()
+            .filter(|m| m.version < 20261009000000)
+            .cloned()
+            .collect(),
+    );
+    previous.run(&pool).await.unwrap();
+    let old_constraint: String = sqlx::query_scalar("SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid='devices'::regclass AND conname='devices_platform_check'")
+        .fetch_one(&pool).await.unwrap();
+    assert!(!old_constraint.contains("linux"));
     let mailer = Mailer::memory();
     let app = router(AppState {
         pool: pool.clone(),
@@ -178,6 +196,30 @@ async fn postgres_identity_device_and_grant_lifecycle() {
     });
 
     let (_alice_id, alice) = register(&app, &mailer, "alice@example.test").await;
+    // Upgrade a populated installation, retaining historical migration checksums.
+    sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+    let upgraded_constraint: String = sqlx::query_scalar("SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid='devices'::regclass AND conname='devices_platform_check'")
+        .fetch_one(&pool).await.unwrap();
+    assert!(upgraded_constraint.contains("linux"));
+    for (email, password, expected) in [
+        (
+            "missing@example.test",
+            "wrong-password",
+            "account_not_found",
+        ),
+        ("alice@example.test", "wrong-password", "invalid_password"),
+    ] {
+        let (status, body) = post(
+            &app,
+            "/v1/auth/login",
+            json!({"email":email,"password":password}),
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"], expected);
+    }
     let (bob_id, bob) = register(&app, &mailer, "bob@example.test").await;
     sqlx::query("UPDATE users SET role='admin' WHERE id=$1")
         .bind(bob_id)
@@ -190,6 +232,20 @@ async fn postgres_identity_device_and_grant_lifecycle() {
     assert_eq!(me["email"], "alice@example.test");
     let alice_key = signing_key();
     let bob_key = signing_key();
+    // Linux is a controller platform, even if a caller bypasses the desktop UI.
+    let (status, challenge) = post(
+        &app,
+        "/v1/devices/challenge",
+        json!({"public_key":hex::encode(alice_key.verifying_key().to_bytes())}),
+        Some(&alice),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    for (can_host, can_files) in [(true, false), (false, true)] {
+        let (status, _) = post(&app, "/v1/devices/bind", json!({"challenge_id":challenge["challenge_id"], "signature":hex::encode(alice_key.sign(challenge["message"].as_str().unwrap().as_bytes()).to_bytes()), "name":"Ubuntu", "platform":"linux", "can_host":can_host, "can_files":can_files}), Some(&alice), None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
     let (alice_device, alice_device_token) = bind(&app, &alice, &alice_key, "Alice", false).await;
     let (bob_device, bob_device_token) = bind(&app, &bob, &bob_key, "Bob", true).await;
 
@@ -249,6 +305,25 @@ async fn postgres_identity_device_and_grant_lifecycle() {
             admit(&admission, Some(secret), &public_key).await.1,
             json!(false)
         );
+        if table == "users" {
+            let (status, body) = post(
+                &app,
+                "/v1/auth/login",
+                json!({"email":"alice@example.test","password":"correct horse battery staple"}),
+                None,
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED);
+            assert_eq!(
+                body["error"],
+                if field == "enabled" {
+                    "account_disabled"
+                } else {
+                    "email_not_verified"
+                }
+            );
+        }
         sqlx::query(&format!("UPDATE {table} SET {field}={good} WHERE id=$1"))
             .bind(id)
             .execute(&pool)
@@ -937,4 +1012,233 @@ async fn postgres_identity_device_and_grant_lifecycle() {
         .await
         .unwrap();
     admin.close().await;
+}
+
+#[tokio::test]
+async fn verification_codes_are_bound_expiring_limited_and_single_use() {
+    use sha2::{Digest, Sha256};
+    let url = std::env::var("FARSAIL_TEST_DATABASE_URL").expect("dedicated test database");
+    let admin = PgPool::connect(&url).await.unwrap();
+    let schema = format!("fs_test_{}", Uuid::new_v4().simple());
+    sqlx::query(&format!("CREATE SCHEMA {schema}"))
+        .execute(&admin)
+        .await
+        .unwrap();
+    let search_path = schema.clone();
+    let pool = PgPoolOptions::new()
+        .max_connections(12)
+        .after_connect(move |conn, _| {
+            let sql = format!("SET search_path TO {search_path}");
+            Box::pin(async move {
+                sqlx::query(&sql).execute(conn).await?;
+                Ok(())
+            })
+        })
+        .connect(&url)
+        .await
+        .unwrap();
+    sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+    let mailer = Mailer::memory();
+    let app = router(AppState {
+        pool: pool.clone(),
+        mailer: mailer.clone(),
+        allowed_relays: std::sync::Arc::new(vec![]),
+    });
+    let password = "correct horse battery staple";
+    let email = "codes@example.test";
+    let (status, _) = post(
+        &app,
+        "/v1/auth/register",
+        json!({"email":email,"password":password}),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let original = mailer.messages().last().unwrap().token.clone();
+    assert_eq!(original.len(), 6);
+    assert!(original.bytes().all(|c| c.is_ascii_digit()));
+    assert_eq!(
+        mailer.messages().last().unwrap().subject,
+        "FarSail 遥舟｜邮箱验证"
+    );
+    let remaining: f64 = sqlx::query_scalar("SELECT extract(epoch FROM expires_at-now())::double precision FROM email_tokens WHERE consumed_at IS NULL").fetch_one(&pool).await.unwrap();
+    assert!(remaining > 590.0 && remaining <= 600.0);
+    let (status, _) = post(
+        &app,
+        "/v1/auth/verify",
+        json!({"token":original}),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "six-digit code requires account context"
+    );
+    for (wrong_email, wrong_password) in [
+        (email, "incorrect password"),
+        ("missing@example.test", password),
+    ] {
+        let (status, _) = post(
+            &app,
+            "/v1/auth/verify/resend",
+            json!({"email":wrong_email,"password":wrong_password}),
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            mailer.messages().len(),
+            1,
+            "ineligible requests do not send"
+        );
+    }
+    let (status, _) = post(
+        &app,
+        "/v1/auth/verify/resend",
+        json!({"email":email,"password":password}),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let latest = mailer.messages().last().unwrap().token.clone();
+    assert_ne!(original, latest);
+    for (which_email, code) in [
+        (email, original.as_str()),
+        ("other@example.test", latest.as_str()),
+    ] {
+        let (status, _) = post(
+            &app,
+            "/v1/auth/verify",
+            json!({"email":which_email,"token":code}),
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+    let input = json!({"email":" CODES@EXAMPLE.TEST ","token":latest});
+    let (a, b) = tokio::join!(
+        post(&app, "/v1/auth/verify", input.clone(), None, None),
+        post(&app, "/v1/auth/verify", input, None, None)
+    );
+    assert!(matches!(
+        (a.0, b.0),
+        (StatusCode::OK, StatusCode::BAD_REQUEST) | (StatusCode::BAD_REQUEST, StatusCode::OK)
+    ));
+    let (status, _) = post(
+        &app,
+        "/v1/auth/verify/resend",
+        json!({"email":email,"password":password}),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        mailer.messages().len(),
+        2,
+        "verified accounts do not resend"
+    );
+    // Synthetic fixed codes demonstrate equal codes in separate accounts are isolated.
+    for account in [
+        "bound-a@example.test",
+        "bound-b@example.test",
+        "expired@example.test",
+        "limited@example.test",
+        "legacy@example.test",
+        "disabled@example.test",
+        "racing@example.test",
+    ] {
+        let (status, _) = post(
+            &app,
+            "/v1/auth/register",
+            json!({"email":account,"password":password}),
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let digest = Sha256::digest(format!("verify-code:{account}:012345")).to_vec();
+        sqlx::query("UPDATE email_tokens SET token_hash=$1 WHERE user_id=(SELECT id FROM users WHERE email=$2) AND kind='verify' AND consumed_at IS NULL").bind(digest).bind(account).execute(&pool).await.unwrap();
+    }
+    for account in ["bound-a@example.test", "bound-b@example.test"] {
+        let (status, _) = post(
+            &app,
+            "/v1/auth/verify",
+            json!({"email":account,"token":"012345"}),
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "same leading-zero code bound to each account"
+        );
+    }
+    sqlx::query("UPDATE email_tokens SET expires_at=now()-interval '1 second' WHERE user_id=(SELECT id FROM users WHERE email='expired@example.test')").execute(&pool).await.unwrap();
+    sqlx::query("UPDATE users SET enabled=false WHERE email='disabled@example.test'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    for account in ["expired@example.test", "disabled@example.test"] {
+        let (status, _) = post(
+            &app,
+            "/v1/auth/verify",
+            json!({"email":account,"token":"012345"}),
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+    for _ in 0..5 {
+        let (status, _) = post(
+            &app,
+            "/v1/auth/verify",
+            json!({"email":"limited@example.test","token":"999999"}),
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+    let (status, _) = post(
+        &app,
+        "/v1/auth/verify",
+        json!({"email":"limited@example.test","token":"012345"}),
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    let legacy = "L".repeat(43);
+    sqlx::query("UPDATE email_tokens SET token_hash=$1 WHERE user_id=(SELECT id FROM users WHERE email='legacy@example.test')").bind(Sha256::digest(legacy.as_bytes()).to_vec()).execute(&pool).await.unwrap();
+    let (status, _) = post(&app, "/v1/auth/verify", json!({"token":legacy}), None, None).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "already-issued legacy tokens remain usable"
+    );
+    let input = json!({"email":"racing@example.test","password":password});
+    let (a, b) = tokio::join!(
+        post(&app, "/v1/auth/verify/resend", input.clone(), None, None),
+        post(&app, "/v1/auth/verify/resend", input, None, None)
+    );
+    assert_eq!((a.0, b.0), (StatusCode::OK, StatusCode::OK));
+    let active: i64 = sqlx::query_scalar("SELECT count(*) FROM email_tokens WHERE user_id=(SELECT id FROM users WHERE email='racing@example.test') AND kind='verify' AND consumed_at IS NULL").fetch_one(&pool).await.unwrap();
+    assert_eq!(
+        active, 1,
+        "concurrent resends keep exactly one current code"
+    );
+    pool.close().await;
+    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+        .execute(&admin)
+        .await
+        .unwrap();
 }

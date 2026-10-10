@@ -1,11 +1,18 @@
 // Run with Playwright available on NODE_PATH and the desktop Vite server on 1420.
 // Synthetic IPC fixtures verify UI flow only; they are never bundled into the app.
-const { chromium } = require("playwright");
+const { chromium, webkit } = require("playwright");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 (async () => {
-  const browser = await chromium.launch({
-    channel: process.env.UI_BROWSER || "chrome",
+  const browser = await (
+    process.env.UI_ENGINE === "webkit" ? webkit : chromium
+  ).launch({
+    ...(process.env.UI_ENGINE === "webkit"
+      ? {}
+      : { channel: process.env.UI_BROWSER || "chrome" }),
+    ...(process.env.UI_ENGINE === "webkit" && process.env.UI_WEBKIT_EXECUTABLE
+      ? { executablePath: process.env.UI_WEBKIT_EXECUTABLE }
+      : {}),
     headless: true,
   });
   const page = await browser.newPage({
@@ -40,11 +47,15 @@ const fs = require("node:fs");
       signedIn: false,
       verified: false,
       failLogin: false,
+      loginFailure: "",
+      bindFailure: "",
       sharing: false,
       remoteWatch: false,
       sharePreferences: { sharing: false, watch: false, restore: "idle" },
       bound: true,
       computerName: "DESKTOP-TEST",
+      platform: "windows",
+      canShareLocalScreen: true,
       role: "user",
       failNextOp: "",
       failTransport: false,
@@ -54,6 +65,18 @@ const fs = require("node:fs");
       viewerInstances: {},
       requests: [],
       calls: [],
+      update: {
+        currentVersion: "0.1.20",
+        availableVersion: null,
+        phase: "idle",
+        downloaded: 0,
+        total: null,
+        message: "将自动检查新版，也可手动检查更新。",
+        preferences: { autoCheck: true, autoInstall: false },
+      },
+      updateFailure: "",
+      updateConnected: false,
+
       devices: [local, remote, offline],
       pending: [],
       sessions: [
@@ -82,12 +105,46 @@ const fs = require("node:fs");
       metadata: { currentWindow: { label: "main" } },
       invoke: async (cmd, args = {}) => {
         f.calls.push({ cmd, args });
+        if (cmd.startsWith("update_")) {
+          if (cmd === "update_preferences")
+            f.update.preferences = args.preferences;
+          if (cmd === "update_check")
+            Object.assign(f.update, {
+              availableVersion: "0.1.21",
+              phase: "available",
+              message: "发现新版本 0.1.21。",
+            });
+          if (cmd === "update_download") {
+            if (f.updateFailure) {
+              const message = f.updateFailure;
+              f.updateFailure = "";
+              Object.assign(f.update, { phase: "error", message });
+              throw message;
+            }
+            Object.assign(f.update, {
+              phase: "ready",
+              message: "更新已下载并通过签名校验，可以安装。",
+              downloaded: 100,
+              total: 100,
+            });
+          }
+          if (cmd === "update_install")
+            Object.assign(f.update, {
+              phase: f.updateConnected ? "waiting" : "installing",
+              message: f.updateConnected
+                ? "更新已就绪，等待远程连接结束。请关闭远程窗口后安装。"
+                : "正在安装更新，完成后将重新启动。",
+            });
+          return { ...f.update, preferences: { ...f.update.preferences } };
+        }
         if (cmd === "state")
           return {
             signedIn: f.signedIn,
             server: "https://example.invalid",
             deviceId: f.signedIn && f.bound ? local.id : null,
             computerName: f.computerName,
+            platform: f.platform,
+            canShareLocalScreen: f.canShareLocalScreen,
             sharing: f.sharing,
             remoteWatch: f.remoteWatch,
             sharePreferences: f.sharePreferences,
@@ -165,6 +222,7 @@ const fs = require("node:fs");
           throw "HTTP 503: unavailable";
         }
         if (op === "login") {
+          if (f.loginFailure) throw `HTTP 401: ${f.loginFailure}`;
           if (f.failLogin || !f.verified) throw "HTTP 401: unauthorized";
           f.signedIn = true;
         }
@@ -176,12 +234,14 @@ const fs = require("node:fs");
             session_id: "session-1",
           };
         if (op === "verify") {
-          if (a.token !== "synthetic-code") throw "HTTP 400";
+          if (a.token !== "012345" || a.email !== "tester@example.invalid")
+            throw "HTTP 400";
           f.verified = true;
           return {};
         }
         if (op === "devices") return f.devices;
         if (op === "bind") {
+          if (f.bindFailure) throw f.bindFailure;
           local.name = a.name;
           f.bound = true;
           return { id: local.id };
@@ -278,6 +338,47 @@ const fs = require("node:fs");
     .getByRole("button", { name: "注册并验证邮箱", exact: true })
     .click();
   await page.getByLabel("邮箱验证码", { exact: true }).waitFor();
+  await page.getByLabel("邮箱验证码", { exact: true }).fill("012345");
+  await page
+    .getByRole("button", { name: "没收到验证码？重新发送", exact: true })
+    .click();
+  await page
+    .getByText("重发请求已提交，请检查收件箱和垃圾邮件。", { exact: true })
+    .waitFor();
+  assert.equal(
+    await page.getByLabel("邮箱验证码", { exact: true }).inputValue(),
+    "012345",
+  );
+  assert.equal(
+    await page.locator('input[type="email"], input[type="password"]').count(),
+    0,
+  );
+  const resend = await page.evaluate(() =>
+    window.fixture.calls.findLast(
+      (c) => c.cmd === "call" && c.args.op === "resend",
+    ),
+  );
+  assert.deepEqual(resend.args.args, {
+    email: "tester@example.invalid",
+    password: "synthetic-password-123",
+  });
+  await page.evaluate(() => (window.fixture.failNextOp = "resend"));
+  await page
+    .getByRole("button", { name: "没收到验证码？重新发送", exact: true })
+    .click();
+  await page.getByRole("alertdialog").filter({ hasText: "HTTP 503" }).waitFor();
+  await page
+    .getByRole("alertdialog")
+    .getByLabel("关闭错误", { exact: true })
+    .click();
+  assert.equal(
+    await page.getByLabel("邮箱验证码", { exact: true }).inputValue(),
+    "012345",
+  );
+  assert.equal(
+    await page.locator('input[type="email"], input[type="password"]').count(),
+    0,
+  );
   await page.getByLabel("邮箱验证码", { exact: true }).fill("bad-code");
   await page.getByRole("button", { name: "完成验证", exact: true }).click();
   await page.getByRole("alertdialog").filter({ hasText: "HTTP 400" }).waitFor();
@@ -286,7 +387,7 @@ const fs = require("node:fs");
     .getByLabel("关闭错误", { exact: true })
     .click();
   assert(await page.getByLabel("邮箱验证码", { exact: true }).isVisible());
-  await page.getByLabel("邮箱验证码", { exact: true }).fill("synthetic-code");
+  await page.getByLabel("邮箱验证码", { exact: true }).fill("012345");
   await page.getByRole("button", { name: "完成验证", exact: true }).click();
   await page
     .getByRole("heading", { name: "登录 FarSail", exact: true })
@@ -300,6 +401,21 @@ const fs = require("node:fs");
   );
   await page.getByRole("button", { name: "返回登录", exact: true }).click();
   await page.evaluate(() => (window.fixture.failLogin = false));
+  for (const [code, title, message] of [
+    ["account_not_found", "账号不存在", "这个邮箱尚未注册"],
+    ["invalid_password", "密码错误", "密码不正确"],
+    ["email_not_verified", "邮箱尚未验证", "请先完成邮箱验证"],
+    ["account_disabled", "账号已停用", "请联系管理员"],
+  ]) {
+    await page.evaluate((code) => (window.fixture.loginFailure = code), code);
+    await page.getByRole("button", { name: "登录", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: title, exact: true });
+    await dialog.waitFor();
+    assert((await dialog.innerText()).includes(message));
+    assert.equal(await page.getByRole("alertdialog").count(), 0);
+    await page.getByRole("button", { name: "返回登录", exact: true }).click();
+  }
+  await page.evaluate(() => (window.fixture.loginFailure = ""));
   await page.getByRole("button", { name: "登录", exact: true }).click();
   await page.getByRole("heading", { name: "工作电脑", exact: true }).waitFor();
   assert.equal(
@@ -960,7 +1076,6 @@ const fs = require("node:fs");
       .count(),
     0,
   );
-  assert.deepEqual(errors, []);
   // System-name defaults, legacy migration and custom aliases are separate paths.
   await page.getByRole("button", { name: "我的设备", exact: true }).click();
   assert.equal(
@@ -1077,9 +1192,119 @@ const fs = require("node:fs");
     await page.evaluate(() => window.fixture.devices[0].name),
     "手动名称",
   );
+  // Ubuntu uses the same account/device flow, but must not offer Windows host actions.
+  await page.evaluate(() => {
+    window.fixture.platform = "linux";
+    window.fixture.canShareLocalScreen = false;
+    window.fixture.devices[0].platform = "linux";
+    window.fixture.devices[1].name = "家里的电脑";
+    window.fixture.devices[1].online = true;
+    window.fixture.devices[1].enabled = true;
+    window.fixture.devices[1].can_host = true;
+    window.fixture.sharing = false;
+    window.fixture.sharePreferences = {
+      sharing: false,
+      watch: false,
+      restore: "idle",
+    };
+  });
+  await page.getByRole("button", { name: "我的设备", exact: true }).click();
+  await page.getByRole("button", { name: "刷新", exact: true }).click();
+  await page.getByRole("button", { name: "共享与设置", exact: true }).click();
+  await page
+    .getByText(
+      "Ubuntu 客户端可连接 Windows 电脑，暂不支持共享本机屏幕或远程值守。",
+      { exact: true },
+    )
+    .waitFor();
+  assert.equal(
+    await page.getByRole("switch", { name: "本机屏幕共享" }).count(),
+    0,
+  );
+  assert.equal(
+    await page.getByText("Windows 运行权限", { exact: true }).count(),
+    0,
+  );
+  await page.getByRole("button", { name: "总览", exact: true }).click();
+  await page.getByText("Ubuntu 控制端", { exact: true }).first().waitFor();
+  await page.screenshot({ path: ".local/ui-verification/ubuntu-overview.png" });
+  await page.getByRole("button", { name: "我的设备", exact: true }).click();
+  await page
+    .locator(".device-list")
+    .getByRole("button", { name: /^手动名称/ })
+    .click();
+  assert.equal(
+    await page
+      .getByRole("button", { name: "开启本机共享", exact: true })
+      .count(),
+    0,
+  );
+  await page
+    .locator(".device-list")
+    .getByRole("button", { name: /^家里的电脑/ })
+    .click();
+  assert(
+    await page
+      .getByRole("button", { name: "远程控制", exact: true })
+      .isEnabled(),
+  );
+  await page.screenshot({ path: ".local/ui-verification/ubuntu-devices.png" });
+  await page.evaluate(() => {
+    window.fixture.bound = false;
+    window.fixture.bindFailure =
+      "HTTP 422: Failed to deserialize: platform: unknown variant `linux`, expected windows/android/ios";
+  });
+  await page.getByRole("button", { name: "总览", exact: true }).click();
+  await page.getByRole("button", { name: "刷新状态", exact: true }).click();
+  await page.getByLabel("本机设备名称", { exact: true }).fill("Ubuntu-测试");
+  await page.getByRole("button", { name: "添加这台电脑", exact: true }).click();
+  const upgradeDialog = page.getByRole("alertdialog");
+  await upgradeDialog.waitFor();
+  assert((await upgradeDialog.innerText()).includes("请先升级协调服务"));
+  assert.equal(await page.evaluate(() => window.fixture.bound), false);
+  await upgradeDialog
+    .getByRole("button", { name: "知道了", exact: true })
+    .click();
+  // Updates stay in settings; a rejected download cannot enable installation.
+  await page.getByRole("button", { name: "共享与设置", exact: true }).click();
+  const updates = page.locator(".client-updates");
+  await updates.getByRole("heading", { name: "软件更新" }).waitFor();
+  await updates
+    .getByRole("checkbox", { name: "自动下载，并在远程连接结束后安装更新" })
+    .check();
+  await page.waitForFunction(
+    () => window.fixture.update.preferences.autoInstall,
+  );
+  await updates.getByRole("button", { name: "检查更新", exact: true }).click();
+  await updates.getByText("发现新版本 0.1.21。", { exact: true }).waitFor();
+  await page.evaluate(
+    () => (window.fixture.updateFailure = "更新签名校验失败"),
+  );
+  await updates.getByRole("button", { name: "下载更新", exact: true }).click();
+  await updates.getByText("更新签名校验失败", { exact: true }).waitFor();
+  assert.equal(
+    await updates.getByRole("button", { name: "安装并重启" }).count(),
+    0,
+  );
+  await updates.getByRole("button", { name: "下载更新", exact: true }).click();
+  await updates.getByRole("button", { name: "安装并重启" }).waitFor();
+  await page.evaluate(() => (window.fixture.updateConnected = true));
+  await updates.getByRole("button", { name: "安装并重启" }).click();
+  await updates
+    .getByText("更新已就绪，等待远程连接结束。请关闭远程窗口后安装。", {
+      exact: true,
+    })
+    .waitFor();
+  await page.screenshot({ path: ".local/ui-verification/client-updates.png" });
+  await page.evaluate(() => (window.fixture.updateConnected = false));
+  await updates.getByRole("button", { name: "安装并重启" }).click();
+  await updates
+    .getByText("正在安装更新，完成后将重新启动。", { exact: true })
+    .waitFor();
+  assert(await updates.getByRole("button", { name: "检查更新" }).isDisabled());
   assert.deepEqual(errors, []);
   console.log(
-    "PASS existing UI/action regressions; computer-name binding; local-only legacy rename once; custom alias preservation; migration failure and manual recovery; unavailable hostname fallback. Synthetic IPC only.",
+    "PASS update preferences, signed-download failure/retry, connected-session installation deferral; six-digit verification with email context; direct resend retains verification page/input on success and failure without credential fields; distinct login reasons and legacy fallback; Linux 422 upgrade guidance; existing UI/action regressions; computer-name binding; local-only legacy rename once; custom alias preservation; migration failure and manual recovery; unavailable hostname fallback. Synthetic IPC only.",
   );
   await browser.close();
 })().catch((e) => {

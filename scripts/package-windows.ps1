@@ -17,8 +17,15 @@ New-Item -ItemType Directory -Force $output | Out-Null
 Run { npm.cmd ci }
 Run { npm.cmd run typecheck }
 Run { cargo fmt --all -- --check }
-# No updater plugin is used. Keep the installed binary byte-identical to the verified EXE.
-Run { npm.cmd run --workspace @farsail/desktop tauri build -- --bundles nsis --no-binary-patching -- --locked }
+# Native updater fixes the NSIS target explicitly. Preserve the established installed EXE digest check.
+if ($env:TAURI_SIGNING_PRIVATE_KEY) {
+    Run { npm.cmd run --workspace @farsail/desktop tauri build -- --bundles nsis --no-binary-patching -- --locked }
+} else {
+    # CI preview builds never receive a production signing key.
+    $previewConfig = Join-Path $PWD '.local/windows-package/preview-config.json'
+    '{"bundle":{"createUpdaterArtifacts":false}}' | Set-Content $previewConfig -Encoding utf8
+    Run { npm.cmd run --workspace @farsail/desktop tauri build -- --bundles nsis --no-binary-patching --config $previewConfig -- --locked }
+}
 $config = Get-Content apps/desktop/src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
 $name = "FarSail_$($config.version)_x64-setup.exe"
 $installer = Join-Path $PWD "target/release/bundle/nsis/$name"
@@ -36,6 +43,10 @@ if ((Get-FileHash apps/desktop/src-tauri/icons/icon.ico).Hash -ne (Get-FileHash 
     throw 'Expected FarSail v2 icon'
 }
 Copy-Item -LiteralPath $installer -Destination (Join-Path $output $name) -Force
+if ($env:TAURI_SIGNING_PRIVATE_KEY) {
+    if (-not (Test-Path "$installer.sig")) { throw 'Signed release must contain an updater signature' }
+    Copy-Item -LiteralPath "$installer.sig" -Destination (Join-Path $output "$name.sig") -Force
+}
 $hash = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLowerInvariant()
 "$hash  $name" | Set-Content (Join-Path $output 'SHA256SUMS.txt') -Encoding utf8
 [ordered]@{

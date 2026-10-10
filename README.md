@@ -49,6 +49,7 @@ English is the default documentation language. Use the language links at the top
 - [Codec survey](CODEC_SURVEY.md): video/image formats and selection rationale.
 - [Icon notes](assets/branding/README.md): candidate assets, generation prompts and initial visual-similarity screening.
 - [Coordinator API](docs/API.md): implemented account, device, invitation, authorization state-machine and administrator endpoints.
+- [Ubuntu desktop client](docs/UBUNTU_INSTALL.md): source startup, Debian packaging, desktop keyring and controller scope.
 - [Windows client](docs/CLIENT.md): how to run it, credential boundaries and implemented screens.
 - [Windows preview installation](docs/WINDOWS_INSTALL.md): x64 installation without development tools, checksums, WebView2 and two-computer testing.
 - [Authenticated transport](docs/TRANSPORT.md): iroh handshake, short leases, data channels and path state.

@@ -51,6 +51,7 @@ FarSail 是正在开发中的开源远程桌面项目，Windows 客户端采用 
 - [编码全景调研](CODEC_SURVEY.zh-CN.md)：视频/图像格式和选型依据。
 - [图标说明](assets/branding/README.zh-CN.md)：候选资源、生成提示词及视觉相似性初筛记录。
 - [协调服务 API](docs/API.zh-CN.md)：已实现的账号、设备、邀请、授权状态机和管理员接口。
+- [Ubuntu 桌面客户端](docs/UBUNTU_INSTALL.zh-CN.md)：源码启动、Debian 打包、桌面密钥环和控制端范围。
 - [Windows 客户端](docs/CLIENT.zh-CN.md)：运行方式、凭据边界与已实现界面。
 - [Windows 预览安装](docs/WINDOWS_INSTALL.zh-CN.md)：无需开发环境的 x64 安装、校验、WebView2 与双机联调。
 - [认证传输](docs/TRANSPORT.zh-CN.md)：iroh 握手、短租约、数据通道和路径状态。

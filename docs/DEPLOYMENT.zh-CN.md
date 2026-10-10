@@ -134,6 +134,8 @@ bash scripts/deploy/farsail.sh status
 
 ## 邮箱、管理员和双端配置
 
+真实邮箱配置、完整参数、重建协调服务和收信排障步骤见[真实邮箱验证邮件配置](SMTP_SETUP.zh-CN.md)。
+
 SMTP在共享namespace的127.0.0.1:1025，收件箱只发布到宿主127.0.0.1:8025。电脑另开终端，保持SSH转发：
 
 ```sh

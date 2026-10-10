@@ -108,9 +108,9 @@ mod native;
 pub use native::{Capture, InputSink, displays, ensure_dpi_awareness};
 
 #[cfg(not(windows))]
-pub fn displays() -> Result<Vec<Display>> {
-    Err(Error::Unavailable("Windows required".into()))
-}
+mod unavailable;
+#[cfg(not(windows))]
+pub use unavailable::{Capture, InputSink, displays};
 
 pub fn encode_bgra(
     meta: FrameMeta,

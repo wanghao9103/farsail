@@ -126,6 +126,11 @@ pub async fn bind(
 ) -> Result<Json<BindOutput>> {
     let p = principal(&state, &headers).await?;
     let name = valid_name(&input.name)?;
+    if input.platform == DevicePlatform::Linux && (input.can_host || input.can_files) {
+        return Err(Error::Invalid(
+            "Linux devices currently support controller mode only",
+        ));
+    }
     let signature = Signature::from_bytes(&bytes_hex::<64>(&input.signature)?);
     let mut tx = state.pool.begin().await?;
     let row: Option<(Vec<u8>,Vec<u8>)> = sqlx::query_as("SELECT public_key,nonce FROM device_challenges WHERE id=$1 AND owner_id=$2 AND consumed_at IS NULL AND expires_at>now() FOR UPDATE")
@@ -264,7 +269,7 @@ pub async fn capability(
 ) -> Result<Json<DeviceView>> {
     let (id, owner) = device_principal(&state, &headers).await?;
     let mut tx = state.pool.begin().await?;
-    let changed = sqlx::query("UPDATE devices SET can_host=$2 WHERE id=$1 AND generation=$3 AND lease_until>now() AND enabled AND bound AND platform='windows'")
+    let changed = sqlx::query("UPDATE devices SET can_host=$2 WHERE id=$1 AND generation=$3 AND lease_until>now() AND enabled AND bound AND (platform='windows' OR NOT $2)")
         .bind(id).bind(input.can_host).bind(input.generation).execute(&mut *tx).await?;
     if changed.rows_affected() != 1 {
         return Err(Error::Conflict);

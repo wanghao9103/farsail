@@ -275,6 +275,7 @@ struct Live {
 }
 
 pub struct RemoteRuntime {
+    updating: AtomicBool,
     client: Arc<NativeClient>,
     sessions: Mutex<HashMap<String, Arc<Live>>>,
     finished: Mutex<HashMap<String, Value>>,
@@ -284,6 +285,7 @@ impl RemoteRuntime {
         let runtime = Arc::new(Self {
             client,
             sessions: Mutex::new(HashMap::new()),
+            updating: AtomicBool::new(false),
             finished: Mutex::new(HashMap::new()),
         });
         let mut receiver = runtime.client.subscribe_sessions();
@@ -309,7 +311,8 @@ impl RemoteRuntime {
             return;
         }
         let mut sessions = self.sessions.lock().await;
-        if sessions.contains_key(session.id())
+        if self.updating.load(Ordering::SeqCst)
+            || sessions.contains_key(session.id())
             || (host
                 && sessions
                     .values()
@@ -1202,6 +1205,20 @@ impl RemoteRuntime {
         for id in ids {
             self.stop(&id).await;
         }
+    }
+    pub async fn begin_update(&self) -> bool {
+        let sessions = self.sessions.lock().await;
+        if sessions.values().any(|s| s.alive.load(Ordering::SeqCst)) {
+            return false;
+        }
+        self.updating.store(true, Ordering::SeqCst);
+        true
+    }
+    pub fn is_updating(&self) -> bool {
+        self.updating.load(Ordering::SeqCst)
+    }
+    pub fn finish_update(&self) {
+        self.updating.store(false, Ordering::SeqCst);
     }
     pub async fn stop_all(&self) {
         let ids: Vec<_> = self.sessions.lock().await.keys().cloned().collect();

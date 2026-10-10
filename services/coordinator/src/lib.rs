@@ -27,6 +27,8 @@ pub enum Error {
     Invalid(&'static str),
     #[error("unauthorized")]
     Unauthorized,
+    #[error("{0}")]
+    LoginFailure(&'static str),
     #[error("forbidden")]
     Forbidden,
     #[error("not found")]
@@ -43,7 +45,7 @@ impl IntoResponse for Error {
     fn into_response(self) -> Response {
         let status = match self {
             Self::Invalid(_) => StatusCode::BAD_REQUEST,
-            Self::Unauthorized => StatusCode::UNAUTHORIZED,
+            Self::Unauthorized | Self::LoginFailure(_) => StatusCode::UNAUTHORIZED,
             Self::Forbidden => StatusCode::FORBIDDEN,
             Self::NotFound => StatusCode::NOT_FOUND,
             Self::Conflict => StatusCode::CONFLICT,
@@ -76,6 +78,47 @@ pub struct Mail {
     pub token: String,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum MailPurpose {
+    Verification,
+    Recovery,
+}
+
+impl MailPurpose {
+    fn content(self, code: &str) -> (String, String, String) {
+        let (title, label, purpose, instructions, minutes) = match self {
+            Self::Verification => (
+                "邮箱验证",
+                "验证码",
+                "完成 FarSail 账号的邮箱验证",
+                "请返回 FarSail 的“验证邮箱”页面，输入以下验证码。",
+                10,
+            ),
+            Self::Recovery => (
+                "密码重置",
+                "密码重置码",
+                "重置 FarSail 账号密码",
+                "请返回 FarSail 的密码重置页面，复制完整重置码并设置新密码。",
+                30,
+            ),
+        };
+        let subject = format!("FarSail 遥舟｜{title}");
+        let text = format!(
+            "您好：\n\n您正在{purpose}。\n{instructions}\n\n{label}：{code}\n\n有效期为 {minutes} 分钟，请尽快完成操作。此代码仅可使用一次，请勿转发或告知他人。\n如重新申请，请使用最新邮件中的代码。\n\n如果您未发起此操作，请忽略本邮件。\n本邮件由系统自动发送，请勿直接回复。\n\nFarSail 遥舟\n连接你的电脑，继续你的工作。\n"
+        );
+        let escaped = code
+            .replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+            .replace('\'', "&#39;");
+        let html = format!(
+            r#"<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head><body style="margin:0;background:#f4f7f8;color:#24343c;font-family:Arial,'Microsoft YaHei',sans-serif"><table role="presentation" style="width:100%;border-collapse:collapse"><tr><td style="padding:32px 16px"><table role="presentation" style="max-width:560px;width:100%;margin:auto;background:#fff;border:1px solid #e0e7ea;border-radius:12px"><tr><td style="padding:32px"><p style="margin:0 0 24px;color:#087a78;font-size:18px;font-weight:bold">FarSail 遥舟</p><h1 style="font-size:24px;margin:0 0 24px">{title}</h1><p>您好：</p><p style="line-height:1.8">您正在{purpose}。<br>{instructions}</p><p style="margin:24px 0 8px;color:#5b6b73">{label}</p><div style="padding:20px;background:#eef8f6;border:1px solid #cce8e1;border-radius:8px;font-family:monospace;font-size:28px;font-weight:bold;letter-spacing:3px;overflow-wrap:anywhere;word-break:break-all">{escaped}</div><p style="line-height:1.8">有效期为 <strong>{minutes} 分钟</strong>，请尽快完成操作。此代码仅可使用一次，请勿转发或告知他人。如重新申请，请使用最新邮件中的代码。</p><p style="line-height:1.8;color:#5b6b73">如果您未发起此操作，请忽略本邮件。<br>本邮件由系统自动发送，请勿直接回复。</p><hr style="border:0;border-top:1px solid #e0e7ea;margin:24px 0"><p style="font-size:13px;color:#5b6b73;margin:0">FarSail 遥舟 · 连接你的电脑，继续你的工作。</p></td></tr></table></td></tr></table></body></html>"#
+        );
+        (subject, text, html)
+    }
+}
+
 impl Mailer {
     pub fn memory() -> Self {
         Self::Memory(Arc::new(Mutex::new(Vec::new())))
@@ -88,11 +131,13 @@ impl Mailer {
         }
     }
 
-    pub(crate) async fn send(&self, to: &str, subject: &str, token: &str) -> Result<()> {
+    pub(crate) async fn send(&self, to: &str, purpose: MailPurpose, token: &str) -> Result<()> {
+        let (subject, text, html) = purpose.content(token);
+        tracing::info!(event = "mail_delivery", outcome = "started");
         match self {
             Self::Memory(m) => m.lock().expect("mailer mutex poisoned").push(Mail {
                 to: to.to_owned(),
-                subject: subject.to_owned(),
+                subject: subject.clone(),
                 token: token.to_owned(),
             }),
             Self::Smtp(transport, from) => {
@@ -103,13 +148,19 @@ impl Mailer {
                     })?)
                     .to(to.parse().map_err(|_| Error::Invalid("invalid email"))?)
                     .subject(subject)
-                    .body(format!("FarSail one-time token: {token}\n"))
+                    .multipart(lettre::message::MultiPart::alternative_plain_html(
+                        text, html,
+                    ))
                     .map_err(|e| Error::Internal(e.into()))?;
-                transport
-                    .send(message)
-                    .await
-                    .map_err(|e| Error::Internal(e.into()))?;
+                if let Err(error) = transport.send(message).await {
+                    tracing::error!(event = "mail_delivery", outcome = "failed");
+                    return Err(Error::Internal(error.into()));
+                }
+                tracing::info!(event = "mail_delivery", outcome = "smtp_accepted");
             }
+        }
+        if matches!(self, Self::Memory(_)) {
+            tracing::info!(event = "mail_delivery", outcome = "test_memory_only");
         }
         Ok(())
     }
@@ -312,4 +363,47 @@ pub struct IdResponse {
 pub async fn health(State(state): State<AppState>) -> Result<StatusCode> {
     sqlx::query("SELECT 1").execute(&state.pool).await?;
     Ok(StatusCode::OK)
+}
+
+#[cfg(test)]
+mod mail_tests {
+    use super::*;
+
+    #[test]
+    fn formal_mail_has_matching_plain_and_html_content() {
+        for (purpose, code, minutes) in [
+            (MailPurpose::Verification, "012345", 10),
+            (MailPurpose::Recovery, "synthetic-reset-code", 30),
+        ] {
+            let (subject, text, html) = purpose.content(code);
+            assert!(subject.starts_with("FarSail 遥舟｜"));
+            for body in [&text, &html] {
+                assert!(body.contains(code));
+                assert!(body.contains(&format!("{minutes} 分钟")));
+                assert!(body.contains("仅可使用一次"));
+                assert!(!body.contains("token"));
+            }
+            let message = lettre::Message::builder()
+                .from("FarSail <sender@example.invalid>".parse().unwrap())
+                .to("recipient@example.invalid".parse().unwrap())
+                .subject(subject)
+                .multipart(lettre::message::MultiPart::alternative_plain_html(
+                    text, html,
+                ))
+                .unwrap();
+            let mime = String::from_utf8(message.formatted()).unwrap();
+            assert!(mime.contains("multipart/alternative"));
+            assert!(mime.contains("text/plain"));
+            assert!(mime.contains("text/html"));
+            assert!(mime.contains("charset=utf-8"));
+        }
+    }
+
+    #[test]
+    fn html_content_escapes_inserted_code() {
+        let (_, text, html) = MailPurpose::Verification.content("<script>&\"'");
+        assert!(text.contains("<script>"));
+        assert!(!html.contains("<script>"));
+        assert!(html.contains("&lt;script&gt;&amp;&quot;&#39;"));
+    }
 }

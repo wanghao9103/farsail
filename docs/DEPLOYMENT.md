@@ -134,6 +134,8 @@ bash scripts/deploy/farsail.sh status
 
 ## Email, administrator and both client configurations
 
+See [real email verification setup](SMTP_SETUP.md) for complete SMTP settings, coordinator recreation and delivery troubleshooting.
+
 SMTP is at 127.0.0.1:1025 in the shared namespace; the inbox is published only to host 127.0.0.1:8025. Open another terminal on your computer and keep SSH forwarding running:
 
 ```sh

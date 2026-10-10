@@ -19,7 +19,10 @@ async fn account(client: &NativeClient, mail: &Mailer, email: &str) -> Value {
         .await
         .unwrap();
     let token = mail.messages().last().unwrap().token.clone();
-    client.call("verify", json!({"token":token})).await.unwrap();
+    client
+        .call("verify", json!({"email":email,"token":token}))
+        .await
+        .unwrap();
     client
         .call(
             "login",
@@ -136,6 +139,15 @@ async fn native_client_against_real_coordinator() {
         .as_str()
         .unwrap()
         .to_owned();
+    #[cfg(not(windows))]
+    {
+        // The target simulates a Windows host; the source retains its real Linux platform.
+        sqlx::query("UPDATE devices SET platform='windows' WHERE id=$1")
+            .bind(Uuid::parse_str(&dev_b).unwrap())
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
     a.call("heartbeat", Value::Null).await.unwrap();
     b.call("heartbeat", Value::Null).await.unwrap();
     drop(a);
@@ -151,6 +163,12 @@ async fn native_client_against_real_coordinator() {
     assert_eq!(own.as_array().unwrap().len(), 1);
     assert_eq!(own[0]["can_host"], false);
     assert_eq!(own[0]["id"], dev_a);
+    assert_eq!(own[0]["platform"], std::env::consts::OS);
+    #[cfg(target_os = "linux")]
+    {
+        assert!(a.set_host_capability(true).await.is_err());
+        a.set_host_capability(false).await.unwrap();
+    }
     b.start_transport(TransportConfig::default()).await.unwrap();
     b.set_host_capability(true).await.unwrap();
     let invite = b
