@@ -2,7 +2,7 @@
 
 # Desktop file transfer
 
-The current source candidate adds bidirectional single-file transfer to Ubuntu and Windows desktops. This page describes that candidate, not the capabilities of an older published installer. Upgrade both desktops and the coordinator together: the coordinator must accept Linux file capability and keep file approval independent from screen sharing. Windows code, NTFS, native viewer and installation/restart/reinstallation/uninstallation CI checks passed. Native file dialogs have not yet been accepted on a physical Windows machine, and a new public installer has not been published.
+[Client 0.1.21](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.21) provides bidirectional single-file transfer on Ubuntu and Windows desktops, with x64 and ARM64 Ubuntu packages. This does not establish the same capability for older installers. Upgrade both desktops and the coordinator together: the coordinator must accept Linux file capability and keep file approval independent from screen sharing. Windows code, NTFS, native viewer and installation/restart/reinstallation/uninstallation CI checks passed. Native file dialogs have not yet been accepted on a physical Windows machine; the three signed 0.1.21 installers are publicly released.
 
 ## Send and receive
 

@@ -8,9 +8,9 @@
 
 # FarSail
 
-FarSail is an open-source remote desktop project with Windows and Ubuntu clients built using Rust, Tauri 2 and React, encrypted peer-to-peer connections, and self-hosted relay support. The current source candidate adds bidirectional single-file transfer; older published installers do not gain this feature automatically. Mobile clients remain planned.
+FarSail is an open-source remote desktop project with Windows and Ubuntu clients built using Rust, Tauri 2 and React, encrypted peer-to-peer connections, and self-hosted relay support. Public version 0.1.21 provides bidirectional single-file transfer and an Ubuntu ARM64 client; older installations need an upgrade for these additions. Mobile clients remain planned.
 
-The account, device and authorization coordinator is written in Rust. **WI-001 (coordinator), WI-002 (Windows client), WI-003 (authenticated encrypted transport), and WI-004 (Windows remote viewing/input baseline) have been verified locally. WI-008B provides a verified [Windows x64 preview installer](docs/WINDOWS_INSTALL.md).** The iroh data channel supports local direct connections and a self-hosted TLS relay. Windows hosts can enable local sharing and transmit JPEG frames and mouse/keyboard input after per-request approval. The installer is unsigned; public cross-NAT behavior, physical Windows file transfer, HEVC and mobile clients remain unverified or unimplemented. See [file transfer](docs/FILES.md) for the current candidate, usage and precise verification boundary.
+The account, device and authorization coordinator is written in Rust. **WI-001 (coordinator), WI-002 (Windows client), WI-003 (authenticated encrypted transport), and WI-004 (Windows remote viewing/input baseline) have been verified locally. WI-008B provides a verified [Windows x64 preview installer](docs/WINDOWS_INSTALL.md).** The iroh data channel supports local direct connections and a self-hosted TLS relay. Windows hosts can enable local sharing and transmit JPEG frames and mouse/keyboard input after per-request approval. Automatic-update packages use the release signing key; Windows publisher certificates are configured separately; public cross-NAT behavior, physical Windows file transfer, HEVC and mobile clients remain unverified or unimplemented. See [file transfer](docs/FILES.md) for usage and the precise verification boundary.
 
 ## Documented preview milestones
 
@@ -24,6 +24,8 @@ The account, device and authorization coordinator is written in Rust. **WI-001 (
 - 0.1.9 refreshes address discovery before connecting and performs bounded periodic direct-path retries for relay sessions. Refresh preserves the endpoint, approval and screen connection, and publishes changed addresses promptly. Both endpoints should be updated; the existing server remains compatible. See [P2P-019](docs/verification/WI-P2P-019.md) for downloads, real QAD failure-to-recovery, uninterrupted sessions and artifact evidence. Physical cross-NAT migration still needs two-computer testing; direct connectivity is not guaranteed for every network.
 - 0.1.10 remembers local sharing and unattended-access choices. After a normal restart, login, device, connection and the interactive desktop are rechecked before restoration. Manual disable remains disabled on the next start; logout clears enabled preferences. Advanced connection settings remain effective for the current run only. See [SHARE-020](docs/verification/WI-SHARE-020.md).
 - 0.1.11 fixes lost mouse-button releases under stale geometry, adds pointer capture and cleanup on blur or dragging outside the image, and includes P2P discovery refresh and saved sharing/unattended preferences. Continuous clicks and focus switches between owned ordinary windows passed. See [INPUT-021](docs/verification/WI-INPUT-021.md) for delivery evidence and downloads.
+
+- 0.1.21 publicly provides [signed Windows x64, Ubuntu x64 and ARM64 installers](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.21), including automatic updates, device-login restoration, independent file transfer and Windows background-window activation improvements. Physical two-computer and special-game acceptance remains pending.
 
 These are recorded milestones. Local candidate work and its verification limits are retained in the verification documents; a local installer build is not a public release.
 
@@ -87,7 +89,7 @@ npm ci
 npm run tauri -w @farsail/desktop -- dev
 ```
 
-`./scripts/test-remote.ps1 -RealCapture` runs frontend, real PostgreSQL/HTTP/iroh/DXGI integration checks and the Tauri build. The normal two-endpoint flow is: bind devices → start transport → enable sharing on the host → request authorization → explicitly approve on the host → connect and view. The separate file workflow is documented in [file transfer](docs/FILES.md); it requires the new source candidate on both desktops and the coordinator, not an older published package. Public networking, cross-NAT, a second Windows machine and mobile clients are not proven by this work item's evidence.
+`./scripts/test-remote.ps1 -RealCapture` runs frontend, real PostgreSQL/HTTP/iroh/DXGI integration checks and the Tauri build. The normal two-endpoint flow is: bind devices → start transport → enable sharing on the host → request authorization → explicitly approve on the host → connect and view. The separate file workflow is documented in [file transfer](docs/FILES.md); it requires 0.1.21 on both desktops and a coordinator supporting the file protocol; older installers do not provide it. Public networking, cross-NAT, a second Windows machine and mobile clients are not proven by this work item's evidence.
 
 ## License
 
