@@ -57,6 +57,7 @@ English is the default documentation language. Use the language links at the top
 - [Desktop file transfer](docs/FILES.md): separate approval, native file selection, safe save, progress and limits.
 - [Self-hosted relay](deploy/relay/README.md): HTTPS certificates and public-IP configuration examples.
 - [Public-IP deployment bundle](docs/DEPLOYMENT.md): six-image offline artifacts, short-lived IP certificates, loopback Mailpit and backup/upgrade.
+- [Coordinator online updates](docs/SERVER_UPDATES.md): persistent command, automatic server package selection, checksums, backups and rollback.
 - [Implementation and verification](docs/IMPLEMENTATION.md): work-item progress and local evidence.
 
 The icon was generated with the built-in image-generation tool; v2 is the recommended candidate. Initial similarity screening does not establish uniqueness or complete trademark clearance.

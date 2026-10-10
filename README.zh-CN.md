@@ -59,6 +59,7 @@ FarSail 是正在开发中的开源远程桌面项目，Windows 与 Ubuntu 客�
 - [桌面文件传输](docs/FILES.zh-CN.md)：独立批准、原生选文件、安全保存、进度与限制。
 - [自建 relay](deploy/relay/README.zh-CN.md)：HTTPS 证书与公网 IP 配置示例。
 - [公网 IP 部署包](docs/DEPLOYMENT.zh-CN.md)：六镜像离线制品、短期 IP 证书、回环 Mailpit 与备份/升级。
+- [协调服务在线升级](docs/SERVER_UPDATES.zh-CN.md)：常驻命令、自动选择服务端包、校验、备份与回退。
 - [实施与验收](docs/IMPLEMENTATION.zh-CN.md)：工作项进度与本地验证证据。
 
 图标由内置图像生成工具生成，目前推荐候选为 v2；相似性初筛不代表唯一性或完成商标查重。
