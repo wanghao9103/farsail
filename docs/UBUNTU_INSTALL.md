@@ -6,7 +6,7 @@ The Ubuntu client provides the account, device and connection interface and reus
 
 ## Run from source
 
-Use a logged-in Ubuntu desktop with an unlocked login keyring, Rust 1.93.0 and Node/npm. The Ubuntu CI build target is 24.04; local native checks were performed on 26.04.1. Older Ubuntu releases and ARM builds have not been verified. Tauri uses WebKitGTK 4.1 on Linux; see the [official prerequisites](https://v2.tauri.app/start/prerequisites/).
+Use a logged-in Ubuntu desktop with an unlocked login keyring, Rust 1.93.0 and Node/npm. Ubuntu CI uses the 24.04 baseline on separate native x64 and ARM64 runners. ARM64 uses `aarch64-unknown-linux-gnu` and Debian architecture `arm64`; earlier local native checks used x64 Ubuntu 26.04.1. Older Ubuntu releases, 32-bit ARM and other distributions are outside the verified scope. Tauri uses WebKitGTK 4.1 on Linux; see the [official prerequisites](https://v2.tauri.app/start/prerequisites/).
 
 ```bash
 sudo apt update
@@ -31,6 +31,30 @@ sudo apt install ./target/release/bundle/deb/*.deb
 ```
 
 Tauri automatically merges `apps/desktop/src-tauri/tauri.linux.conf.json`, selecting the Debian target and declaring runtime and Chinese font dependencies. The Windows configuration continues to select NSIS. Build on the oldest Ubuntu release you intend to support: a package built on a newer distribution may depend on its newer system libraries. The local package is a candidate, not a published release.
+
+## ARM64 installation and architecture identification
+
+Use `FarSail_0.1.21_arm64.deb` on an ARM64 Linux desktop and the same-version `amd64.deb` on x64. Check the operating-system architecture and the package before installation, rather than selecting solely by processor model: a 64-bit ARM processor can run a 32-bit operating system.
+
+| Operating system | uname -m | Debian architecture | Rust target               |
+| ---------------- | -------- | ------------------- | ------------------------- |
+| Linux x64        | x86_64   | amd64               | x86_64-unknown-linux-gnu  |
+| Linux ARM64      | aarch64  | arm64               | aarch64-unknown-linux-gnu |
+
+After downloading the ARM64 installer, run from its directory:
+
+```bash
+uname -m
+dpkg --print-architecture
+dpkg-deb -f ./FarSail_0.1.21_arm64.deb Package Version Architecture
+test "$(dpkg --print-architecture)" = arm64
+test "$(dpkg-deb -f ./FarSail_0.1.21_arm64.deb Architecture)" = arm64
+sudo apt install ./FarSail_0.1.21_arm64.deb
+```
+
+Native ARM64 desktops use the same source startup and build commands above; Tauri packages for the native Rust target. Merely adding a Rust target to an x64 machine does not establish ARM GTK/WebKitGTK compilation or execution. The release flow uses a separate ARM64 runner and checks the actual packaged ELF, dependencies, system keyring and native IPC. Automatic updates select `linux-aarch64-deb`; an older feed lacking this architecture reports no compatible update instead of downloading an amd64 package. See [client updates](CLIENT_UPDATES.md).
+
+0.1.21 is the current source candidate and does not mean that a signed version has been published. Actions build artifacts and client Releases are separate delivery layers; install a package with verified source and checksum for the correct architecture. ARM64 has the same Linux client scope: Windows connections and independent file transfers, without local Linux screen sharing.
 
 ## Credential storage
 

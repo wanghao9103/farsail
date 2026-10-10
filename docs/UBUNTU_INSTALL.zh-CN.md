@@ -6,7 +6,7 @@ Ubuntu 客户端提供账号、设备和连接界面，并复用查看端协议�
 
 ## 从源码运行
 
-需要已登录的 Ubuntu 桌面、解锁的登录密钥环、Rust 1.93.0 和 Node/npm。Ubuntu CI 的构建目标为 24.04；本机原生检查在 26.04.1 上执行。更早的 Ubuntu 和 ARM 构建尚未验证。Tauri 在 Linux 上使用 WebKitGTK 4.1，参见[官方前置要求](https://v2.tauri.app/start/prerequisites/)。
+需要已登录的 Ubuntu 桌面、解锁的登录密钥环、Rust 1.93.0 和 Node/npm。Ubuntu CI 以 24.04 为构建基线，分别在 x64 和 ARM64 原生 runner 上执行。ARM64 使用 `aarch64-unknown-linux-gnu`，Debian 架构名为 `arm64`；本机历史原生检查在 x64 Ubuntu 26.04.1 上执行。更早的 Ubuntu、32 位 ARM 和其他发行版不属于已验证范围。Tauri 在 Linux 上使用 WebKitGTK 4.1，参见[官方前置要求](https://v2.tauri.app/start/prerequisites/)。
 
 ```bash
 sudo apt update
@@ -31,6 +31,30 @@ sudo apt install ./target/release/bundle/deb/*.deb
 ```
 
 Tauri 自动合并 `apps/desktop/src-tauri/tauri.linux.conf.json`，选择 Debian 目标并声明运行库和中文字体依赖。Windows 配置继续选择 NSIS。请在计划支持的最早 Ubuntu 版本上构建：新版发行版生成的包可能依赖较新的系统库。本地安装包属于候选制品，不代表已公开发布。
+
+## ARM64 安装与架构识别
+
+ARM64 Linux 桌面使用 `FarSail_0.1.21_arm64.deb`；x64 使用同版本的 `amd64.deb`。先检查实际操作系统架构，再核对安装包，不要仅凭处理器型号选择：64 位 ARM 处理器也可能安装了 32 位系统。
+
+| 操作系统    | uname -m | Debian 架构 | Rust 目标                 |
+| ----------- | -------- | ----------- | ------------------------- |
+| Linux x64   | x86_64   | amd64       | x86_64-unknown-linux-gnu  |
+| Linux ARM64 | aarch64  | arm64       | aarch64-unknown-linux-gnu |
+
+已下载 ARM64 安装包后，在包所在目录执行：
+
+```bash
+uname -m
+dpkg --print-architecture
+dpkg-deb -f ./FarSail_0.1.21_arm64.deb Package Version Architecture
+test "$(dpkg --print-architecture)" = arm64
+test "$(dpkg-deb -f ./FarSail_0.1.21_arm64.deb Architecture)" = arm64
+sudo apt install ./FarSail_0.1.21_arm64.deb
+```
+
+原生 ARM64 桌面可使用与上节相同的源码启动和构建命令，Tauri 依据原生 Rust 目标生成对应包。x64 机器上仅增加 Rust target 不足以完成 GTK/WebKitGTK 的 ARM 构建与运行验证；发布流程使用独立 ARM64 runner，检查真正的包内 ELF、依赖、系统密钥环和原生 IPC。自动更新按 `linux-aarch64-deb` 选择 ARM64 包，旧清单缺少该架构时会提示没有兼容更新，不下载 amd64 包。完整流程见[客户端更新](CLIENT_UPDATES.zh-CN.md)。
+
+0.1.21 是当前源码候选，不代表已经公开签名发布。Actions 构建附件与客户端 Release 是不同交付层，用户安装时应使用核对过来源和校验的对应架构包。ARM64 仍具备 Linux 客户端的同一能力范围：连接 Windows、独立文件传输，不提供 Linux 本机屏幕共享。
 
 ## 凭据存储
 
