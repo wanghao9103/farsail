@@ -11,7 +11,7 @@ use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
-use tokio::task::JoinHandle;
+use tokio::{sync::oneshot, task::JoinHandle};
 use uuid::Uuid;
 
 // Synthetic fixture credentials stay in memory; this integration exercises
@@ -43,12 +43,20 @@ struct Fixture {
     source_device: String,
     target_device: String,
     directory: tempfile::TempDir,
+    shutdown: Option<oneshot::Sender<()>>,
+    server: Option<JoinHandle<()>>,
     handles: Vec<JoinHandle<()>>,
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
         self.source_files.stop_all();
         self.target_files.stop_all();
+        if let Some(shutdown) = self.shutdown.take() {
+            let _ = shutdown.send(());
+        }
+        if let Some(server) = &self.server {
+            server.abort();
+        }
         for handle in &self.handles {
             handle.abort();
         }
@@ -107,8 +115,14 @@ impl Fixture {
             mailer: mail.clone(),
             allowed_relays: Arc::new(vec![]),
         });
+        let (shutdown, shutdown_receiver) = oneshot::channel();
         let server = tokio::spawn(async move {
-            axum::serve(listener, app).await.unwrap();
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = shutdown_receiver.await;
+                })
+                .await
+                .unwrap();
         });
         let source = Arc::new(NativeClient::new(Arc::new(MemoryStore::default())).unwrap());
         let target = Arc::new(NativeClient::new(Arc::new(MemoryStore::default())).unwrap());
@@ -148,7 +162,6 @@ impl Fixture {
         let source_files = NativeFiles::new(source.clone());
         let target_files = NativeFiles::new(target.clone());
         let handles = vec![
-            server,
             tokio::spawn(source_files.clone().listen()),
             tokio::spawn(target_files.clone().listen()),
         ];
@@ -167,6 +180,8 @@ impl Fixture {
             source_device,
             target_device,
             directory,
+            shutdown: Some(shutdown),
+            server: Some(server),
             handles,
         })
     }
@@ -231,14 +246,24 @@ impl Fixture {
         wait_connected(&self.source_files, session).await;
         wait_connected(&self.target_files, session).await;
     }
-    async fn finish(&self) {
+    async fn finish(mut self) {
         self.source_files.stop_all();
         self.target_files.stop_all();
         self.source.stop_transport().await;
         self.target.stop_transport().await;
-        for handle in &self.handles {
+        for handle in self.handles.drain(..) {
             handle.abort();
+            let _ = handle.await;
         }
+        let _ = self.shutdown.take().unwrap().send(());
+        // Aborting `axum::serve` alone leaves its spawned HTTP connection tasks
+        // alive. Their PostgreSQL auth queries can deadlock with DROP SCHEMA.
+        // Drain those requests before closing the pool and deleting tables.
+        tokio::time::timeout(Duration::from_secs(10), self.server.as_mut().unwrap())
+            .await
+            .expect("test server drained its HTTP requests before schema cleanup")
+            .expect("test server completed graceful shutdown");
+        self.server.take();
         self.pool.close().await;
         sqlx::query(&format!("DROP SCHEMA {} CASCADE", self.schema))
             .execute(&self.admin)

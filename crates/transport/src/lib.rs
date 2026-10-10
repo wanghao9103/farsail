@@ -56,6 +56,28 @@ pub type Result<T> = std::result::Result<T, Error>;
 fn io(e: impl std::fmt::Display) -> Error {
     Error::Io(e.to_string())
 }
+async fn prefer_direct_until(conn: Connection, deadline: Instant) -> Result<Connection> {
+    loop {
+        if conn.close_reason().is_some() {
+            return Err(Error::Closed);
+        }
+        if conn
+            .paths()
+            .iter()
+            .any(|path| path.is_selected() && path.is_ip())
+            || Instant::now() >= deadline
+        {
+            return Ok(conn);
+        }
+        let pause = deadline
+            .saturating_duration_since(Instant::now())
+            .min(Duration::from_millis(25));
+        tokio::select! {
+            _ = tokio::time::sleep(pause) => (),
+            _ = conn.closed() => return Err(Error::Closed),
+        }
+    }
+}
 async fn within<T>(f: impl std::future::Future<Output = Result<T>>) -> Result<T> {
     tokio::time::timeout(TIMEOUT, f)
         .await
@@ -356,8 +378,9 @@ impl Transport {
         Ok(session)
     }
     async fn dial(&self, addr: EndpointAddr, permission: RemotePermission) -> Result<Connection> {
-        if permission == RemotePermission::Files
-            && !self.force_relay
+        let direct_deadline = (permission == RemotePermission::Files && !self.force_relay)
+            .then(|| Instant::now() + FILES_DIRECT_WINDOW);
+        if let Some(deadline) = direct_deadline
             && addr.ip_addrs().next().is_some()
         {
             // Give known IP paths a bounded head start before supplying the
@@ -367,31 +390,31 @@ impl Transport {
                 .ip_addrs()
                 .copied()
                 .fold(EndpointAddr::new(addr.id), EndpointAddr::with_ip_addr);
-            let started = Instant::now();
-            if let Ok(Ok(conn)) =
-                tokio::time::timeout(FILES_DIRECT_WINDOW, self.endpoint.connect(direct, ALPN)).await
+            if let Ok(Ok(conn)) = tokio::time::timeout(
+                deadline.saturating_duration_since(Instant::now()),
+                self.endpoint.connect(direct, ALPN),
+            )
+            .await
             {
                 // Iroh may already know this peer's relay from an earlier
-                // connection. Its public API does not filter cached paths per
-                // connection; wait for direct upgrade before sending file data.
-                while conn.close_reason().is_none()
-                    && !conn
-                        .paths()
-                        .iter()
-                        .any(|path| path.is_selected() && path.is_ip())
-                    && started.elapsed() < FILES_DIRECT_WINDOW
-                {
-                    tokio::time::sleep(Duration::from_millis(25)).await;
-                }
-                if conn.close_reason().is_none() {
+                // connection. Supplying IP-only addresses does not filter its
+                // cached relay paths; keep the same direct-upgrade budget.
+                if let Ok(conn) = prefer_direct_until(conn, deadline).await {
                     return Ok(conn);
                 }
             }
         }
-        // The ordinary full address allows verified self-hosted relay fallback
-        // after direct failure/timeout, and later direct path recovery.
+        // Relay signalling may discover usable IP paths even when the supplied
+        // address contains none. Wait before the FarSail hello, Files grant or
+        // file payload, while allowing transport discovery/holepunching traffic.
+        // A consumed IP-only budget is never followed by a second window.
         // View/Control and explicit forced relay keep their existing flow.
-        within(async { self.endpoint.connect(addr, ALPN).await.map_err(io) }).await
+        let conn = within(async { self.endpoint.connect(addr, ALPN).await.map_err(io) }).await?;
+        if let Some(deadline) = direct_deadline {
+            prefer_direct_until(conn, deadline).await
+        } else {
+            Ok(conn)
+        }
     }
     pub async fn accept<A: Authority>(&self, authority: Arc<A>) -> Result<Session> {
         let incoming = self.next_incoming().await?;
@@ -1123,6 +1146,73 @@ mod tests {
         let started = Instant::now();
         let src = source
             .connect(addr, "test-session", RemotePermission::Files, authority)
+            .await
+            .unwrap();
+        let dst = incoming.await.unwrap();
+        assert!(started.elapsed() >= FILES_DIRECT_WINDOW);
+        assert_eq!(src.path().0, "relay");
+        assert_eq!(dst.path().0, "relay");
+        assert_files_exchange(&src, &dst).await;
+        src.close();
+        dst.close();
+        source.close().await;
+        target.close().await;
+        server.shutdown().await.unwrap();
+    }
+    #[tokio::test]
+    async fn files_relay_only_address_discovers_direct_before_payload() {
+        let (server, source, target, authority) = tls_files_fixture(false, false).await;
+        let relay_only = target
+            .addr()
+            .relay_urls()
+            .cloned()
+            .fold(EndpointAddr::new(target.id()), EndpointAddr::with_relay_url);
+        assert!(relay_only.ip_addrs().next().is_none());
+        assert!(relay_only.relay_urls().next().is_some());
+        assert!(source.endpoint.remote_info(target.id()).await.is_none());
+        let incoming = tokio::spawn({
+            let target = target.clone();
+            let authority = authority.clone();
+            async move { target.accept(authority).await.unwrap() }
+        });
+        let src = source
+            .connect(
+                relay_only,
+                "test-session",
+                RemotePermission::Files,
+                authority,
+            )
+            .await
+            .unwrap();
+        let dst = incoming.await.unwrap();
+        assert_eq!(src.path().0, "direct");
+        assert_eq!(dst.path().0, "direct");
+        assert_files_exchange(&src, &dst).await;
+        src.close();
+        dst.close();
+        source.close().await;
+        target.close().await;
+        server.shutdown().await.unwrap();
+    }
+    #[tokio::test]
+    async fn files_relay_only_address_waits_before_verified_relay_fallback() {
+        let (server, source, target, authority) = tls_files_fixture(false, true).await;
+        let relay_only = target.addr();
+        assert!(relay_only.ip_addrs().next().is_none());
+        assert!(relay_only.relay_urls().next().is_some());
+        let incoming = tokio::spawn({
+            let target = target.clone();
+            let authority = authority.clone();
+            async move { target.accept(authority).await.unwrap() }
+        });
+        let started = Instant::now();
+        let src = source
+            .connect(
+                relay_only,
+                "test-session",
+                RemotePermission::Files,
+                authority,
+            )
             .await
             .unwrap();
         let dst = incoming.await.unwrap();
