@@ -1226,7 +1226,7 @@ const fs = require("node:fs");
     0,
   );
   await page.getByRole("button", { name: "总览", exact: true }).click();
-  await page.getByText("Ubuntu 控制端", { exact: true }).first().waitFor();
+  await page.getByRole("status", { name: "本机未共享", exact: true }).waitFor();
   await page.screenshot({ path: ".local/ui-verification/ubuntu-overview.png" });
   await page.getByRole("button", { name: "我的设备", exact: true }).click();
   await page

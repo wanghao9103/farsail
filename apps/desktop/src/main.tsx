@@ -607,20 +607,8 @@ function App() {
         <div
           className="sidebar-foot"
           role="status"
-          aria-label={
-            !canShareLocalScreen(publicState)
-              ? "Ubuntu 控制端"
-              : publicState.sharing
-                ? "本机屏幕共享中"
-                : "本机未共享"
-          }
-          title={
-            !canShareLocalScreen(publicState)
-              ? "Ubuntu 控制端"
-              : publicState.sharing
-                ? "本机屏幕共享中"
-                : "本机未共享"
-          }
+          aria-label={publicState.sharing ? "本机屏幕共享中" : "本机未共享"}
+          title={publicState.sharing ? "本机屏幕共享中" : "本机未共享"}
         >
           {me && (
             <div className="sidebar-account">
@@ -636,13 +624,7 @@ function App() {
               className={`status-dot ${publicState.sharing ? "is-sharing" : ""}`}
               aria-hidden="true"
             />
-            <span>
-              {!canShareLocalScreen(publicState)
-                ? "Ubuntu 控制端"
-                : publicState.sharing
-                  ? "本机屏幕共享中"
-                  : "本机未共享"}
-            </span>
+            <span>{publicState.sharing ? "本机屏幕共享中" : "本机未共享"}</span>
             <small>远程桌面预览版</small>
           </div>
         </div>
@@ -1343,7 +1325,7 @@ function Overview({
           <div className="stack">
             <span className={state.sharing ? "tag ready" : "tag"}>
               {!canShareLocalScreen(state)
-                ? "Ubuntu 控制端"
+                ? "本机共享暂不可用"
                 : state.sharing
                   ? "本机共享已开启"
                   : "本机共享未开启"}
