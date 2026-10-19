@@ -30,16 +30,16 @@
   farsail_setup=$(mktemp -d)
   trap 'rm -rf -- "$farsail_setup"' EXIT
   curl -q --fail --show-error --location --proto '=https' --proto-redir '=https' \
-    --retry 2 --connect-timeout 20 --max-time 120 --max-filesize 1048576 \
+    --retry 2 --retry-max-time 120 --connect-timeout 20 --max-time 120 --max-filesize 1048576 \
     --output "$farsail_setup/install-farsail-update.sh" \
-    'https://github.com/wanghao9103/farsail/releases/download/coordinator-files-d21b298-online1/install-farsail-update.sh'
-  printf '%s  %s\n' '9640cd48a0787b3ddbe0b2432ded99b0737595750f04acc3c8f7875c7fb3f7ed' \
+    'https://github.com/wanghao9103/farsail/releases/download/coordinator-files-d21b298-online2/install-farsail-update.sh'
+  printf '%s  %s\n' 'fe05a3b49a6c733800f929531c4bb5691f1585b15fddfe9556ab3c5560b96727' \
     "$farsail_setup/install-farsail-update.sh" | sha256sum -c -
   bash "$farsail_setup/install-farsail-update.sh"
 )
 ```
 
-脚本下载固定提交的两份工具并核验内置 SHA256。若不能访问 `raw.githubusercontent.com`，可从[本次发布](https://github.com/wanghao9103/farsail/releases/tag/coordinator-files-d21b298-online1)下载 `FarSail_server_updater_fc17a7c.tar.gz` 与同名 `.sha256`，校验、解压并按包内说明安装。
+脚本从同一 Release 下载小工具包并核验固定 SHA256，不再请求 `raw.githubusercontent.com`。若服务器暂时不能访问 GitHub，可在可达电脑从[本次发布](https://github.com/wanghao9103/farsail/releases/tag/coordinator-files-d21b298-online2)下载 `FarSail_server_updater_108d919.tar.gz` 与同名 `.sha256`，校验后上传，解压并按包内说明安装。
 
 新版已校验服务端包也包含 `install-online-updater.sh`。传入并校验该包后，可安装同一个入口：
 
@@ -56,6 +56,8 @@ bash /tmp/farsail-coordinator-release/install-online-updater.sh \
 bash scripts/deploy/update-online.sh --latest /home/data/farsail
 bash scripts/deploy/update-online.sh --latest --check /home/data/farsail
 ```
+
+**当前工具发布：**2026-10-19 的 [online2](https://github.com/wanghao9103/farsail/releases/tag/coordinator-files-d21b298-online2) 恢复下载进度和阶段提示。工具源码 `108d919177a7fc23126b9c7bdeb87bf19b0c0f52`，服务包 `FarSail_coordinator_files_d21b298_online2_linux_amd64.tar.gz` 的 SHA256 为 `25d012117573456335b3ffa0dab72643792f72f8dcbafa9862c8f3e558f02b46`；镜像字节、源码和摘要沿用 online1。六个附件匿名下载、内外校验、公开首次安装命令及真实 `--check` 均通过；安装命令只在临时部署验证，尚未操作生产服务器。旧进程需退出后重新执行，才能显示新进度。
 
 **发布状态：**2026-10-10 已公开[文件传输与自动升级服务端包](https://github.com/wanghao9103/farsail/releases/tag/coordinator-files-d21b298-online1)，附件 `FarSail_coordinator_files_d21b298_online1_linux_amd64.tar.gz` 的 SHA256 为 `3f78775afff275c6ff8652c5300e759f88e4b3a3a96e17b8f5038081f48f970c`，包括同名校验附件及首次安装工具。镜像源码为 `d21b298d9b4327032c204f852a540c7d4a88f433`，升级工具和发布标签源码为 `fc17a7ce4ef84b5569b791da54534a95ff42a450`。归档字节保持验证时的原值，包内“尚未发布”与 `published: false` 是构建时快照；公开状态以该 Release 为准。尚未执行现网升级。旧地址与校验参数模式仍可用于明确选择的历史版本，见 [Ubuntu/登录升级](UPGRADE_UBUNTU_LOGIN.zh-CN.md)和[邮件升级](EMAIL_VERIFICATION_UPDATE.zh-CN.md)。
 

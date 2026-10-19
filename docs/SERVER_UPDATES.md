@@ -30,16 +30,16 @@ On an existing server, copy the commands below to download the first-install too
   farsail_setup=$(mktemp -d)
   trap 'rm -rf -- "$farsail_setup"' EXIT
   curl -q --fail --show-error --location --proto '=https' --proto-redir '=https' \
-    --retry 2 --connect-timeout 20 --max-time 120 --max-filesize 1048576 \
+    --retry 2 --retry-max-time 120 --connect-timeout 20 --max-time 120 --max-filesize 1048576 \
     --output "$farsail_setup/install-farsail-update.sh" \
-    'https://github.com/wanghao9103/farsail/releases/download/coordinator-files-d21b298-online1/install-farsail-update.sh'
-  printf '%s  %s\n' '9640cd48a0787b3ddbe0b2432ded99b0737595750f04acc3c8f7875c7fb3f7ed' \
+    'https://github.com/wanghao9103/farsail/releases/download/coordinator-files-d21b298-online2/install-farsail-update.sh'
+  printf '%s  %s\n' 'fe05a3b49a6c733800f929531c4bb5691f1585b15fddfe9556ab3c5560b96727' \
     "$farsail_setup/install-farsail-update.sh" | sha256sum -c -
   bash "$farsail_setup/install-farsail-update.sh"
 )
 ```
 
-The script fetches two tools from a fixed commit and verifies their embedded SHA256 values. If `raw.githubusercontent.com` is unreachable, download `FarSail_server_updater_fc17a7c.tar.gz` and its same-name `.sha256` from [this release](https://github.com/wanghao9103/farsail/releases/tag/coordinator-files-d21b298-online1), verify and extract it, then follow its installation instructions.
+The script downloads the tiny tool bundle from the same Release and verifies its fixed SHA256, without requesting `raw.githubusercontent.com`. If GitHub is temporarily unreachable from the server, use another reachable computer to download `FarSail_server_updater_108d919.tar.gz` and its same-name `.sha256` from [this release](https://github.com/wanghao9103/farsail/releases/tag/coordinator-files-d21b298-online2), verify and transfer it, then extract and follow its installation instructions.
 
 The verified server bundle also includes `install-online-updater.sh`. After transferring and verifying that bundle, install the same entry point:
 
@@ -56,6 +56,8 @@ A current source checkout also supports the direct entry point:
 bash scripts/deploy/update-online.sh --latest /home/data/farsail
 bash scripts/deploy/update-online.sh --latest --check /home/data/farsail
 ```
+
+**Current tools:** [online2](https://github.com/wanghao9103/farsail/releases/tag/coordinator-files-d21b298-online2), published on 2026-10-19, restores download progress and stage messages. Tool source is `108d919177a7fc23126b9c7bdeb87bf19b0c0f52`; `FarSail_coordinator_files_d21b298_online2_linux_amd64.tar.gz` has SHA256 `25d012117573456335b3ffa0dab72643792f72f8dcbafa9862c8f3e558f02b46`. Image bytes, source and digest stay identical to online1. Six anonymous asset downloads, outer/inner checksums, the public bootstrap command and a real `--check` passed; bootstrap execution used a temporary deployment only and production was untouched. Restart the old command after installing tools to see the new meter.
 
 **Availability:** the [Files and automatic-update server release](https://github.com/wanghao9103/farsail/releases/tag/coordinator-files-d21b298-online1) was published on 2026-10-10. Asset `FarSail_coordinator_files_d21b298_online1_linux_amd64.tar.gz` has SHA256 `3f78775afff275c6ff8652c5300e759f88e4b3a3a96e17b8f5038081f48f970c`; its matching checksum and first-install tools are included. The image source is `d21b298d9b4327032c204f852a540c7d4a88f433`; tools and the release tag use `fc17a7ce4ef84b5569b791da54534a95ff42a450`. Verified archive bytes are unchanged. The bundled “not yet published” text and `published: false` are build-time snapshots; this Release records the public status. Production has not been upgraded. The old URL/checksum command remains available for an intentionally selected historical package; see [the Ubuntu/login upgrade](UPGRADE_UBUNTU_LOGIN.md) and [the email upgrade](EMAIL_VERIFICATION_UPDATE.md).
 
