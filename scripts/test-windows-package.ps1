@@ -29,13 +29,13 @@ function Install([bool]$Restart = $false) {
     if (!$p.WaitForExit(120000)) { throw 'NSIS install did not finish' }
     if ($p.ExitCode -ne 0) { throw "NSIS install failed: $($p.ExitCode)" }
 }
-function Find-UI([string]$Name, [string]$Type = '') {
+function Find-UI([string]$Name, [string[]]$Type = @()) {
     $until = [DateTime]::UtcNow.AddSeconds(45)
     do {
         if ($script:appProcess.HasExited) { throw 'Native application exited unexpectedly' }
         $items = $script:root.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition)
         foreach ($item in $items) {
-            if ($item.Current.Name -like $Name -and (!$Type -or $item.Current.ControlType.ProgrammaticName -eq "ControlType.$Type")) { return $item }
+            if ($item.Current.Name -like $Name -and (!$Type -or $Type -contains $item.Current.ControlType.ProgrammaticName.Split('.')[-1])) { return $item }
         }
         Start-Sleep -Milliseconds 500
     } while ([DateTime]::UtcNow -lt $until)
@@ -49,7 +49,8 @@ function Click-UI([string]$Name) {
     $pattern.Invoke()
 }
 function Set-UISwitch([string]$Name, [bool]$Enabled) {
-    $item = Find-UI $Name 'CheckBox'
+    # Chromium's native UIA maps role=switch to Button; older bridges can expose CheckBox.
+    $item = Find-UI $Name @('Button', 'CheckBox')
     $pattern = $item.GetCurrentPattern([Windows.Automation.TogglePattern]::Pattern)
     $desired = if ($Enabled) { [Windows.Automation.ToggleState]::On } else { [Windows.Automation.ToggleState]::Off }
     if ($pattern.Current.ToggleState -ne $desired) { $pattern.Toggle() }
@@ -211,7 +212,7 @@ try {
     if (!$preference.sharing -or $preference.watch) { throw 'Native watch opt-out did not persist' }
     Start-App $false
     $null=Wait-Restore
-    $watchSwitch=Find-UI '同账号远程值守' 'CheckBox'
+    $watchSwitch=Find-UI '同账号远程值守' @('Button', 'CheckBox')
     if ($watchSwitch.GetCurrentPattern([Windows.Automation.TogglePattern]::Pattern).Current.ToggleState -ne [Windows.Automation.ToggleState]::Off) { throw 'Remote watch opt-out did not restore' }
     Set-UISwitch '允许远程连接' $false
     $null=Find-UI '远程连接已关闭'
@@ -252,7 +253,7 @@ try {
         if ($restarted) { break }
         Start-Sleep -Milliseconds 250
     } while ([DateTime]::UtcNow -lt $until)
-    if (@($restarted).Count -ne 1) { throw 'NSIS updater did not restart exactly one installed application' }
+    if (!$restarted -or @($restarted).Count -ne 1) { throw 'NSIS updater did not restart exactly one installed application' }
     Start-App -ExistingProcess $restarted
     Click-UI '*设置'
     $input = Find-UI '服务地址' 'Edit'
@@ -267,7 +268,7 @@ try {
     if (Test-Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\FarSail') { throw 'Uninstall registration remains' }
     if ((Get-FileHash $sentinel).Hash -ne $before) { throw 'Uninstall deleted user data' }
     if ((Get-FileHash $preferencePath).Hash -ne $retainedPreferenceHash) { throw 'Uninstall changed sharing preferences' }
-    [ordered]@{ source_commit=$meta.source_commit; installer_sha256=$meta.installer_sha256; install='passed'; embedded_frontend='passed'; administrator_manifest='passed'; elevated_process='passed'; updater_restart='passed'; background_close_and_single_instance_restore='passed'; interactive_uac_consent_and_cancel='not tested'; native_settings_ipc_restart='passed'; sharing_preferences_restart='passed'; sharing_desktop_preflight=$sharingPreflight; reinstall_retention='passed'; uninstall_retention='passed'; debug_probes_absent='passed'; capture_input_or_public_network='not tested' } |
+    [ordered]@{ source_commit=$meta.source_commit; installer_sha256=$meta.installer_sha256; install='passed'; embedded_frontend='passed'; administrator_manifest='passed'; elevated_process='passed'; updater_restart='passed'; updater_restarted_process_id=$restarted.Id; updater_restart_launcher='NSIS /S /UPDATE /R'; background_close_and_single_instance_restore='passed'; interactive_uac_consent_and_cancel='not tested'; native_settings_ipc_restart='passed'; sharing_preferences_restart='passed'; sharing_desktop_preflight=$sharingPreflight; reinstall_retention='passed'; uninstall_retention='passed'; debug_probes_absent='passed'; capture_input_or_public_network='not tested' } |
         ConvertTo-Json | Set-Content (Join-Path $artifacts 'installation-verification.json') -Encoding utf8
 } finally {
     if ($script:appProcess -and !$script:appProcess.HasExited) { Stop-Process -Id $script:appProcess.Id -Force }
