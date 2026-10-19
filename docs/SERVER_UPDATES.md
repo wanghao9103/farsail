@@ -16,6 +16,8 @@ Check the available release without downloading its image or changing the deploy
 
 The command updates only the coordinator. [Client updates](CLIENT_UPDATES.md) use a separate installation and signing flow. Allow a short coordinator outage when an actual upgrade is needed; existing remote sessions may need to reconnect.
 
+The updated tool prints checking, downloading, verifying and applying stages. Package downloads show curl's live percentage, bytes, speed and time on stderr, including when output is captured. Older tools suppress this meter: a `Published coordinator package` line identifies the selected package, not a completed download or installation. Connection timeouts still require working outbound HTTPS; visible progress does not fix connectivity.
+
 ## Install the entry point once
 
 Earlier server bundles contain `update-online.sh`, but their upgrade procedure does not install a persistent command. An extracted script can disappear when its temporary directory is removed. The earlier script also requires a URL and checksum; installing the new client does not replace that script on the server.

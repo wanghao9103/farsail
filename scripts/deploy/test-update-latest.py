@@ -28,6 +28,10 @@ assert args[args.index('--proto')+1]=='=https'
 assert args[args.index('--proto-redir')+1]=='=https'
 assert '--max-time' in args and '--retry-max-time' in args
 url=args[-1]
+if url.endswith('.tar.gz'):
+    assert '--silent' not in args, 'package transfer must show real curl progress'
+else:
+    assert '--silent' in args, 'small metadata requests should not add meters'
 fixture=Path(os.environ['LATEST_FIXTURE'])
 with (fixture/'requests').open('a') as f:f.write(url+'\\n')
 responses=json.loads((fixture/'responses.json').read_text())
@@ -231,6 +235,9 @@ class LatestTests(unittest.TestCase):
         self.assertFalse((self.root/'selection-called.json').exists())
         self.assertNotIn(DOWNLOAD+TAG+'/'+NAME, self.requests())
         self.assertIn(DOWNLOAD+TAG+'/'+NAME+'.sha256', self.requests())
+        self.assertIn('Checking coordinator updates', result.stderr)
+        self.assertNotIn('Downloading coordinator package', result.stderr)
+        self.assertNotIn('Applying coordinator update', result.stderr)
 
     def test_check_shorthand(self):
         result = self.run_update('--check', str(self.root))

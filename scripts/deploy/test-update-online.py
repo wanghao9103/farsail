@@ -8,6 +8,7 @@ import subprocess
 import tarfile
 import tempfile
 import threading
+import time
 
 SCRIPT = Path(__file__).with_name("update-online.sh").resolve()
 with tempfile.TemporaryDirectory(prefix="farsail-online-test-") as temp:
@@ -28,6 +29,8 @@ with tempfile.TemporaryDirectory(prefix="farsail-online-test-") as temp:
     with tarfile.open(archive, "w:gz") as bundle:
         bundle.add(release, arcname=".")
     expected = hashlib.sha256(archive.read_bytes()).hexdigest()
+    slow_started = threading.Event()
+    slow_finish = threading.Event()
     cert, key = folder / "cert.pem", folder / "key.pem"
     subprocess.run([
         "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
@@ -47,7 +50,17 @@ with tempfile.TemporaryDirectory(prefix="farsail-online-test-") as temp:
                 pass
 
         def do_GET(self):
-            if self.path == "/redirect":
+            if self.path == "/slow":
+                body = archive.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body[:1])
+                self.wfile.flush()
+                slow_started.set()
+                if slow_finish.wait(10):
+                    self.wfile.write(body[1:])
+            elif self.path == "/redirect":
                 self.send_response(302)
                 self.send_header("Location", "http://localhost/package.tar.gz")
                 self.end_headers()
@@ -75,12 +88,40 @@ with tempfile.TemporaryDirectory(prefix="farsail-online-test-") as temp:
         )
 
     try:
+        # Observe a real curl meter before the response completes, including
+        # redirected stderr (CI/log capture), rather than asserting only flags.
+        progress_log = folder / "progress.log"
+        with progress_log.open("w") as output:
+            process = subprocess.Popen(
+                ["bash", str(SCRIPT), url.replace("/package.tar.gz", "/slow"), expected, str(root)],
+                env=env, text=True, stdout=subprocess.PIPE, stderr=output,
+            )
+            try:
+                assert slow_started.wait(5), "slow download did not start"
+                deadline = time.monotonic() + 5
+                while "Dload" not in progress_log.read_text() and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                live = progress_log.read_text()
+                assert "Downloading coordinator package" in live and "Dload" in live, live
+                assert process.poll() is None and not marker.exists()
+            finally:
+                slow_finish.set()
+                process.communicate(timeout=15)
+        assert process.returncode == 0, progress_log.read_text()
+        stages = progress_log.read_text()
+        assert stages.index("Downloading coordinator") < stages.index("Verifying coordinator") < stages.index("Applying coordinator")
+        assert marker.exists()
+        marker.unlink()
         valid = run(url, expected)
         assert valid.returncode == 0, valid.stderr
         assert marker.read_text().strip() == str(root)
         marker.unlink()
         wrong = run(url, "0" * 64)
         assert wrong.returncode != 0 and "SHA256 mismatch" in wrong.stderr
+        assert not marker.exists()
+        missing = run(url.replace("/package.tar.gz", "/missing"), expected)
+        assert missing.returncode != 0 and "Download failed" in missing.stderr
+        assert "Verifying coordinator" not in missing.stderr and "Applying coordinator" not in missing.stderr
         assert not marker.exists()
         insecure = run(url.replace("https://", "http://"), expected)
         assert insecure.returncode != 0 and "HTTPS" in insecure.stderr
@@ -96,7 +137,7 @@ with tempfile.TemporaryDirectory(prefix="farsail-online-test-") as temp:
         assert untrusted.returncode != 0 and "certificate" in untrusted.stderr.lower()
         assert not marker.exists()
         assert not list((root / ".local").glob("online-update.*"))
-        print("PASS trusted HTTPS download, exact SHA256, upgrade dispatch, mismatch/HTTP/downgrade/untrusted TLS refusal and cleanup; synthetic upgrader only.")
+        print("PASS live curl progress before completion, ordered stages, failed-download stop, trusted HTTPS, SHA256, upgrade dispatch, HTTP/downgrade/untrusted TLS refusal and cleanup; synthetic upgrader only.")
     finally:
         server.shutdown()
         server.server_close()

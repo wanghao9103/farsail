@@ -44,9 +44,15 @@ work=$(mktemp -d "${TMPDIR:-/tmp}/farsail-online-update.XXXXXX")
 trap 'rm -rf -- "$work"' EXIT
 fetch() {
   local address=$1 destination=$2 limit=$3 timeout=$4
-  curl -q --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
+  local -a display=(--silent)
+  # Keep small metadata requests quiet; show curl's live byte/percentage,
+  # speed and elapsed-time meter for the potentially long package transfer.
+  [[ ${5:-} != progress ]] || display=()
+  if ! curl -q --fail "${display[@]}" --show-error --location --proto '=https' --proto-redir '=https' \
     --retry 2 --retry-max-time "$timeout" --connect-timeout 20 --max-time "$timeout" \
-    --max-filesize "$limit" --output "$destination" "$address"
+    --max-filesize "$limit" --output "$destination" "$address"; then
+    fail 'Download failed. Check the network and retry; deployment has not been changed.'
+  fi
   [[ $(wc -c < "$destination") -le $limit ]] || fail 'Downloaded file exceeds the allowed size'
 }
 fetch_api() {
@@ -61,6 +67,7 @@ fetch_api() {
 }
 
 if $latest; then
+  printf '%s\n' 'Checking coordinator updates…' >&2
   pages=()
   complete=false
   # Scan all releases, including published previews. Never use /releases/latest:
@@ -123,7 +130,9 @@ if $latest; then
   fi
 fi
 
-fetch "$url" "$work/package.tar.gz" "$package_limit" 600
+printf '%s\n' 'Downloading coordinator package…' >&2
+fetch "$url" "$work/package.tar.gz" "$package_limit" 600 progress
+printf '%s\n' 'Verifying coordinator package…' >&2
 actual=$(sha256sum "$work/package.tar.gz" | cut -d' ' -f1)
 [[ $actual == "$expected" ]] || fail 'Package SHA256 mismatch; deployment has not been changed'
 # Validate before extracting: no absolute/traversal names, links, devices, nested
@@ -190,7 +199,9 @@ if $latest; then
     {repository:$repository, asset_id,created_at,sha256:$sha,tag,name,url,
      base_source_revision:$base, source_comparison:$comparison}
   ' "$work/candidate.json" > "$work/selection.json"
+  printf '%s\n' 'Applying coordinator update…' >&2
   bash "$work/release/upgrade-coordinator.sh" "$work/release" "$root" --online-selection "$work/selection.json"
 else
+  printf '%s\n' 'Applying coordinator update…' >&2
   bash "$work/release/upgrade-coordinator.sh" "$work/release" "$root"
 fi
