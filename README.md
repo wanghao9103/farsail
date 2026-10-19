@@ -8,7 +8,7 @@
 
 # FarSail
 
-FarSail is an open-source remote desktop project with Windows and Ubuntu clients built using Rust, Tauri 2 and React, encrypted peer-to-peer connections, and self-hosted relay support. Public version 0.1.21 provides bidirectional single-file transfer and an Ubuntu ARM64 client; older installations need an upgrade for these additions. Mobile clients remain planned.
+FarSail is an open-source remote desktop project with Windows and Ubuntu clients built using Rust, Tauri 2 and React, encrypted peer-to-peer connections, and self-hosted relay support. Bidirectional single-file transfer and an Ubuntu ARM64 client have been available since 0.1.21; public version 0.1.22 adds an update dialog and interface refinements. Older installations need an upgrade for these additions. Mobile clients remain planned.
 
 The account, device and authorization coordinator is written in Rust. **WI-001 (coordinator), WI-002 (Windows client), WI-003 (authenticated encrypted transport), and WI-004 (Windows remote viewing/input baseline) have been verified locally. WI-008B provides a verified [Windows x64 preview installer](docs/WINDOWS_INSTALL.md).** The iroh data channel supports local direct connections and a self-hosted TLS relay. Windows hosts can enable local sharing and transmit JPEG frames and mouse/keyboard input after per-request approval. Automatic-update packages use the release signing key; Windows publisher certificates are configured separately; public cross-NAT behavior, physical Windows file transfer, HEVC and mobile clients remain unverified or unimplemented. See [file transfer](docs/FILES.md) for usage and the precise verification boundary.
 
@@ -26,6 +26,8 @@ The account, device and authorization coordinator is written in Rust. **WI-001 (
 - 0.1.11 fixes lost mouse-button releases under stale geometry, adds pointer capture and cleanup on blur or dragging outside the image, and includes P2P discovery refresh and saved sharing/unattended preferences. Continuous clicks and focus switches between owned ordinary windows passed. See [INPUT-021](docs/verification/WI-INPUT-021.md) for delivery evidence and downloads.
 
 - 0.1.21 publicly provides [signed Windows x64, Ubuntu x64 and ARM64 installers](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.21), including automatic updates, device-login restoration, independent file transfer and Windows background-window activation improvements. Physical two-computer and special-game acceptance remains pending.
+
+- 0.1.22 publishes [signed installers for all three targets](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.22) and advances the update channel. It adds an update dialog, simplifies interface copy and improves narrow-window layouts, file-list scrolling and remote toolbar menus. See [client updates](docs/CLIENT_UPDATES.md) for upgrade steps and verification limits.
 
 These are recorded milestones. Local candidate work and its verification limits are retained in the verification documents; a local installer build is not a public release.
 

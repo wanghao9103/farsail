@@ -10,13 +10,15 @@ In Settings, Software updates shows the installed version, check result and down
 
 The channel is [client-updates](https://github.com/wanghao9103/farsail/releases/tag/client-updates), with the feed at `latest.json`. The [signed 0.1.21 release](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.21) and feed were publicly available on 2026-10-10 for Windows x64, Ubuntu x64 and Ubuntu ARM64. GitHub Actions advanced the channel after all three builds, native checks, signatures and public-download checks passed. Ubuntu 24.04 is the x64/ARM64 CI baseline; a local x64 build on Ubuntu 26.04 cannot establish ARM64 compatibility.
 
+On 2026-10-19, the channel advanced to [signed 0.1.22](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.22) for all three targets after the [release workflow](https://github.com/wanghao9103/farsail/actions/runs/39199106307) and public-download verification passed. Installations on 0.1.20 or 0.1.21 can open Sharing and settings → Software updates → Check for updates, then download and follow the installation prompts. The update dialog described below is available after upgrading to 0.1.22.
+
 ARM64 uses system name `aarch64`, Debian suffix `arm64.deb` and manifest target `linux-aarch64-deb`. x64 retains `linux-x86_64-deb`; Windows retains `windows-x86_64-nsis`. The client selects the exact entry for its build architecture and validates the installer filename. On ARM64, an older feed without this entry reports no compatible update instead of falling back to amd64. See the [Ubuntu client](UBUNTU_INSTALL.md) for installation and architecture queries.
 
 Native ARM64 CI uses GitHub's official [hosted runner](https://docs.github.com/en/actions/how-tos/write-workflows/choose-where-workflows-run/choose-the-runner-for-a-job); an x64 build or available QEMU is not evidence of native ARM execution.
 
-## Update dialog in the 0.1.22 candidate
+## Update dialog in 0.1.22
 
-The 0.1.22 candidate includes the update dialog and behavior described below. This describes the candidate source, not confirmed public availability or advancement of the update channel; the 0.1.21 publication history above remains separate.
+Version 0.1.22 adds the update dialog and behavior described below, alongside clearer copy and layout improvements across the desktop interface.
 
 Discovering a new version opens a Software update dialog when the client has no active remote screen or file connection, auxiliary native window or other modal dialog. Automatic reminders also wait during ongoing operations, while a connection or registration invitation is retained, and while registering, verifying email or recovering a password. Each available version prompts at most once during an application run; restarting the client allows a reminder again. This does not depend on how long the keyboard or mouse has been idle.
 
@@ -61,4 +63,4 @@ node --test scripts/test-client-update-manifest.mjs
 cargo test --locked -p farsail-desktop --lib
 ```
 
-The manifest regressions use a disposable signing key and reject altered packages, modified signed comments, wrong advertised versions, mixed source commits, missing signatures and missing installation reports. UI fixtures verify preference changes, failed-download retries and waiting for a remote connection. These checks are separate from a real installed-client download, operating-system installer authorization and post-update restart. The three signed 0.1.21 packages and anonymous downloads passed verification; the channel matches the versioned manifest byte for byte. ARM64 native keyring, GTK IPC, database file flows and transport checks passed. Physical ARM installation, real installed-client cross-version download/installation/restart and public two-computer acceptance remain pending.
+The manifest regressions use a disposable signing key and reject altered packages, modified signed comments, wrong advertised versions, mixed source commits, missing signatures and missing installation reports. UI fixtures verify preference changes, failed-download retries and waiting for a remote connection. These checks are separate from a real installed-client download, operating-system installer authorization and post-update restart. The three signed 0.1.21 packages and anonymous downloads passed verification; the channel matches the versioned manifest byte for byte. ARM64 native keyring, GTK IPC, database file flows and transport checks passed. The published 0.1.22 installers, signatures and metadata also passed public-download verification, and the channel manifest matches the versioned release byte for byte. Physical ARM installation, real installed-client cross-version download/installation/restart and public two-computer acceptance remain pending.

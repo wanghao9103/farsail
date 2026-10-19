@@ -10,13 +10,15 @@ GitHub Actions 构建 Windows x64 NSIS 安装包，以及 Ubuntu x64、ARM64 Deb
 
 更新通道为 [client-updates](https://github.com/wanghao9103/farsail/releases/tag/client-updates)，清单附件是 `latest.json`。2026-10-10 已公开 [0.1.21 签名版本](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.21) 与更新清单，包含 Windows x64、Ubuntu x64 和 Ubuntu ARM64；GitHub Actions 完成三平台构建、原生检查、签名与公开下载校验后推进通道。Ubuntu 24.04 是 x64/ARM64 的 CI 构建基线，本地 x64 Ubuntu 26.04 构建不能代替 ARM64 验证。
 
+2026-10-19，[正式签名发布工作流](https://github.com/wanghao9103/farsail/actions/runs/39199106307)及公开下载核验通过后，更新通道已推进到三平台 [0.1.22 签名版本](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.22)。已安装 0.1.20 或 0.1.21 的用户可打开“共享与设置 → 软件更新 → 检查更新”，下载后按提示安装。下文介绍的更新弹窗在升级到 0.1.22 后可用。
+
 ARM64 系统名为 `aarch64`，Debian 包名后缀为 `arm64.deb`，清单目标是 `linux-aarch64-deb`。x64 保留 `linux-x86_64-deb`，Windows 保留 `windows-x86_64-nsis`。客户端按本机构建架构精确选择条目，并校验下载包名；ARM64 遇到缺少 ARM64 条目的旧清单时，会显示没有兼容更新，不退到 amd64。安装和架构查询见[Ubuntu 客户端](UBUNTU_INSTALL.zh-CN.md)。
 
 原生 ARM64 CI 使用 GitHub 官方[托管 runner](https://docs.github.com/en/actions/how-tos/write-workflows/choose-where-workflows-run/choose-the-runner-for-a-job)，不把 x64 构建或 QEMU 可用当作 ARM 原生运行证据。
 
-## 0.1.22 候选版本的更新弹窗
+## 0.1.22 的更新弹窗
 
-0.1.22 候选版本包含以下更新弹窗与交互行为。这里说明候选源码，不代表本次安装包已公开或更新通道已推进；上文的 0.1.21 发布历史单独保留。
+0.1.22 新增以下更新弹窗与交互行为，同时精简桌面各页文案并优化布局。
 
 发现新版本后，会在没有远程屏幕或文件连接、其他原生窗口或其他弹窗时显示“软件更新”窗口。正在处理操作、保留连接或注册邀请，以及注册、验证邮箱或找回密码期间，自动提醒也会延后。同一版本在每次运行期间最多自动提醒一次，重新启动客户端后可以再次提醒；这不依赖鼠标键盘的空闲时长。
 
@@ -61,4 +63,4 @@ node --test scripts/test-client-update-manifest.mjs
 cargo test --locked -p farsail-desktop --lib
 ```
 
-清单回归使用一次性测试签名密钥，拒绝包内容被修改、签名注释被篡改、清单版本错误、混用源码提交、缺少签名和缺少安装报告。界面夹具验证设置修改、下载失败后重试以及等待远程连接结束。这些检查与真实已安装客户端的下载、系统安装授权和更新后重启不同。公开 0.1.21 的三平台包签名与匿名下载已验证，更新清单与版本附件逐字节一致；ARM64 原生密钥环、GTK IPC、数据库文件流程与传输检查通过。物理 ARM 设备安装、真实客户端跨版本下载/安装/重启及公网双机仍需验收。
+清单回归使用一次性测试签名密钥，拒绝包内容被修改、签名注释被篡改、清单版本错误、混用源码提交、缺少签名和缺少安装报告。界面夹具验证设置修改、下载失败后重试以及等待远程连接结束。这些检查与真实已安装客户端的下载、系统安装授权和更新后重启不同。公开 0.1.21 的三平台包签名与匿名下载已验证，更新清单与版本附件逐字节一致；ARM64 原生密钥环、GTK IPC、数据库文件流程与传输检查通过。0.1.22 公开安装包、签名与元数据也已通过公开下载核验，更新通道清单与版本 Release 逐字节一致。物理 ARM 设备安装、真实客户端跨版本下载/安装/重启及公网双机仍需验收。
