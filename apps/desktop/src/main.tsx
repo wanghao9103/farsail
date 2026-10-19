@@ -705,7 +705,6 @@ function App() {
             className="app-exit"
             aria-label="退出 FarSail"
             title="退出 FarSail（断开所有连接）"
-            disabled={busy}
             onClick={() => void act(() => invoke("app_exit"), "", false)}
           >
             <Power20Regular aria-hidden="true" />

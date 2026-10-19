@@ -44,7 +44,7 @@
     await invoke("ipc_smoke_report", {
       result: JSON.stringify({ ok: true, mode, state }),
     });
-    await invoke("plugin:window|close");
+    await invoke("app_exit");
   } catch (e) {
     await invoke("ipc_smoke_report", {
       result: JSON.stringify({ ok: false, mode, error: String(e) }),
