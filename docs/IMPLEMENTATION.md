@@ -4,6 +4,10 @@
 
 # FarSail implementation and handoff record
 
+## Client 0.1.23 published (2026-10-19)
+
+The immutable `client-v0.1.23` tag points to `c217f20823e864ccd2d76bf19f29ad9ccd377309`. The [release workflow](https://github.com/wanghao9103/farsail/actions/runs/39208981511) built and signed Windows x64, Ubuntu x64 and Ubuntu ARM64 installers; all three native/package checks and public-download verification passed, and the update channel matches the [versioned release](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.23). Windows CI covers the administrator manifest, elevated process, tray close/restore and NSIS `/UPDATE /R` restart. Linux native checks cover tray-host and no-host behavior. Interactive UAC, physical games/two-computer use, Wayland and actual installed-client cross-version updates remain pending. The source-stage and older-version records below retain their original evidence; 0.1.22 artifacts were not modified.
+
 ## Unified remote setting in current source (2026-10-19)
 
 The current source replaces the separate file-receiving switch with **Allow remote connections**. Windows enables incoming screen and file requests together; Ubuntu enables files only. The setting is initially off, saves the user's choice and restores it after an ordinary restart only after login/device and native-runtime validation. Turning it off ends incoming screen and file sessions. Files retain exact independent grants, approval for every connection and native destination selection for each file; remote standby does not automatically approve files. Published 0.1.22 packages do not include this change. Current usage is in [file transfer](FILES.md).

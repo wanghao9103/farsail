@@ -6,9 +6,9 @@ Ubuntu 客户端提供账号、设备和连接界面，并复用查看端协议�
 
 ## 从源码运行
 
-当前源码在 Ubuntu 上使用**允许远程连接**来接收文件请求，不再单独设置文件接收，也不会启用本机屏幕被控。首次默认关闭，选择会保存；普通重启后验证同一登录/设备及原生传输，再恢复开启。关闭开关会停止本机接入的文件连接，退出登录会清除开启偏好。每次文件连接仍需批准，每个接收文件仍需本机选择保存位置。已发布的 0.1.22 安装包不含此次变化，仍使用重启后关闭的独立文件接收开关。
+0.1.23 起在 Ubuntu 上使用**允许远程连接**来接收文件请求，不再单独设置文件接收，也不会启用本机屏幕被控。首次默认关闭，选择会保存；普通重启后验证同一登录/设备及原生传输，再恢复开启。关闭开关会停止本机接入的文件连接，退出登录会清除开启偏好。每次文件连接仍需批准，每个接收文件仍需本机选择保存位置。旧版 0.1.22 使用重启后关闭的独立文件接收开关。
 
-当前源码关闭主窗口后文件连接继续运行。可用系统托盘提供“打开 FarSail”和“退出 FarSail”，无托盘宿主时窗口最小化到任务栏。侧栏也可明确退出，再次启动 FarSail 会打开已有窗口。待批准连接及文件保存位置仍需在主窗口处理。已发布的 0.1.22 不含此行为。
+0.1.23 起关闭主窗口后文件连接继续运行。可用系统托盘提供“打开 FarSail”和“退出 FarSail”，无托盘宿主时窗口最小化到任务栏。侧栏也可明确退出，再次启动 FarSail 会打开已有窗口。待批准连接及文件保存位置仍需在主窗口处理。旧版 0.1.22 不含此行为。
 
 以当前桌面用户运行 FarSail，不使用 `sudo`。控制 Windows 和传输文件不需要 root；安装/更新授权与应用运行权限是两回事。Windows 的启动 UAC 策略不适用于 Ubuntu。
 
@@ -60,7 +60,7 @@ sudo apt install ./FarSail_0.1.21_arm64.deb
 
 原生 ARM64 桌面可使用与上节相同的源码启动和构建命令，Tauri 依据原生 Rust 目标生成对应包。x64 机器上仅增加 Rust target 不足以完成 GTK/WebKitGTK 的 ARM 构建与运行验证；发布流程使用独立 ARM64 runner，检查真正的包内 ELF、依赖、系统密钥环和原生 IPC。自动更新按 `linux-aarch64-deb` 选择 ARM64 包，旧清单缺少该架构时会提示没有兼容更新，不下载 amd64 包。完整流程见[客户端更新](CLIENT_UPDATES.zh-CN.md)。
 
-[0.1.21 客户端 Release](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.21) 已公开 Ubuntu x64 与 ARM64 签名包、校验文件及验证元数据，用户应选择与本机架构一致的安装包。Actions 构建附件仍属于临时构建产物，公开分发以该版本 Release 为准。ARM64 仍具备 Linux 客户端的同一能力范围：连接 Windows、独立文件传输，不提供 Linux 本机屏幕共享。
+[0.1.23 客户端 Release](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.23) 已公开 Ubuntu x64 与 ARM64 签名包、校验文件及验证元数据；[0.1.21 版本](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.21)保留为首个公开 ARM64/文件传输基线。用户应选择与本机架构一致的安装包。Actions 构建附件仍属于临时构建产物，公开分发以该版本 Release 为准。ARM64 仍具备 Linux 客户端的同一能力范围：连接 Windows、独立文件传输，不提供 Linux 本机屏幕共享。
 
 ## 凭据存储
 
@@ -69,10 +69,10 @@ Ubuntu 通过 GNOME Keyring 使用桌面 Secret Service，并根据应用配置�
 ## 验证
 
 ```bash
-sudo apt install xvfb dbus-x11
+sudo apt install xvfb dbus-x11 openbox python3-dbus python3-gi
 bash scripts/test-desktop-linux.sh
 ```
 
 脚本运行 Rust 测试、Clippy、前端与原生构建，再创建隔离的会话总线、数据目录和密钥环。真实 WebKitGTK 窗口检查 Linux 元数据、本机屏幕被控能力缺席、工作区边界、设置 IPC 和二进制媒体 IPC。Ubuntu 工作流还会使用 Playwright WebKit 执行账号/设备与查看端的合成回归，并构建 Debian 制品。本地检查不代表 Ubuntu 到 Windows 的物理双机远控、Wayland 会话、Ubuntu 24.04 安装或公开发布已验收。
 
-Ubuntu 绑定返回 422 或需要新的登录提示时，按[现网升级步骤](UPGRADE_UBUNTU_LOGIN.zh-CN.md)先升级协调服务，再安装当前客户端 0.1.21；0.1.18 是该修复的历史引导版本。
+Ubuntu 绑定返回 422 或需要新的登录提示时，按[现网升级步骤](UPGRADE_UBUNTU_LOGIN.zh-CN.md)先升级协调服务，再安装当前客户端 0.1.23；0.1.18 是该修复的历史引导版本。

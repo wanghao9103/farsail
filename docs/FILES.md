@@ -6,7 +6,7 @@
 
 ## Send and receive
 
-These steps describe the current source. The published 0.1.22 packages still use the separate **Allow receiving files** switch, which starts off after each application restart; they do not include the unified remote setting described here.
+These steps apply from client 0.1.23. Older 0.1.22 packages use the separate **Allow receiving files** switch, which starts off after each application restart; update to use the unified setting and validated restoration.
 
 1. Sign in and add each computer once. Keep both applications running. On the receiving computer, select the local device or open Settings and enable **Allow remote connections**. This single setting enables screen and file requests on Windows, and file requests only on Ubuntu. It is initially off. The choice is saved and restored after an ordinary restart only when the same login/device and required native services pass validation; manually turning it off keeps it off. Logout or an identity change clears enabled preferences.
 2. On the sending computer, select the online recipient in **My devices** and click **File transfer**. A recipient with remote connections disabled or an offline/disabled device cannot receive a request. The sending computer does not need to enable incoming remote connections just to send files.
@@ -15,7 +15,7 @@ These steps describe the current source. The published 0.1.22 packages still use
 5. The recipient sees the offer and chooses **Save to…** or **Reject**. A native Save As dialog selects the exact destination for that file. Cancelling this dialog keeps the offer waiting; no file is created until a destination is selected. Sending approval alone never writes a file automatically.
 6. Both sides can send files through the approved connection. The record shows pending offers, progress, completion, rejection, cancellation or a failure reason. A completed file is not opened or executed automatically. Use **Cancel transfer** to stop an offered outgoing file or an active transfer, and **End file connection** to revoke this connection.
 
-Closing the main window in the current source hides FarSail to an available system tray or minimizes it otherwise, without stopping file transfers. Reopen the interface for approvals and save choices; explicitly quitting through the tray or sidebar stops transfers. The published 0.1.22 close behavior is unchanged.
+Closing the main window from 0.1.23 hides FarSail to an available system tray or minimizes it otherwise, without stopping file transfers. Reopen the interface for approvals and save choices; explicitly quitting through the tray or sidebar stops transfers. Older 0.1.22 packages retain their previous close behavior.
 
 For another account, create a one-time invitation with **Only transfer files**, then give the recipient device ID and invitation code to the requester. The target still approves the connection. The invitation cannot grant screen or control access. See [client usage](CLIENT.md) and [authorization API](API.md).
 
@@ -39,7 +39,7 @@ Current limits: individual regular files only; no recursive directories, remote 
 
 ## Verification and troubleshooting
 
-The following evidence records the earlier file-transfer baseline. It does not establish verification of the current source's unified setting or preference restoration.
+The 0.1.23 unified setting and preference restoration passed local regressions and the three-platform [release workflow](https://github.com/wanghao9103/farsail/actions/runs/39208981511). This includes Windows installation/restart and Linux native checks; physical transfer dialogs and two-computer acceptance remain pending. The following evidence records the earlier file-transfer baseline, rather than new physical-device verification.
 
 TypeScript/Vite, Chromium/WebKit file-interface and existing desktop-interface regressions passed locally. Synthetic IPC covers separate permissions, Linux file approval with screen sharing disabled, picker cancellation, accept/reject/cancel, progress/results, path labels and narrow layout.
 

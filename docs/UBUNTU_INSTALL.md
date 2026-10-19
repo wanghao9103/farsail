@@ -6,9 +6,9 @@ The Ubuntu client provides the account, device and connection interface and reus
 
 ## Run from source
 
-The current source uses **Allow remote connections** for incoming file requests on Ubuntu; there is no separate receiving switch and no local screen-host capability. The setting is initially off, saves your choice and restores it after an ordinary restart only after the same login/device and native transport are validated. Turning it off stops incoming file connections; logout clears enabled preferences. Each file connection still needs approval and each received file needs a native save destination. Published 0.1.22 packages do not include this change and still have a separate receiving switch that is off after restarting.
+Version 0.1.23 uses **Allow remote connections** for incoming file requests on Ubuntu; there is no separate receiving switch and no local screen-host capability. The setting is initially off, saves your choice and restores it after an ordinary restart only after the same login/device and native transport are validated. Turning it off stops incoming file connections; logout clears enabled preferences. Each file connection still needs approval and each received file needs a native save destination. Older 0.1.22 packages have a separate receiving switch that is off after restarting.
 
-With the current source, closing the main window keeps file connections running. An available tray offers “打开 FarSail” (Open FarSail) and “退出 FarSail” (Quit FarSail); without a tray host the window minimizes to the taskbar. The sidebar also offers Quit, and starting FarSail again reopens its existing window. Use the main window for pending connection approvals and file-save choices. Published 0.1.22 does not include this behavior.
+From 0.1.23, closing the main window keeps file connections running. An available tray offers “打开 FarSail” (Open FarSail) and “退出 FarSail” (Quit FarSail); without a tray host the window minimizes to the taskbar. The sidebar also offers Quit, and starting FarSail again reopens its existing window. Use the main window for pending connection approvals and file-save choices. Older 0.1.22 packages do not include this behavior.
 
 Run FarSail as the signed-in desktop user, without `sudo`. Controlling a Windows host and transferring files do not require root; installation/update authorization is separate from application runtime permissions. The Windows startup UAC policy does not apply to Ubuntu.
 
@@ -60,7 +60,7 @@ sudo apt install ./FarSail_0.1.21_arm64.deb
 
 Native ARM64 desktops use the same source startup and build commands above; Tauri packages for the native Rust target. Merely adding a Rust target to an x64 machine does not establish ARM GTK/WebKitGTK compilation or execution. The release flow uses a separate ARM64 runner and checks the actual packaged ELF, dependencies, system keyring and native IPC. Automatic updates select `linux-aarch64-deb`; an older feed lacking this architecture reports no compatible update instead of downloading an amd64 package. See [client updates](CLIENT_UPDATES.md).
 
-The [0.1.21 client release](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.21) publicly provides signed Ubuntu x64 and ARM64 packages, checksums and verification metadata. Select the installer matching your architecture. Actions artifacts remain temporary build attachments; use the versioned Release for distribution. ARM64 has the same Linux client scope: Windows connections and independent file transfers, without local Linux screen sharing.
+The current [0.1.23 client release](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.23) publicly provides signed Ubuntu x64 and ARM64 packages, checksums and verification metadata. The [0.1.21 release](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.21) remains the first published ARM64/file-transfer baseline. Select the installer matching your architecture. Actions artifacts remain temporary build attachments; use the versioned Release for distribution. ARM64 has the same Linux client scope: Windows connections and independent file transfers, without local Linux screen sharing.
 
 ## Credential storage
 
@@ -69,10 +69,10 @@ Ubuntu uses the desktop Secret Service via GNOME Keyring, with a namespace deriv
 ## Verification
 
 ```bash
-sudo apt install xvfb dbus-x11
+sudo apt install xvfb dbus-x11 openbox python3-dbus python3-gi
 bash scripts/test-desktop-linux.sh
 ```
 
 The script runs Rust tests, Clippy, the frontend and native build, then creates an isolated session bus, data directory and keyring. The actual WebKitGTK window checks Linux metadata, the absence of local screen-host capability, workspace bounds, settings IPC and binary media IPC. The Ubuntu workflow also runs the synthetic account/device and viewer regressions using Playwright WebKit and builds a Debian artifact. Local checks do not establish Ubuntu-to-Windows physical two-computer operation, a Wayland session, Ubuntu 24.04 installation or a public release.
 
-For Ubuntu binding HTTP 422 or distinct login feedback, follow the [production upgrade steps](UPGRADE_UBUNTU_LOGIN.md), then install the current desktop 0.1.21; 0.1.18 is the historical bootstrap version for that fix.
+For Ubuntu binding HTTP 422 or distinct login feedback, follow the [production upgrade steps](UPGRADE_UBUNTU_LOGIN.md), then install the current desktop 0.1.23; 0.1.18 is the historical bootstrap version for that fix.

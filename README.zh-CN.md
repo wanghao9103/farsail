@@ -8,9 +8,9 @@
 
 # FarSail · 遥舟
 
-FarSail 是正在开发中的开源远程桌面项目，Windows 与 Ubuntu 客户端采用 Rust、Tauri 2 和 React，支持加密的 P2P 连接及自建中继。自 0.1.21 起提供双向单文件传输与 Ubuntu ARM64 客户端，公开版本 0.1.22 新增更新弹窗并优化界面；旧版需要升级才能获得新增能力；手机端仍属计划能力。
+FarSail 是正在开发中的开源远程桌面项目，Windows 与 Ubuntu 客户端采用 Rust、Tauri 2 和 React，支持加密的 P2P 连接及自建中继。自 0.1.21 起提供双向单文件传输与 Ubuntu ARM64 客户端，0.1.22 新增更新弹窗并优化界面，当前公开版本为 [0.1.23](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.23)。旧版需要升级才能获得新增能力；手机端仍属计划能力。
 
-当前源码将屏幕与文件接收开关统一为**允许远程连接**：Windows 同时开启两项能力，Ubuntu 仅开启文件能力。文件连接仍需批准，每个接收文件仍由本机选择保存位置。当前源码还支持关闭主窗口后保留托盘运行；Windows 启动时通过系统 UAC 提示申请管理员权限。已发布的 0.1.22 安装包不含这些变化，详情见 [Windows 启动](docs/WINDOWS_INSTALL.zh-CN.md)与[文件传输](docs/FILES.zh-CN.md)。
+0.1.23 将屏幕与文件接收开关统一为**允许远程连接**：Windows 同时开启两项能力，Ubuntu 仅开启文件能力。文件连接仍需批准，每个接收文件仍由本机选择保存位置。同时支持关闭主窗口后保留托盘运行；Windows 启动时通过系统 UAC 提示申请管理员权限。详情见 [Windows 启动](docs/WINDOWS_INSTALL.zh-CN.md)与[文件传输](docs/FILES.zh-CN.md)。
 
 账号、设备与授权协调服务使用 Rust。**WI-001 协调服务、WI-002 Windows 客户端、WI-003 认证加密传输及 WI-004 Windows 远程查看/输入基线已在本机验证；WI-008B 提供已验收的 [Windows x64 预览安装包](docs/WINDOWS_INSTALL.zh-CN.md)。** iroh 数据通道支持本地直连及自建 TLS relay。Windows 被控端可在本机开启共享，默认逐次批准后传送 JPEG 画面并接受鼠标键盘。自动更新包使用发布密钥签名，Windows 发布者证书另行配置；公网跨 NAT、物理 Windows 文件传输、HEVC 和手机端仍待验证或实现。使用方式与具体验证边界见[文件传输](docs/FILES.zh-CN.md)。
 
@@ -32,6 +32,8 @@ FarSail 是正在开发中的开源远程桌面项目，Windows 与 Ubuntu 客�
 - 0.1.21 已公开 [Windows x64、Ubuntu x64 与 ARM64 签名安装包](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.21)，包含自动更新、设备登录恢复、独立文件传输及 Windows 后台窗口激活优化；物理双机与特殊游戏仍需验收。
 
 - 0.1.22 已公开[三平台签名安装包](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.22)并推进更新通道，新增更新弹窗、精简界面文案，优化窄窗口布局、文件列表滚动与远程工具菜单。升级步骤和验收边界见[客户端更新](docs/CLIENT_UPDATES.zh-CN.md)。
+
+- 0.1.23 已公开[三平台签名安装包](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.23)，统一远程屏幕/文件开关，Windows 启动时申请管理员权限，关闭主窗口后保留托盘与连接。[正式发布工作流](https://github.com/wanghao9103/farsail/actions/runs/39208981511)及公开下载核验通过；交互式 UAC、物理游戏和双机验收仍待完成。
 
 以上是已记录的版本进展。本地候选工作和验收边界保留在验证文档中，本地安装包构建成功不代表公开发布。
 
