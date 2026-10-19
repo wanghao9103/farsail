@@ -36,7 +36,9 @@ fi
     for name in ('dpkg', 'dpkg-query'):
         root.joinpath(name).chmod(0o755)
     # A new rootfs owned by namespace root avoids trusting any host /etc or /var.
-    args = ['bwrap', '--unshare-user', '--uid', '0', '--gid', '0', '--unshare-pid', '--unshare-net', '--die-with-parent',
+    # No networking operation is exposed; avoid creating an unused network namespace
+    # whose loopback setup is prohibited on some hosted runners.
+    args = ['bwrap', '--unshare-user', '--uid', '0', '--gid', '0', '--unshare-pid', '--die-with-parent',
             '--ro-bind', '/usr', '/usr', '--symlink', 'usr/bin', '/bin', '--symlink', 'usr/lib', '/lib',
             '--symlink', 'usr/lib64', '/lib64', '--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp',
             '--dir', '/var', '--dir', '/var/lib', '--dir', '/etc', '--dir', '/etc/polkit-1', '--dir', '/etc/polkit-1/rules.d',

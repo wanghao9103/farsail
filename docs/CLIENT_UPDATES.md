@@ -36,7 +36,7 @@ Automatic checking controls scheduled discovery; automatic downloading and insta
 
 ## Ubuntu update authorization
 
-Version 0.1.25 removes repeated update explanations and maps failures to brief, actionable messages. Native diagnostics are not displayed in the update window. Its Debian package installs a root-owned helper and a dedicated Polkit action. The first successful in-app update authorizes the calling account for later signed FarSail updates. Upgrading through the older pkexec-based updater reuses that installation authorization; a manual installation without a caller identity waits for the first in-app update instead.
+Version 0.1.26 removes repeated update explanations and maps failures to brief, actionable messages. Native diagnostics are not displayed in the update window. Its Debian package installs a root-owned helper and a dedicated Polkit action. The first successful in-app update authorizes the calling account for later signed FarSail updates. Upgrading through the older pkexec-based updater reuses that installation authorization; a manual installation without a caller identity waits for the first in-app update instead.
 
 The rule applies only to this helper's install action for the same account in an active local session. The helper independently verifies the embedded release key, signed version, package name and native architecture, rejects equal/older versions, and copies the package into a root-owned directory before invoking dpkg. It accepts signed bytes on standard input, never an arbitrary file path or command. Upgrades preserve authorization; uninstalling revokes it. To revoke it separately:
 
