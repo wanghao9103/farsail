@@ -83,7 +83,10 @@ pub fn validate_metadata(
 }
 
 pub fn rule_text(username: &str) -> String {
-    let user = serde_json::to_string(username).unwrap();
+    let user = serde_json::to_string(username)
+        .unwrap()
+        .replace('\u{2028}', "\\u2028")
+        .replace('\u{2029}', "\\u2029");
     format!(
         "// FarSail signed updates for this account only.\npolkit.addRule(function(action, subject) {{\n  if (action.id === {action:?} && action.lookup(\"program\") === {helper:?} &&\n      subject.user === {user} && subject.local && subject.active) {{\n    return polkit.Result.YES;\n  }}\n}});\n",
         action = ACTION,

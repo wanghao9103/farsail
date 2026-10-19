@@ -54,7 +54,13 @@ impl Runtime {
                 auto_install: false,
             }),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Preferences::default(),
-            Err(e) => return Err(format!("更新设置读取失败：{e}")),
+            Err(e) => {
+                return Err(user_error(
+                    "preferences read",
+                    e,
+                    "无法读取更新设置，请重试。",
+                ));
+            }
         };
         Ok(Arc::new(Self {
             path,
