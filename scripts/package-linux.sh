@@ -37,7 +37,13 @@ node scripts/verify-linux-architecture.mjs "$extract/usr/libexec/farsail-update-
 python3 scripts/test-update-helper-package.py "$package"
 cmp .local/linux-update-helper/farsail-update-helper "$extract/usr/libexec/farsail-update-helper"
 if [[ -n ${TAURI_SIGNING_PRIVATE_KEY:-} ]]; then
-  python3 scripts/test-update-helper-sandbox.py "$extract/usr/libexec/farsail-update-helper" "$package" "$package.sig"
+  if [[ ${GITHUB_ACTIONS:-false} == true ]]; then
+    # Hosted Ubuntu restricts unprivileged UID mappings. This changes only the
+    # disposable fixture; the helper runs with all capabilities dropped inside it.
+    sudo -n python3 scripts/test-update-helper-sandbox.py "$extract/usr/libexec/farsail-update-helper" "$package" "$package.sig"
+  else
+    python3 scripts/test-update-helper-sandbox.py "$extract/usr/libexec/farsail-update-helper" "$package" "$package.sig"
+  fi
 fi
 node scripts/verify-linux-architecture.mjs "$binary" "$target"
 ldd "$binary" | tee .local/deb-dependencies.txt

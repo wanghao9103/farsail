@@ -346,7 +346,7 @@ const fs = require("node:fs");
       },
     };
   });
-  await page.goto("http://127.0.0.1:1420/");
+  await page.goto(process.env.UI_URL || "http://127.0.0.1:1420/");
   await page.getByRole("button", { name: "创建账号", exact: true }).click();
   await page
     .getByLabel("邮箱地址", { exact: true })
@@ -1454,7 +1454,7 @@ const fs = require("node:fs");
   await updates.getByRole("button", { name: "检查更新", exact: true }).click();
   await updates.getByText("发现新版本 0.1.21。", { exact: true }).waitFor();
   await page.evaluate(
-    () => (window.fixture.updateFailure = "更新签名校验失败"),
+    () => (window.fixture.updateFailure = "更新包校验失败，请重新下载。"),
   );
   await updates.getByRole("button", { name: "查看更新", exact: true }).click();
   const updateDialog = page.getByRole("dialog", { name: "软件更新" });
@@ -1462,7 +1462,9 @@ const fs = require("node:fs");
   await updateDialog
     .getByRole("button", { name: "立即更新", exact: true })
     .click();
-  await updateDialog.getByText("更新签名校验失败", { exact: true }).waitFor();
+  await updateDialog
+    .getByText("更新包校验失败，请重新下载。", { exact: true })
+    .waitFor();
   assert.equal(
     await updateDialog.getByRole("button", { name: "安装并重启" }).count(),
     0,

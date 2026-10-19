@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Run the real privileged helper in an unprivileged, disposable user namespace.
+"""Run the real privileged helper in a disposable filesystem/PID namespace.
 
 Uses a production-signed package, real signature verification and dpkg-deb. Only
 package installation/query are replaced; no host package or Polkit state changes.
 """
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -35,10 +36,12 @@ fi
 ''')
     for name in ('dpkg', 'dpkg-query'):
         root.joinpath(name).chmod(0o755)
-    # A new rootfs owned by namespace root avoids trusting any host /etc or /var.
+    # CI uses a root fixture with all capabilities dropped; local tests can use
+    # unprivileged user namespaces. Neither mode exposes host /etc or /var.
     # No networking operation is exposed; avoid creating an unused network namespace
     # whose loopback setup is prohibited on some hosted runners.
-    args = ['bwrap', '--unshare-user', '--uid', '0', '--gid', '0', '--unshare-pid', '--die-with-parent',
+    identity = ['--cap-drop', 'ALL'] if os.geteuid() == 0 else ['--unshare-user', '--uid', '0', '--gid', '0']
+    args = ['bwrap', *identity, '--unshare-pid', '--die-with-parent',
             '--ro-bind', '/usr', '/usr', '--symlink', 'usr/bin', '/bin', '--symlink', 'usr/lib', '/lib',
             '--symlink', 'usr/lib64', '/lib64', '--proc', '/proc', '--dev', '/dev', '--tmpfs', '/tmp',
             '--dir', '/var', '--dir', '/var/lib', '--dir', '/etc', '--dir', '/etc/polkit-1', '--dir', '/etc/polkit-1/rules.d',
@@ -49,6 +52,8 @@ fi
             '--ro-bind', str(Path('apps/desktop/src-tauri/linux/postinst').resolve()), '/postinst',
             '--ro-bind', str(Path('apps/desktop/src-tauri/linux/postrm').resolve()), '/postrm',
             '--setenv', 'PKEXEC_UID', '1000', '/bin/sh', '-ec', '''
+# The helper fixture must not retain kernel capabilities.
+grep -Eq '^CapEff:[[:space:]]+0+$' /proc/self/status
 # Rejection must happen before installation or authorization is persisted.
 if /helper install < /out/tampered; then exit 1; fi
 test ! -e /out/installed
