@@ -138,6 +138,7 @@ function nativeFixture(initial) {
           canShareLocalScreen: false,
           sharing: false,
           filesEnabled: false,
+          remoteAccessEnabled: false,
           remoteWatch: false,
           transportRunning: true,
           sharePreferences: { sharing: false, watch: false, restore: "idle" },

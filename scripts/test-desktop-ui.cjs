@@ -148,6 +148,7 @@ const fs = require("node:fs");
             canShareLocalScreen: f.canShareLocalScreen,
             sharing: f.sharing,
             filesEnabled: f.filesEnabled,
+            remoteAccessEnabled: f.filesEnabled,
             remoteWatch: f.remoteWatch,
             sharePreferences: f.sharePreferences,
             transportRunning: f.transportRunning,
@@ -155,7 +156,9 @@ const fs = require("node:fs");
         if (cmd === "transport_start") {
           if (f.failTransport) throw "relay did not become reachable";
           f.sharing = false;
+          f.filesEnabled = false;
           local.can_host = false;
+          local.can_files = false;
           f.connected = {};
           f.transportRunning = true;
           return {};
@@ -176,17 +179,20 @@ const fs = require("node:fs");
         if (cmd === "viewer_window_active")
           return f.viewerInstances[args.instance] === true;
         if (cmd === "share_enable") {
-          f.sharing = true;
+          f.sharing = f.canShareLocalScreen;
+          f.filesEnabled = true;
           f.sharePreferences = {
             sharing: true,
             watch: f.sharePreferences.watch,
             restore: "ready",
           };
-          local.can_host = true;
+          local.can_host = f.canShareLocalScreen;
+          local.can_files = true;
           return {};
         }
         if (cmd === "share_disable") {
           f.sharing = false;
+          f.filesEnabled = false;
           f.remoteWatch = false;
           f.sharePreferences = {
             sharing: false,
@@ -194,6 +200,13 @@ const fs = require("node:fs");
             restore: "idle",
           };
           local.can_host = false;
+          local.can_files = false;
+          for (const request of f.requests) {
+            if (request.target_device_id === local.id) {
+              request.state = "revoked";
+              delete f.connected[request.id];
+            }
+          }
           return {};
         }
         if (cmd === "remote_watch") {
@@ -323,6 +336,9 @@ const fs = require("node:fs");
           };
           f.signedIn = false;
           f.sharing = false;
+          f.filesEnabled = false;
+          local.can_host = false;
+          local.can_files = false;
           f.connected = {};
           return {};
         }
@@ -424,15 +440,75 @@ const fs = require("node:fs");
     await page.getByRole("button", { name: "远程控制", exact: true }).count(),
     0,
   );
-  await page.getByRole("button", { name: "开启本机共享", exact: true }).click();
-  await page
-    .getByRole("button", { name: "停止本机共享", exact: true })
-    .waitFor();
+  await page.getByRole("switch", { name: "允许远程连接", exact: true }).check();
+  await page.waitForFunction(() => window.fixture.filesEnabled);
   assert.equal(await page.evaluate(() => window.fixture.sharing), true);
   assert.equal(await page.evaluate(() => window.fixture.remoteWatch), false);
-  // Startup intent must never be rendered as effective sharing. Opt-outs remain usable.
+  assert.equal(await page.evaluate(() => window.fixture.filesEnabled), true);
+  assert.equal(
+    await page
+      .getByRole("switch", { name: "允许接收文件", exact: true })
+      .count(),
+    0,
+  );
+  // A screen-only runtime failure keeps Files available and offers an explicit recovery.
   await page.evaluate(() => {
     window.fixture.sharing = false;
+    window.fixture.devices[0].can_host = false;
+  });
+  await page.getByRole("button", { name: "刷新", exact: true }).click();
+  await page
+    .getByText("文件传输仍可用，屏幕共享已停止。请检查 Windows 桌面后重试。", {
+      exact: true,
+    })
+    .waitFor();
+  assert(
+    await page
+      .getByRole("switch", { name: "允许远程连接", exact: true })
+      .isChecked(),
+  );
+  await page
+    .locator(".sidebar-status")
+    .getByText("文件传输", { exact: true })
+    .waitFor();
+  assert.equal(
+    await page
+      .locator(".sidebar-status")
+      .getByText("屏幕与文件", { exact: true })
+      .count(),
+    0,
+  );
+  assert.equal(
+    await page.evaluate(
+      () => window.fixture.filesEnabled && window.fixture.devices[0].can_files,
+    ),
+    true,
+  );
+  const beforeScreenRetry = await page.evaluate(
+    () => window.fixture.calls.length,
+  );
+  await page.getByRole("button", { name: "重试远程连接", exact: true }).click();
+  await page.waitForFunction(
+    () => window.fixture.sharing && window.fixture.filesEnabled,
+  );
+  await page
+    .locator(".sidebar-status")
+    .getByText("屏幕与文件", { exact: true })
+    .waitFor();
+  const screenRetry = await page.evaluate(
+    (from) => window.fixture.calls.slice(from).map((c) => c.cmd),
+    beforeScreenRetry,
+  );
+  assert.equal(
+    screenRetry.includes("transport_start"),
+    false,
+    "screen recovery must preserve the existing file transport",
+  );
+  assert.equal(screenRetry.includes("share_enable"), true);
+  // Startup intent must never be rendered as effective remote access. Opt-outs remain usable.
+  await page.evaluate(() => {
+    window.fixture.sharing = false;
+    window.fixture.filesEnabled = false;
     window.fixture.remoteWatch = false;
     window.fixture.sharePreferences = {
       sharing: true,
@@ -441,13 +517,15 @@ const fs = require("node:fs");
     };
   });
   await page.getByRole("button", { name: "刷新", exact: true }).click();
-  await page.getByText(/尚未开启共享/).waitFor();
+  await page.getByText(/正在恢复远程连接/).waitFor();
   assert(
     await page
-      .getByRole("button", { name: "关闭远程值守", exact: true })
+      .getByRole("switch", { name: "同账号远程值守", exact: true })
       .isEnabled(),
   );
-  await page.getByRole("button", { name: "关闭远程值守", exact: true }).click();
+  await page
+    .getByRole("switch", { name: "同账号远程值守", exact: true })
+    .uncheck();
   assert.equal(
     await page.evaluate(() => window.fixture.sharePreferences.watch),
     false,
@@ -456,10 +534,10 @@ const fs = require("node:fs");
     window.fixture.sharePreferences.restore = "failed";
   });
   await page.getByRole("button", { name: "刷新", exact: true }).click();
-  await page.getByText(/本次未恢复共享/).waitFor();
+  await page.getByText(/本次未恢复远程连接/).waitFor();
   const beforeRetry = await page.evaluate(() => window.fixture.calls.length);
-  await page.getByRole("button", { name: "重试本机共享", exact: true }).click();
-  await page.getByText("本机共享已恢复", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "重试远程连接", exact: true }).click();
+  await page.getByText("远程连接已恢复", { exact: true }).waitFor();
   const retry = await page.evaluate(
     (n) => window.fixture.calls.slice(n),
     beforeRetry,
@@ -471,23 +549,30 @@ const fs = require("node:fs");
   assert(retry.some((x) => x.cmd === "share_enable"));
   await page.evaluate(() => {
     window.fixture.sharing = false;
+    window.fixture.filesEnabled = false;
     window.fixture.sharePreferences.restore = "pending";
   });
   await page.getByRole("button", { name: "刷新", exact: true }).click();
-  await page.getByRole("button", { name: "停止本机共享", exact: true }).click();
+  await page
+    .getByRole("switch", { name: "允许远程连接", exact: true })
+    .uncheck();
   assert.equal(
     await page.evaluate(() => window.fixture.sharePreferences.sharing),
     false,
   );
-  await page.getByRole("button", { name: "开启本机共享", exact: true }).click();
-  await page.getByRole("button", { name: "开启远程值守", exact: true }).click();
+  await page.getByRole("switch", { name: "允许远程连接", exact: true }).check();
   await page
-    .getByRole("button", { name: "关闭远程值守", exact: true })
+    .getByRole("switch", { name: "同账号远程值守", exact: true })
+    .check();
+  await page
+    .getByRole("switch", { name: "同账号远程值守", exact: true })
     .waitFor();
   assert.equal(await page.evaluate(() => window.fixture.remoteWatch), true);
-  await page.getByRole("button", { name: "关闭远程值守", exact: true }).click();
   await page
-    .getByRole("button", { name: "开启远程值守", exact: true })
+    .getByRole("switch", { name: "同账号远程值守", exact: true })
+    .uncheck();
+  await page
+    .getByRole("switch", { name: "同账号远程值守", exact: true })
     .waitFor();
   fs.mkdirSync(".local/ui-verification", { recursive: true });
   await page.screenshot({
@@ -727,7 +812,7 @@ const fs = require("node:fs");
     await page.setViewportSize(size);
     assert(
       await page
-        .getByRole("status", { name: "本机屏幕共享中", exact: true })
+        .getByRole("status", { name: "远程连接已允许", exact: true })
         .isVisible(),
       "compact desktop sidebar must retain sharing status",
     );
@@ -868,8 +953,10 @@ const fs = require("node:fs");
   await loginAgain();
   await page.getByRole("button", { name: "共享与设置", exact: true }).click();
   const beforeSharing = await page.evaluate(() => window.fixture.calls.length);
-  await page.getByRole("switch", { name: "本机屏幕共享", exact: true }).check();
-  await page.waitForFunction(() => window.fixture.sharing);
+  await page.getByRole("switch", { name: "允许远程连接", exact: true }).check();
+  await page.waitForFunction(
+    () => window.fixture.sharing && window.fixture.filesEnabled,
+  );
   const sharingCommands = await page.evaluate(
     (from) => window.fixture.calls.slice(from).map((x) => x.cmd),
     beforeSharing,
@@ -883,12 +970,74 @@ const fs = require("node:fs");
     await page.getByLabel("中继地址", { exact: true }).isVisible(),
     false,
   );
+  assert.equal(
+    await page
+      .getByRole("switch", { name: "允许接收文件", exact: true })
+      .count(),
+    0,
+  );
+  assert.equal(
+    await page.getByRole("heading", { name: "文件接收", exact: true }).count(),
+    0,
+  );
+  assert.equal(sharingCommands.includes("files_enable"), false);
+  assert.deepEqual(
+    await page.evaluate(() => ({
+      host: window.fixture.devices[0].can_host,
+      files: window.fixture.devices[0].can_files,
+    })),
+    { host: true, files: true },
+  );
   await page.screenshot({ path: ".local/ui-verification/sharing-actions.png" });
+  await page.evaluate(() => {
+    for (const permission of ["view", "files"]) {
+      const id = `incoming-${permission}`;
+      window.fixture.requests.push({
+        id,
+        source_device_id: "remote-0002",
+        target_device_id: "local-0001",
+        permission,
+        state: "approved",
+      });
+      window.fixture.connected[id] = permission;
+    }
+    window.fixture.requests.push({
+      id: "outgoing-files",
+      source_device_id: "local-0001",
+      target_device_id: "remote-0002",
+      permission: "files",
+      state: "approved",
+    });
+    window.fixture.connected["outgoing-files"] = "files";
+  });
   await page
-    .getByRole("switch", { name: "本机屏幕共享", exact: true })
+    .getByRole("switch", { name: "允许远程连接", exact: true })
     .uncheck();
   await page.waitForFunction(() => !window.fixture.sharing);
   assert.equal(await page.evaluate(() => window.fixture.sharing), false);
+  assert.equal(await page.evaluate(() => window.fixture.filesEnabled), false);
+  assert.deepEqual(
+    await page.evaluate(() => ({
+      host: window.fixture.devices[0].can_host,
+      files: window.fixture.devices[0].can_files,
+    })),
+    { host: false, files: false },
+  );
+  assert.deepEqual(
+    await page.evaluate(() =>
+      window.fixture.requests
+        .filter((r) => r.id.startsWith("incoming-"))
+        .map((r) => [r.state, window.fixture.connected[r.id] || null]),
+    ),
+    [
+      ["revoked", null],
+      ["revoked", null],
+    ],
+  );
+  assert.equal(
+    await page.evaluate(() => window.fixture.connected["outgoing-files"]),
+    "files",
+  );
   await page.evaluate(() => {
     window.fixture.requests = [
       {
@@ -1204,6 +1353,7 @@ const fs = require("node:fs");
     window.fixture.devices[1].enabled = true;
     window.fixture.devices[1].can_host = true;
     window.fixture.sharing = false;
+    window.fixture.filesEnabled = false;
     window.fixture.sharePreferences = {
       sharing: false,
       watch: false,
@@ -1214,10 +1364,24 @@ const fs = require("node:fs");
   await page.getByRole("button", { name: "刷新", exact: true }).click();
   await page.getByRole("button", { name: "共享与设置", exact: true }).click();
   await page
-    .getByText("Ubuntu 暂不支持本机屏幕共享或远程值守。", { exact: true })
+    .getByText("Ubuntu 暂不支持共享本机屏幕或远程值守。", { exact: true })
     .waitFor();
   assert.equal(
-    await page.getByRole("switch", { name: "本机屏幕共享" }).count(),
+    await page
+      .getByRole("switch", { name: "允许远程连接", exact: true })
+      .count(),
+    1,
+  );
+  assert.equal(
+    await page
+      .getByRole("switch", { name: "同账号远程值守", exact: true })
+      .count(),
+    0,
+  );
+  assert.equal(
+    await page
+      .getByRole("switch", { name: "允许接收文件", exact: true })
+      .count(),
     0,
   );
   assert.equal(
@@ -1226,7 +1390,7 @@ const fs = require("node:fs");
   );
   await page.getByRole("button", { name: "总览", exact: true }).click();
   await page
-    .getByRole("status", { name: "本机屏幕未共享", exact: true })
+    .getByRole("status", { name: "远程连接已关闭", exact: true })
     .waitFor();
   await page.screenshot({ path: ".local/ui-verification/ubuntu-overview.png" });
   await page.getByRole("button", { name: "我的设备", exact: true }).click();
@@ -1234,12 +1398,23 @@ const fs = require("node:fs");
     .locator(".device-list")
     .getByRole("button", { name: /^手动名称/ })
     .click();
+  const linuxRemote = page.getByRole("switch", {
+    name: "允许远程连接",
+    exact: true,
+  });
+  await linuxRemote.check();
+  await page.waitForFunction(() => window.fixture.filesEnabled);
+  assert.equal(await page.evaluate(() => window.fixture.sharing), false);
   assert.equal(
-    await page
-      .getByRole("button", { name: "开启本机共享", exact: true })
-      .count(),
-    0,
+    await page.evaluate(() => window.fixture.devices[0].can_host),
+    false,
   );
+  assert.equal(
+    await page.evaluate(() => window.fixture.devices[0].can_files),
+    true,
+  );
+  await linuxRemote.uncheck();
+  await page.waitForFunction(() => !window.fixture.filesEnabled);
   await page
     .locator(".device-list")
     .getByRole("button", { name: /^家里的电脑/ })

@@ -246,14 +246,9 @@ impl Runtime {
         );
         let client = app.state::<Arc<NativeClient>>().inner().clone();
         client.cancel_sharing_restore();
-        client.disable_host_local();
-        client.disable_files_local();
         files.stop_all();
         remote.stop_all().await;
-        let _ =
-            tokio::time::timeout(Duration::from_secs(2), client.set_host_capability(false)).await;
-        let _ =
-            tokio::time::timeout(Duration::from_secs(2), client.set_files_capability(false)).await;
+        let _ = tokio::time::timeout(Duration::from_secs(2), client.disable_remote_access()).await;
         client.stop_transport().await;
         let result = tokio::task::spawn_blocking(move || update.install(bytes.as_slice())).await;
         match result {

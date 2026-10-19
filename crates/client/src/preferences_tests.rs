@@ -42,11 +42,13 @@ async fn failed_save_does_not_enable_and_failed_opt_out_removes_old_permission()
     assert!(f.store.read(KEY).unwrap().is_none());
     store.1.store(false, Ordering::SeqCst);
     c.stop_sharing_preference().unwrap();
-    c.set_host_capability(false).await.unwrap();
+    c.disable_remote_access().await.unwrap();
     store.1.store(true, Ordering::SeqCst);
-    assert!(c.enable_sharing_preference(|| Ok(())).await.is_err());
+    assert!(c.enable_sharing_preference(|| Ok(true)).await.is_err());
     assert!(!c.hosting_enabled());
+    assert!(!c.files_enabled());
     assert!(!f.advertised.load(Ordering::SeqCst));
+    assert!(!f.files_advertised.load(Ordering::SeqCst));
     c.stop_transport().await;
     f.client()
         .restore_sharing(|| panic!("save failed, no opt-in"))
@@ -69,13 +71,15 @@ async fn shutdown_before_startup_attempt_keeps_intent_but_never_activates() {
         true
     );
     let fresh = f.client();
-    fresh.restore_sharing(|| Ok(())).await.unwrap();
+    fresh.restore_sharing(|| Ok(true)).await.unwrap();
     fresh.stop_transport().await;
 }
 struct Fixture {
     store: Arc<dyn SecureStore>,
     server: tokio::task::JoinHandle<()>,
     advertised: Arc<AtomicBool>,
+    files_advertised: Arc<AtomicBool>,
+    capability_status: Arc<AtomicU16>,
     enables: Arc<AtomicUsize>,
     hold: Arc<AtomicBool>,
     seen: Arc<tokio::sync::Notify>,
@@ -108,7 +112,7 @@ async fn failed_identity_mutation_keeps_same_identity_intent() {
     );
     assert_eq!(c.public_state().await["sharePreferences"]["watch"], true);
     let next = f.client();
-    next.restore_sharing(|| Ok(())).await.unwrap();
+    next.restore_sharing(|| Ok(true)).await.unwrap();
     next.stop_transport().await;
 }
 impl Drop for Fixture {
@@ -119,6 +123,8 @@ impl Drop for Fixture {
 impl Fixture {
     async fn new(store: Arc<dyn SecureStore>) -> Self {
         let advertised = Arc::new(AtomicBool::new(false));
+        let files_advertised = Arc::new(AtomicBool::new(false));
+        let capability_status = Arc::new(AtomicU16::new(200));
         let enables = Arc::new(AtomicUsize::new(0));
         let hold = Arc::new(AtomicBool::new(false));
         let seen = Arc::new(tokio::sync::Notify::new());
@@ -133,11 +139,14 @@ impl Fixture {
             .route("/v1/me",get({let status=me_status.clone();let owner=owner.clone();move ||{let status=status.clone();let owner=owner.clone();async move {(StatusCode::from_u16(status.load(Ordering::SeqCst)).unwrap(),Json(json!({"id":owner.lock().unwrap().clone()})))}}}))
             .route("/v1/devices/heartbeat",post({let status=heartbeat_status.clone();move ||{let status=status.clone();async move {(StatusCode::from_u16(status.load(Ordering::SeqCst)).unwrap(),Json(json!({"generation":1})))}}}))
             .route("/v1/devices/endpoint-address",post({let status=address_status.clone();move ||{let status=status.clone();async move {(StatusCode::from_u16(status.load(Ordering::SeqCst)).unwrap(),Json(Value::Null))}}}))
-            .route("/v1/devices/capability",post({let advertised=advertised.clone();let enables=enables.clone();let hold=hold.clone();let seen=seen.clone();let release=release.clone();move |Json(body):Json<Value>| {
-                let advertised=advertised.clone();let enables=enables.clone();let hold=hold.clone();let seen=seen.clone();let release=release.clone();async move {
-                    let enabled=body["can_host"]==true;
+            .route("/v1/devices/capability",post({let advertised=advertised.clone();let files_advertised=files_advertised.clone();let status=capability_status.clone();let enables=enables.clone();let hold=hold.clone();let seen=seen.clone();let release=release.clone();move |Json(body):Json<Value>| {
+                let advertised=advertised.clone();let files_advertised=files_advertised.clone();let status=status.clone();let enables=enables.clone();let hold=hold.clone();let seen=seen.clone();let release=release.clone();async move {
+                    let enabled=body["can_host"]==true || body["can_files"]==true;
                     if enabled { enables.fetch_add(1,Ordering::SeqCst); if hold.load(Ordering::SeqCst) {seen.notify_one();release.notified().await;} }
-                    advertised.store(enabled,Ordering::SeqCst);Json(Value::Null)
+                    if let Some(value) = body["can_host"].as_bool() { advertised.store(value,Ordering::SeqCst); }
+                    if let Some(value) = body["can_files"].as_bool() { files_advertised.store(value,Ordering::SeqCst); }
+                    // Failure after mutation models a lost/failed successful-write response.
+                    (StatusCode::from_u16(if enabled {status.load(Ordering::SeqCst)} else {200}).unwrap(),Json(Value::Null))
                 }
             }}));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -182,6 +191,8 @@ impl Fixture {
             store,
             server,
             advertised,
+            files_advertised,
+            capability_status,
             enables,
             hold,
             seen,
@@ -200,7 +211,7 @@ impl Fixture {
         c.call("resume", Value::Null).await.unwrap();
         c.call("heartbeat", Value::Null).await.unwrap();
         c.start_transport(TransportConfig::default()).await.unwrap();
-        c.enable_sharing_preference(|| Ok(())).await.unwrap();
+        c.enable_sharing_preference(|| Ok(true)).await.unwrap();
         c.enable_watch_preference().await.unwrap();
         c
     }
@@ -226,7 +237,7 @@ async fn restart_roundtrip(store: Arc<dyn SecureStore>) {
     second
         .restore_sharing(|| {
             desktop.store(true, Ordering::SeqCst);
-            Ok(())
+            Ok(true)
         })
         .await
         .unwrap();
@@ -239,11 +250,12 @@ async fn restart_roundtrip(store: Arc<dyn SecureStore>) {
     second.stop_watch_preference().unwrap();
     second.stop_transport().await;
     let third = f.client();
-    third.restore_sharing(|| Ok(())).await.unwrap();
+    third.restore_sharing(|| Ok(true)).await.unwrap();
     assert!(third.hosting_enabled());
+    assert!(third.files_enabled());
     assert_eq!(third.public_state().await["remoteWatch"], false);
     third.stop_sharing_preference().unwrap();
-    third.set_host_capability(false).await.unwrap();
+    third.disable_remote_access().await.unwrap();
     third.stop_transport().await;
     let fourth = f.client();
     fourth
@@ -251,15 +263,218 @@ async fn restart_roundtrip(store: Arc<dyn SecureStore>) {
         .await
         .unwrap();
     assert!(!fourth.hosting_enabled());
+    assert!(!fourth.files_enabled());
     assert_eq!(
         fourth.public_state().await["sharePreferences"]["sharing"],
         false
     );
     assert!(!f.advertised.load(Ordering::SeqCst));
+    assert!(!f.files_advertised.load(Ordering::SeqCst));
 }
 #[tokio::test]
 async fn recreate_restores_only_successful_same_identity_choices_and_manual_off() {
     restart_roundtrip(Arc::new(Store::default())).await;
+}
+#[tokio::test]
+async fn unified_access_restores_files_on_both_platforms_from_existing_v1_intent() {
+    for screen in [true, false] {
+        let f = Fixture::new(Arc::new(Store::default())).await;
+        let first = f.client();
+        first.call("resume", Value::Null).await.unwrap();
+        first.call("heartbeat", Value::Null).await.unwrap();
+        first
+            .start_transport(TransportConfig::default())
+            .await
+            .unwrap();
+        first
+            .enable_sharing_preference(|| Ok(screen))
+            .await
+            .unwrap();
+        assert_eq!(first.hosting_enabled(), screen);
+        assert!(first.files_enabled());
+        assert_eq!(f.advertised.load(Ordering::SeqCst), screen);
+        assert!(f.files_advertised.load(Ordering::SeqCst));
+        assert_eq!(first.public_state().await["remoteAccessEnabled"], true);
+        let saved: Value = serde_json::from_slice(&f.store.read(KEY).unwrap().unwrap()).unwrap();
+        assert_eq!(saved["version"], 1);
+        assert_eq!(saved["sharing"], true);
+        assert!(
+            saved.get("files").is_none(),
+            "existing v1 intent needs no extra file opt-in"
+        );
+        first.stop_transport().await;
+        let restored = f.client();
+        restored.restore_sharing(|| Ok(screen)).await.unwrap();
+        assert_eq!(restored.hosting_enabled(), screen);
+        assert!(restored.files_enabled());
+        assert_eq!(
+            restored.public_state().await["sharePreferences"]["restore"],
+            "ready"
+        );
+        if !screen {
+            assert!(restored.enable_watch_preference().await.is_err());
+        }
+        {
+            let mut state = restored.state.lock().await;
+            for (id, permission, permission_epoch) in [
+                (
+                    "screen-approved",
+                    RemotePermission::Control,
+                    restored.host_state.load(Ordering::SeqCst),
+                ),
+                (
+                    "files-approved",
+                    RemotePermission::Files,
+                    restored.files_state.load(Ordering::SeqCst),
+                ),
+            ] {
+                state.grant.insert(
+                    id.into(),
+                    LocalGrant {
+                        token: "synthetic".into(),
+                        permission,
+                        permission_epoch,
+                    },
+                );
+            }
+        }
+        restored.stop_sharing_preference().unwrap();
+        assert!(!restored.hosting_enabled());
+        assert!(!restored.files_enabled());
+        restored.disable_remote_access().await.unwrap();
+        assert!(
+            restored.state.lock().await.grant.is_empty(),
+            "closing remote access also revokes unused file and screen approvals"
+        );
+        assert!(!f.advertised.load(Ordering::SeqCst));
+        assert!(!f.files_advertised.load(Ordering::SeqCst));
+        restored.stop_transport().await;
+        f.client()
+            .restore_sharing(|| panic!("opt-out persists for both platforms"))
+            .await
+            .unwrap();
+    }
+}
+#[tokio::test]
+async fn failed_unified_advertisement_rolls_back_both_capabilities() {
+    for screen in [true, false] {
+        for status in [422, 503] {
+            let f = Fixture::new(Arc::new(Store::default())).await;
+            let c = f.client();
+            c.call("resume", Value::Null).await.unwrap();
+            c.call("heartbeat", Value::Null).await.unwrap();
+            c.start_transport(TransportConfig::default()).await.unwrap();
+            f.capability_status.store(status, Ordering::SeqCst);
+            assert!(c.enable_sharing_preference(|| Ok(screen)).await.is_err());
+            assert!(!c.hosting_enabled());
+            assert!(!c.files_enabled());
+            assert!(!f.advertised.load(Ordering::SeqCst));
+            assert!(!f.files_advertised.load(Ordering::SeqCst));
+            assert_eq!(c.public_state().await["sharePreferences"]["sharing"], false);
+            c.stop_transport().await;
+        }
+    }
+}
+#[tokio::test]
+async fn delayed_unified_enable_cannot_survive_transport_stop_on_either_platform() {
+    for screen in [true, false] {
+        let f = Fixture::new(Arc::new(Store::default())).await;
+        let c = f.client();
+        c.call("resume", Value::Null).await.unwrap();
+        c.call("heartbeat", Value::Null).await.unwrap();
+        c.start_transport(TransportConfig::default()).await.unwrap();
+        f.hold.store(true, Ordering::SeqCst);
+        let enable = tokio::spawn({
+            let c = c.clone();
+            async move { c.enable_sharing_preference(|| Ok(screen)).await }
+        });
+        f.seen.notified().await;
+        c.stop_transport().await;
+        f.release.notify_one();
+        assert!(enable.await.unwrap().is_err());
+        assert!(!c.hosting_enabled());
+        assert!(!c.files_enabled());
+        assert!(!f.advertised.load(Ordering::SeqCst));
+        assert!(!f.files_advertised.load(Ordering::SeqCst));
+        assert_eq!(c.public_state().await["sharePreferences"]["sharing"], false);
+    }
+}
+#[tokio::test]
+async fn cancelled_activation_cannot_roll_back_a_newer_explicit_enable() {
+    for screen in [true, false] {
+        let f = Fixture::new(Arc::new(Store::default())).await;
+        let c = f.client();
+        c.call("resume", Value::Null).await.unwrap();
+        c.call("heartbeat", Value::Null).await.unwrap();
+        c.start_transport(TransportConfig::default()).await.unwrap();
+        f.hold.store(true, Ordering::SeqCst);
+        let old = tokio::spawn({
+            let c = c.clone();
+            async move { c.enable_sharing_preference(|| Ok(screen)).await }
+        });
+        f.seen.notified().await;
+        c.stop_sharing_preference().unwrap();
+        let newer = tokio::spawn({
+            let c = c.clone();
+            async move { c.enable_sharing_preference(|| Ok(screen)).await }
+        });
+        tokio::task::yield_now().await;
+        assert!(
+            !newer.is_finished(),
+            "new activation waits through old rollback"
+        );
+        f.hold.store(false, Ordering::SeqCst);
+        f.release.notify_one();
+        assert!(old.await.unwrap().is_err());
+        newer.await.unwrap().unwrap();
+        assert_eq!(c.hosting_enabled(), screen);
+        assert!(c.files_enabled());
+        assert_eq!(f.advertised.load(Ordering::SeqCst), screen);
+        assert!(f.files_advertised.load(Ordering::SeqCst));
+        assert_eq!(c.public_state().await["sharePreferences"]["sharing"], true);
+        c.stop_transport().await;
+    }
+}
+#[tokio::test]
+async fn failed_restore_rechecks_revision_after_waiting_to_roll_back() {
+    let f = Fixture::new(Arc::new(Store::default())).await;
+    let first = f.remember().await;
+    first.stop_transport().await;
+    let c = f.client();
+    let capability = c.capability_lock.lock().await;
+    let preflight = Arc::new(tokio::sync::Notify::new());
+    let restore = tokio::spawn({
+        let c = c.clone();
+        let preflight = preflight.clone();
+        async move {
+            c.restore_sharing(|| {
+                preflight.notify_one();
+                Err(Error::Invalid("synthetic desktop failure".into()))
+            })
+            .await
+        }
+    });
+    preflight.notified().await;
+    let old_revision = c.preferences.lock().unwrap().revision;
+    let newer = tokio::spawn({
+        let c = c.clone();
+        async move { c.enable_sharing_preference(|| Ok(true)).await }
+    });
+    while c.preferences.lock().unwrap().revision == old_revision {
+        tokio::task::yield_now().await;
+    }
+    drop(capability);
+    assert!(restore.await.unwrap().is_err());
+    newer.await.unwrap().unwrap();
+    assert!(c.hosting_enabled());
+    assert!(c.files_enabled());
+    assert!(f.advertised.load(Ordering::SeqCst));
+    assert!(f.files_advertised.load(Ordering::SeqCst));
+    assert_eq!(
+        c.public_state().await["sharePreferences"]["restore"],
+        "ready"
+    );
+    c.stop_transport().await;
 }
 #[cfg(windows)]
 #[tokio::test]
@@ -327,23 +542,26 @@ async fn delayed_restore_and_manual_enable_cannot_overwrite_sharing_opt_out() {
     f.hold.store(true, Ordering::SeqCst);
     let restore = tokio::spawn({
         let c = c.clone();
-        async move { c.restore_sharing(|| Ok(())).await }
+        async move { c.restore_sharing(|| Ok(true)).await }
     });
     f.seen.notified().await;
     c.stop_sharing_preference().unwrap();
     f.release.notify_one();
     assert!(restore.await.unwrap().is_err());
     assert!(!c.hosting_enabled());
+    assert!(!c.files_enabled());
     assert!(!f.advertised.load(Ordering::SeqCst));
+    assert!(!f.files_advertised.load(Ordering::SeqCst));
     let enabled = tokio::spawn({
         let c = c.clone();
-        async move { c.enable_sharing_preference(|| Ok(())).await }
+        async move { c.enable_sharing_preference(|| Ok(true)).await }
     });
     f.seen.notified().await;
     c.stop_sharing_preference().unwrap();
     f.release.notify_one();
     assert!(enabled.await.unwrap().is_err());
     assert!(!c.hosting_enabled());
+    assert!(!c.files_enabled());
     c.stop_transport().await;
     f.client()
         .restore_sharing(|| panic!("off persists after late responses"))
@@ -359,7 +577,7 @@ async fn watch_opt_out_during_restore_preserves_sharing_and_rejects_late_watch_e
     f.hold.store(true, Ordering::SeqCst);
     let restore = tokio::spawn({
         let c = c.clone();
-        async move { c.restore_sharing(|| Ok(())).await }
+        async move { c.restore_sharing(|| Ok(true)).await }
     });
     f.seen.notified().await;
     c.stop_watch_preference().unwrap();
@@ -367,6 +585,7 @@ async fn watch_opt_out_during_restore_preserves_sharing_and_rejects_late_watch_e
     restore.await.unwrap().unwrap();
     f.hold.store(false, Ordering::SeqCst);
     assert!(c.hosting_enabled());
+    assert!(c.files_enabled());
     assert_eq!(c.public_state().await["remoteWatch"], false);
     let state = c.state.lock().await;
     let watch = tokio::spawn({
@@ -379,8 +598,9 @@ async fn watch_opt_out_during_restore_preserves_sharing_and_rejects_late_watch_e
     assert!(watch.await.unwrap().is_err());
     c.stop_transport().await;
     let next = f.client();
-    next.restore_sharing(|| Ok(())).await.unwrap();
+    next.restore_sharing(|| Ok(true)).await.unwrap();
     assert!(next.hosting_enabled());
+    assert!(next.files_enabled());
     assert_eq!(next.public_state().await["remoteWatch"], false);
     next.stop_transport().await;
 }
@@ -394,7 +614,7 @@ async fn logout_or_operational_shutdown_cancels_slow_restore_with_different_pers
         f.hold.store(true, Ordering::SeqCst);
         let restore = tokio::spawn({
             let c = c.clone();
-            async move { c.restore_sharing(|| Ok(())).await }
+            async move { c.restore_sharing(|| Ok(true)).await }
         });
         f.seen.notified().await;
         let mut exit = if logout {
@@ -427,7 +647,9 @@ async fn logout_or_operational_shutdown_cancels_slow_restore_with_different_pers
             c.stop_transport().await;
         }
         assert!(!c.hosting_enabled());
+        assert!(!c.files_enabled());
         assert!(!f.advertised.load(Ordering::SeqCst));
+        assert!(!f.files_advertised.load(Ordering::SeqCst));
         assert_eq!(f.store.read(KEY).unwrap().is_some(), !logout);
     }
 }
@@ -451,6 +673,7 @@ async fn login_heartbeat_transport_and_desktop_fail_closed_without_losing_valid_
                 .is_err()
         );
         assert!(!c.hosting_enabled());
+        assert!(!c.files_enabled());
         let state = c.public_state().await;
         assert_eq!(state["remoteWatch"], false);
         assert_eq!(state["sharePreferences"]["sharing"], true);

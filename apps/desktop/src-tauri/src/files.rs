@@ -1,5 +1,5 @@
 use crate::viewer;
-use farsail_client::{NativeClient, file_runtime::NativeFiles};
+use farsail_client::file_runtime::NativeFiles;
 use std::{path::PathBuf, sync::Arc};
 use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
@@ -31,25 +31,6 @@ async fn pick(
                 .map_err(|_| "请选择本机的普通文件。".to_owned())
         })
         .transpose()
-}
-
-#[tauri::command]
-pub async fn files_enable(
-    window: tauri::WebviewWindow,
-    client: tauri::State<'_, Arc<NativeClient>>,
-    files: tauri::State<'_, Arc<NativeFiles>>,
-    enabled: bool,
-) -> Result<(), String> {
-    viewer::main_only(&window)?;
-    if !enabled {
-        client.disable_files_local();
-        files.stop_hosts();
-    }
-    client
-        .set_files_capability(enabled)
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(())
 }
 
 #[tauri::command]

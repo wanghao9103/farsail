@@ -33,7 +33,9 @@ xvfb-run -a dbus-run-session -- bash -euo pipefail <<'NATIVE'
   (cd apps/desktop && exec ../../node_modules/.bin/vite) >"$XDG_RUNTIME_DIR/vite.log" 2>&1 &
   vite=$!
   app=""
-  trap 'kill "$vite" ${app:+"$app"} 2>/dev/null || true' EXIT
+  openbox >"$XDG_RUNTIME_DIR/window-manager.log" 2>&1 &
+  wm=$!
+  trap 'kill "$vite" "$wm" ${app:+"$app"} 2>/dev/null || true' EXIT
   for _ in {1..60}; do
     if curl -fsS http://127.0.0.1:1420/ >/dev/null 2>&1; then break; fi
     sleep 1
@@ -46,10 +48,17 @@ xvfb-run -a dbus-run-session -- bash -euo pipefail <<'NATIVE'
   done
   if [[ ! -f "$FARSAIL_IPC_SMOKE_PATH" ]]; then cat "$XDG_RUNTIME_DIR/app.log"; exit 1; fi
   node -e 'const r=JSON.parse(require("fs").readFileSync(process.env.FARSAIL_IPC_SMOKE_PATH)); console.log(r); if(!r.ok) process.exit(1)'
+  kill "$app"
+  wait "$app" 2>/dev/null || true
+  app=""
+  bash scripts/test-desktop-tray.sh
 NATIVE
 node --input-type=module <<'JS'
 import fs from 'node:fs';
 const report=JSON.parse(fs.readFileSync(process.env.FARSAIL_IPC_SMOKE_PATH));
 if(!report.ok)throw Error('Native Linux IPC smoke did not pass');
-fs.writeFileSync('.local/linux-native-verification.json',JSON.stringify({ok:true,target:process.env.FARSAIL_LINUX_TARGET,source_commit:process.env.GITHUB_SHA,native_debug_ipc:'passed',linux_store:'passed',report},null,2));
+const tray=JSON.parse(fs.readFileSync(`${process.env.XDG_RUNTIME_DIR}/tray-host-report.json`));
+const trayFallback=JSON.parse(fs.readFileSync(`${process.env.XDG_RUNTIME_DIR}/tray-no-host-report.json`));
+if(!tray.ok||!tray.closeToTray||!tray.trayMenuRestored||!trayFallback.ok||!trayFallback.noTrayHostMinimized)throw Error('Native tray lifecycle did not pass');
+fs.writeFileSync('.local/linux-native-verification.json',JSON.stringify({ok:true,target:process.env.FARSAIL_LINUX_TARGET,source_commit:process.env.GITHUB_SHA,native_debug_ipc:'passed',linux_store:'passed',native_tray:'passed',report,tray,trayFallback},null,2));
 JS

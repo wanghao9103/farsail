@@ -10,7 +10,7 @@ import {
   UpdateNotice,
   UpdateSettings,
 } from "./updates";
-import { FilesControls, FilesPanel } from "./files";
+import { FilesPanel } from "./files";
 import "./style.css";
 import "./desktop-theme.css";
 import { RefreshFailureGate } from "./feedback-policy";
@@ -43,6 +43,7 @@ import {
   Square16Regular,
   ChevronRight16Regular,
   ArrowSync20Regular,
+  Power20Regular,
 } from "@fluentui/react-icons";
 
 type Tab =
@@ -64,6 +65,7 @@ type PublicState = {
   deviceId: string | null;
   deviceRestoreError?: string | null;
   filesEnabled?: boolean;
+  remoteAccessEnabled?: boolean;
   sharing: boolean;
   remoteWatch?: boolean;
   transportRunning?: boolean;
@@ -77,29 +79,27 @@ type PublicState = {
 };
 const canShareLocalScreen = (state: PublicState) =>
   state.canShareLocalScreen ?? state.platform !== "linux";
-function LocalSharingUnsupported() {
-  return (
-    <p className="hint" role="status">
-      Ubuntu 客户端可连接 Windows 电脑，暂不支持共享本机屏幕或远程值守。
-    </p>
-  );
-}
+const remoteAccessEnabled = (state: PublicState) =>
+  state.remoteAccessEnabled ?? state.filesEnabled ?? state.sharing;
+const remoteAccessReady = (state: PublicState) =>
+  remoteAccessEnabled(state) && (!canShareLocalScreen(state) || state.sharing);
 const sharingChoice = (state: PublicState) =>
-  state.sharing || !!state.sharePreferences?.sharing;
+  remoteAccessEnabled(state) || !!state.sharePreferences?.sharing;
 const watchChoice = (state: PublicState) =>
   state.remoteWatch || !!state.sharePreferences?.watch;
 function SharingRecovery({ state }: { state: PublicState }) {
-  if (!canShareLocalScreen(state)) return null;
-  if (state.sharing || !state.sharePreferences?.sharing) return null;
+  if (remoteAccessReady(state) || !state.sharePreferences?.sharing) return null;
   return (
     <p className="hint" role="status">
-      {state.sharePreferences.restore === "pending"
-        ? "正在检查登录、设备、连接和本机桌面，尚未开启共享。你可以取消恢复。"
-        : "已记住开启偏好，但本次未恢复共享。请检查登录、网络和 Windows 桌面；可重试或关闭偏好。"}
+      {remoteAccessEnabled(state)
+        ? "文件传输仍可用，屏幕共享已停止。请检查 Windows 桌面后重试。"
+        : state.sharePreferences.restore === "pending"
+          ? "正在恢复远程连接，你可以关闭开关取消。"
+          : `本次未恢复远程连接，请检查登录和网络${canShareLocalScreen(state) ? "、Windows 桌面" : ""}后重试。`}
     </p>
   );
 }
-function SettingsSharingControls({
+function RemoteAccessControls({
   state,
   busy,
   act,
@@ -110,23 +110,21 @@ function SettingsSharingControls({
   act: Action;
   prepareTransport: () => Promise<void>;
 }) {
-  if (!canShareLocalScreen(state))
-    return (
-      <p className="hint" role="status">
-        Ubuntu 暂不支持本机屏幕共享或远程值守。
-      </p>
-    );
   return (
     <div className="preference-rows">
       <label className="preference-row">
         <span>
-          <strong>本机屏幕共享</strong>
-          <small>允许其他设备查看或控制本机，默认逐次批准。</small>
+          <strong>允许远程连接</strong>
+          <small>
+            {canShareLocalScreen(state)
+              ? "允许屏幕连接和文件传输，默认逐次批准。"
+              : "允许文件传输，每次连接需批准。"}
+          </small>
         </span>
         <input
           type="checkbox"
           role="switch"
-          aria-label="本机屏幕共享"
+          aria-label="允许远程连接"
           checked={sharingChoice(state)}
           disabled={busy || !state.deviceId}
           onChange={() =>
@@ -137,33 +135,63 @@ function SettingsSharingControls({
                   sharingChoice(state) ? "share_disable" : "share_enable",
                 );
               },
-              sharingChoice(state) ? "已停止本机共享" : "本机共享已开启",
+              sharingChoice(state) ? "远程连接已关闭" : "远程连接已允许",
             )
           }
         />
       </label>
-      <label className="preference-row">
-        <span>
-          <strong>同账号远程值守</strong>
-          <small>同账号设备可直接连接，无需逐次批准。</small>
-        </span>
-        <input
-          type="checkbox"
-          role="switch"
-          aria-label="同账号远程值守"
-          checked={watchChoice(state)}
-          disabled={busy || (!state.sharing && !watchChoice(state))}
-          onChange={() =>
-            void act(
-              () => invoke("remote_watch", { enabled: !watchChoice(state) }),
-              watchChoice(state) ? "已关闭远程值守" : "已开启远程值守",
-            )
-          }
-        />
-      </label>
-      <p className="hint">
-        会记住你的选择；重启后重新检查登录、设备和桌面状态。
-      </p>
+      {canShareLocalScreen(state) ? (
+        <label className="preference-row">
+          <span>
+            <strong>同账号远程值守</strong>
+            <small>同账号设备可直接查看和控制屏幕；文件连接仍需批准。</small>
+          </span>
+          <input
+            type="checkbox"
+            role="switch"
+            aria-label="同账号远程值守"
+            checked={watchChoice(state)}
+            disabled={busy || (!state.sharing && !watchChoice(state))}
+            onChange={() =>
+              void act(
+                () => invoke("remote_watch", { enabled: !watchChoice(state) }),
+                watchChoice(state) ? "已关闭远程值守" : "已开启远程值守",
+              )
+            }
+          />
+        </label>
+      ) : (
+        <p className="hint" role="status">
+          Ubuntu 暂不支持共享本机屏幕或远程值守。
+        </p>
+      )}
+      <p className="hint">每个接收文件仍需选择保存位置。</p>
+      <details className="sharing-guidance">
+        <summary>运行与恢复说明</summary>
+        <p className="hint">
+          会记住你的选择；重启后通过登录、设备和连接检查才会恢复。
+          关闭远程连接会结束正在访问本机的屏幕和文件连接。
+          {canShareLocalScreen(state) &&
+            "屏幕共享还需 Windows 已登录；关闭远程值守会断开当前屏幕连接。"}
+        </p>
+      </details>
+      <SharingRecovery state={state} />
+      {!remoteAccessReady(state) &&
+        state.sharePreferences?.sharing &&
+        state.sharePreferences.restore !== "pending" && (
+          <button
+            disabled={busy || !state.deviceId}
+            className="secondary"
+            onClick={() =>
+              void act(async () => {
+                await prepareTransport();
+                await invoke("share_enable");
+              }, "远程连接已恢复")
+            }
+          >
+            重试远程连接
+          </button>
+        )}
     </div>
   );
 }
@@ -585,7 +613,7 @@ function App() {
             <button
               className="window-close"
               aria-label="关闭窗口"
-              title="关闭"
+              title="关闭窗口，后台运行"
               onClick={() =>
                 void getCurrentWindow()
                   .close()
@@ -637,8 +665,16 @@ function App() {
         <div
           className="sidebar-foot"
           role="status"
-          aria-label={publicState.sharing ? "本机屏幕共享中" : "本机屏幕未共享"}
-          title={`${publicState.sharing ? "本机屏幕共享中" : "本机屏幕未共享"}；${publicState.filesEnabled ? "文件接收已开启" : "文件接收已关闭"}`}
+          aria-label={
+            remoteAccessEnabled(publicState)
+              ? "远程连接已允许"
+              : "远程连接已关闭"
+          }
+          title={
+            remoteAccessEnabled(publicState)
+              ? "远程连接已允许"
+              : "远程连接已关闭"
+          }
         >
           {me && (
             <div className="sidebar-account">
@@ -651,17 +687,31 @@ function App() {
           )}
           <div className="sidebar-status">
             <span
-              className={`status-dot ${publicState.sharing ? "is-sharing" : ""}`}
+              className={`status-dot ${remoteAccessEnabled(publicState) ? "is-sharing" : ""}`}
               aria-hidden="true"
             />
             <span>
-              {publicState.sharing ? "本机屏幕共享中" : "本机屏幕未共享"}
+              {remoteAccessEnabled(publicState)
+                ? "远程连接已允许"
+                : "远程连接已关闭"}
             </span>
-            <small>
-              {publicState.filesEnabled ? "文件接收已开启" : "文件接收已关闭"}
-            </small>
+            {remoteAccessEnabled(publicState) && (
+              <small>{publicState.sharing ? "屏幕与文件" : "文件传输"}</small>
+            )}
           </div>
         </div>
+        {native && (
+          <button
+            className="app-exit"
+            aria-label="退出 FarSail"
+            title="退出 FarSail（断开所有连接）"
+            disabled={busy}
+            onClick={() => void act(() => invoke("app_exit"), "", false)}
+          >
+            <Power20Regular aria-hidden="true" />
+            <span>退出 FarSail</span>
+          </button>
+        )}
       </aside>
       <main>
         <header className="topbar">
@@ -842,8 +892,8 @@ function App() {
               </div>
               <div className="settings-column">
                 <div className="card">
-                  <h2>本机共享</h2>
-                  <SettingsSharingControls
+                  <h2>远程连接</h2>
+                  <RemoteAccessControls
                     state={publicState}
                     busy={busy}
                     act={act}
@@ -860,40 +910,18 @@ function App() {
                             : "暂时无法读取运行权限。"}
                       </p>
                       <p className="hint">
-                        控制管理员窗口时，需在被控电脑以管理员身份启动 FarSail。
-                        系统授权与登录画面仍需在被控电脑处理。
+                        {publicState.administratorMode === false
+                          ? "重新启动 FarSail 并同意系统授权后，可控制管理员窗口。"
+                          : "启动时会申请管理员权限。"}
+                        系统授权与登录画面需在被控电脑处理。
                       </p>
                     </details>
                   )}
-                  <SharingRecovery state={publicState} />
-                  {canShareLocalScreen(publicState) &&
-                    !publicState.deviceId && (
-                      <p className="hint">
-                        {me
-                          ? "添加本机后可开启共享。"
-                          : "登录并添加本机后可开启共享。"}
-                        <button
-                          className="text-button"
-                          onClick={() => setTab("overview")}
-                        >
-                          {me ? "去添加本机" : "去登录"}
-                        </button>
-                      </p>
-                    )}
-                </div>
-                <div className="card settings-files">
-                  <h2>文件接收</h2>
-                  <FilesControls
-                    state={publicState}
-                    busy={busy}
-                    act={act}
-                    prepareTransport={prepareTransport}
-                  />
                   {!publicState.deviceId && (
                     <p className="hint">
                       {me
-                        ? "添加本机后可接收文件。"
-                        : "登录并添加本机后可接收文件。"}
+                        ? "添加本机后可允许远程连接。"
+                        : "登录并添加本机后可允许远程连接。"}
                       <button
                         className="text-button"
                         onClick={() => setTab("overview")}
@@ -1350,8 +1378,8 @@ function Overview({
             <h2>添加这台电脑</h2>
             <p>
               {canShareLocalScreen(state)
-                ? "添加后可连接其他电脑；接收屏幕连接需开启本机共享。"
-                : "添加后可连接已开启共享的 Windows 电脑。Ubuntu 暂不支持共享本机屏幕。"}
+                ? "添加后可连接其他电脑；允许远程连接后也可接收屏幕和文件连接。"
+                : "添加后可连接 Windows 电脑并传输文件；Ubuntu 暂不支持共享本机屏幕。"}
             </p>
           </div>
           <form
@@ -1398,22 +1426,14 @@ function Overview({
             </p>
           </div>
           <div className="stack">
-            <span className={state.sharing ? "tag ready" : "tag"}>
-              {!canShareLocalScreen(state)
-                ? "本机共享暂不可用"
-                : state.sharing
-                  ? "本机共享已开启"
-                  : "本机共享未开启"}
+            <span className={remoteAccessEnabled(state) ? "tag ready" : "tag"}>
+              {remoteAccessEnabled(state) ? "远程连接已允许" : "远程连接已关闭"}
             </span>
             <button
               className="secondary"
               onClick={() => onNavigate("settings")}
             >
-              {!canShareLocalScreen(state)
-                ? "连接与设置"
-                : state.sharing
-                  ? "管理本机共享"
-                  : "设置本机共享"}
+              管理远程连接
             </button>
             <small className="muted">
               {canShareLocalScreen(state)
@@ -1557,7 +1577,7 @@ function IncomingApprovals({
             </button>
           </div>
           {p.permission === "files" && !state.filesEnabled && (
-            <p className="hint">请先开启“允许接收文件”。</p>
+            <p className="hint">请先开启“允许远程连接”。</p>
           )}
         </div>
       ))}
@@ -1758,7 +1778,7 @@ function Devices({
       : !device?.online
         ? "设备离线，请在对方电脑上打开 FarSail 并登录。"
         : !device?.can_host
-          ? "对方尚未开启共享，请在对方电脑的本机面板中开启。"
+          ? "对方尚未允许屏幕连接，请检查对方的远程连接设置。"
           : "";
   return (
     <section className="device-workspace">
@@ -1857,112 +1877,15 @@ function Devices({
                 </p>
               </div>
             </div>
-            {isLocal && !canShareLocalScreen(state) ? (
+            {isLocal ? (
               <>
-                <LocalSharingUnsupported />
-                <FilesControls
-                  state={state}
-                  busy={busy}
-                  act={act}
-                  prepareTransport={prepareTransport}
-                />
-                <IncomingApprovals
-                  pending={pending}
-                  state={state}
-                  busy={busy}
-                  act={act}
-                  prepareTransport={prepareTransport}
-                  onFiles={onFiles}
-                />
-              </>
-            ) : isLocal ? (
-              <>
-                <div className="sharing-panel">
-                  <div>
-                    <h3>允许其他设备连接本机</h3>
-                    <p className="muted">
-                      默认逐次批准；停止共享会断开正在访问本机的连接。
-                    </p>
-                  </div>
-                  <button
-                    className={sharingChoice(state) ? "secondary" : "primary"}
-                    disabled={busy || !device.enabled}
-                    onClick={() =>
-                      void act(
-                        async () => {
-                          if (!sharingChoice(state)) await prepareTransport();
-                          await invoke(
-                            sharingChoice(state)
-                              ? "share_disable"
-                              : "share_enable",
-                          );
-                        },
-                        sharingChoice(state)
-                          ? "已停止本机共享"
-                          : "本机共享已开启，等待连接请求",
-                      )
-                    }
-                  >
-                    {sharingChoice(state) ? "停止本机共享" : "开启本机共享"}
-                  </button>
-                </div>
-                <FilesControls
-                  state={state}
-                  busy={busy}
-                  act={act}
-                  prepareTransport={prepareTransport}
-                />
-                <SharingRecovery state={state} />
-                {!state.sharing &&
-                  state.sharePreferences?.sharing &&
-                  state.sharePreferences.restore !== "pending" && (
-                    <button
-                      disabled={busy || !device.enabled}
-                      className="secondary"
-                      onClick={() =>
-                        void act(async () => {
-                          await prepareTransport();
-                          await invoke("share_enable");
-                        }, "本机共享已恢复")
-                      }
-                    >
-                      重试本机共享
-                    </button>
-                  )}
-                <div className="sharing-panel">
-                  <div>
-                    <h3>远程值守</h3>
-                    <p className="muted">
-                      同账号设备可直接连接，无需逐次批准。
-                    </p>
-                    <p className="hint">
-                      关闭会断开当前连接，恢复逐次批准。需要 Windows
-                      已登录且应用保持运行。
-                    </p>
-                    <details className="sharing-guidance">
-                      <summary>运行与恢复说明</summary>
-                      <p className="hint">
-                        本机共享和远程值守会记住你的选择，重启后通过登录、设备和桌面检查才会恢复。
-                      </p>
-                    </details>
-                  </div>
-                  <button
-                    disabled={busy || (!state.sharing && !watchChoice(state))}
-                    className={watchChoice(state) ? "secondary" : "primary"}
-                    onClick={() =>
-                      void act(
-                        () =>
-                          invoke("remote_watch", {
-                            enabled: !watchChoice(state),
-                          }),
-                        watchChoice(state)
-                          ? "远程值守已关闭，恢复手动批准"
-                          : "远程值守已开启",
-                      )
-                    }
-                  >
-                    {watchChoice(state) ? "关闭远程值守" : "开启远程值守"}
-                  </button>
+                <div className="sharing-panel remote-access-panel">
+                  <RemoteAccessControls
+                    state={state}
+                    busy={busy || !device.enabled}
+                    act={act}
+                    prepareTransport={prepareTransport}
+                  />
                 </div>
                 <IncomingApprovals
                   pending={pending}
@@ -2035,7 +1958,7 @@ function Devices({
                 <p className="muted">
                   {device.can_files
                     ? "文件连接需对方单独批准，收到文件后再选择保存位置。"
-                    : "对方尚未允许接收文件，需在对方电脑开启。"}
+                    : "对方尚未开放文件传输，请检查对方的远程连接设置。"}
                 </p>
                 {blocked && <p className="muted">{blocked}</p>}
                 {(waiting ||
@@ -2322,7 +2245,7 @@ function Requests({
           <div className="eyebrow">REQUEST ACCESS</div>
           <h2>连接他人电脑</h2>
           <p className="muted">
-            请对方开启屏幕共享或文件接收，再提供设备 ID 和一次性邀请码。
+            请对方允许远程连接，再提供设备 ID 和一次性邀请码。
           </p>
           <form
             className="form"
@@ -2499,7 +2422,7 @@ function Requests({
           ) && (
             <p className="hint">
               {invitePermission === "files"
-                ? "还没有允许接收文件的在线电脑。请先在那台电脑开启文件接收。"
+                ? "暂无可传输文件的在线电脑。请在对方电脑允许远程连接。"
                 : "还没有开启共享的在线电脑。请先在那台电脑开启本机共享。"}
             </p>
           )}

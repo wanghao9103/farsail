@@ -12,6 +12,8 @@ GitHub Actions 构建 Windows x64 NSIS 安装包，以及 Ubuntu x64、ARM64 Deb
 
 2026-10-19，[正式签名发布工作流](https://github.com/wanghao9103/farsail/actions/runs/39199106307)及公开下载核验通过后，更新通道已推进到三平台 [0.1.22 签名版本](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.22)。已安装 0.1.20 或 0.1.21 的用户可打开“共享与设置 → 软件更新 → 检查更新”，下载后按提示安装。下文介绍的更新弹窗在升级到 0.1.22 后可用。
 
+当前源码另将屏幕共享与文件接收统一为**允许远程连接**，保存开关选择并按平台启用能力。当前源码关闭主窗口后还会通过托盘/任务栏继续运行；手动安装前应从托盘或侧栏选择“退出 FarSail”。Windows 源码在启动时通过系统 UAC 申请管理员权限。这些变更尚未发布，不包含在 0.1.22 中；现有发布附件与更新通道保持不变。更新后启动 Windows 应用可能需要本地授权，取消则取消本次启动；安装器仍采用当前用户模式。本次源码的真实跨版本安装及 UAC/重启行为仍待验收。当前源码行为见[文件传输](FILES.zh-CN.md)。
+
 ARM64 系统名为 `aarch64`，Debian 包名后缀为 `arm64.deb`，清单目标是 `linux-aarch64-deb`。x64 保留 `linux-x86_64-deb`，Windows 保留 `windows-x86_64-nsis`。客户端按本机构建架构精确选择条目，并校验下载包名；ARM64 遇到缺少 ARM64 条目的旧清单时，会显示没有兼容更新，不退到 amd64。安装和架构查询见[Ubuntu 客户端](UBUNTU_INSTALL.zh-CN.md)。
 
 原生 ARM64 CI 使用 GitHub 官方[托管 runner](https://docs.github.com/en/actions/how-tos/write-workflows/choose-where-workflows-run/choose-the-runner-for-a-job)，不把 x64 构建或 QEMU 可用当作 ARM 原生运行证据。

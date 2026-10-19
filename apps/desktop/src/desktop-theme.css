@@ -94,6 +94,19 @@ nav button:hover {
   color: var(--muted);
   font-size: 12px;
 }
+.app-exit {
+  margin-top: 12px;
+  padding: 8px 12px;
+  justify-content: flex-start;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+}
+.app-exit:hover {
+  background: #263039;
+  color: var(--text);
+}
 .sidebar-foot small,
 .muted,
 .hint,
@@ -493,7 +506,8 @@ input[type="checkbox"] {
   width: 100%;
   min-height: 38px;
 }
-.file-sharing-panel {
+.remote-access-panel {
+  display: block;
   margin-top: 18px;
 }
 .files-workspace {
@@ -844,16 +858,6 @@ input[type="checkbox"] {
 }
 .settings-column .card > :last-child {
   margin-bottom: 0;
-}
-.settings-files .file-sharing-panel {
-  display: block;
-  margin: 0;
-  padding: 0;
-  border: 0;
-  background: transparent;
-}
-.settings-files .preference-row {
-  padding-top: 8px;
 }
 .settings-column .sharing-permissions {
   margin-top: 16px;
@@ -1296,6 +1300,12 @@ td {
     grid-template-columns: 1fr;
     gap: 0;
   }
+  .app-exit {
+    justify-content: center;
+  }
+  .app-exit > span {
+    display: none;
+  }
   nav button {
     justify-content: center;
     gap: 0;
@@ -1379,6 +1389,11 @@ td {
     padding: 0;
     border: 0;
     align-self: center;
+  }
+  .app-exit {
+    flex: none;
+    margin: 0;
+    padding: 8px;
   }
   nav button {
     padding: 7px;

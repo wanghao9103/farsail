@@ -1,4 +1,4 @@
-//! Remember intent, never effective permission. Only native preflight may restore hosting.
+//! Remember intent, never effective permission. Native platform preflight determines which incoming capabilities may be restored.
 use super::*;
 
 const KEY: &str = "sharing-preferences";
@@ -43,6 +43,8 @@ impl Scope {
 struct Saved {
     version: u8,
     scope: Scope,
+    // Keep the v1 key: an existing screen-sharing choice now also permits file requests.
+    // Per-connection approval and per-file Save As remain separate from this intent.
     sharing: bool,
     watch: bool,
 }
@@ -120,7 +122,7 @@ impl NativeClient {
         p.revision = p.revision.wrapping_add(1);
         p.watch_revision = p.watch_revision.wrapping_add(1);
         p.status = "idle";
-        self.disable_host_local();
+        self.disable_remote_access_local();
         if let Some(saved) = &mut p.saved {
             saved.sharing = false;
             saved.watch = false;
@@ -143,7 +145,7 @@ impl NativeClient {
         p.watch_revision = p.watch_revision.wrapping_add(1);
         p.saved = None;
         p.status = "idle";
-        self.disable_host_local();
+        self.disable_remote_access_local();
         p.persist(&*self.store)
     }
     /// Operational shutdown cancels pending restoration but keeps the deliberate choice.
@@ -152,7 +154,7 @@ impl NativeClient {
         p.revision = p.revision.wrapping_add(1);
         p.claimed = true;
         p.status = "idle";
-        self.disable_host_local();
+        self.disable_remote_access_local();
     }
     pub async fn enable_watch_preference(&self) -> Result<()> {
         let (revision, watch_revision) = {
@@ -183,50 +185,69 @@ impl NativeClient {
     }
     pub async fn enable_sharing_preference(
         &self,
-        desktop: impl FnOnce() -> Result<()>,
+        desktop: impl FnOnce() -> Result<bool>,
     ) -> Result<Value> {
-        let revision = self.preferences.lock().unwrap().revision;
+        let revision = {
+            let mut p = self.preferences.lock().unwrap();
+            // A later explicit choice supersedes a slow startup/activation attempt.
+            p.revision = p.revision.wrapping_add(1);
+            p.claimed = true;
+            p.revision
+        };
+        let _activation = self.sharing_activation.lock().await;
+        if !self.preference_current(revision) {
+            return Err(Error::Invalid("sharing start cancelled".into()));
+        }
         let scope = Scope::from_state(&*self.state.lock().await, true)?;
         if !self.transport_running().await {
             return Err(Error::Invalid("start the transport endpoint first".into()));
         }
-        desktop()?;
-        let result = self.set_host_capability_for_preference(revision).await?;
+        let screen = desktop()?;
+        let result = self
+            .enable_remote_access_for_preference(screen, revision)
+            .await?;
         let saved = {
             let state = self.state.lock().await;
             let mut p = self.preferences.lock().unwrap();
-            if p.revision != revision
-                || Scope::from_state(&state, true)? != scope
-                || !self.hosting_enabled()
-                || self.signing_out.load(Ordering::SeqCst)
-            {
-                return Err(Error::Invalid("sharing start cancelled".into()));
-            }
-            let watch = p
-                .saved
-                .as_ref()
-                .is_some_and(|s| s.scope == scope && s.watch);
-            let previous = p.saved.clone();
-            p.saved = Some(Saved {
-                version: 1,
-                scope,
-                sharing: true,
-                watch,
-            });
-            p.status = "ready";
-            let saved = p.persist(&*self.store);
-            if saved.is_err() {
-                p.saved = previous;
-                p.status = "failed";
-                self.disable_host_local();
-            }
-            if saved.is_ok() && watch {
-                self.set_remote_watch(true)?;
-            }
-            saved
+            (|| {
+                if p.revision != revision
+                    || Scope::from_state(&state, true)? != scope
+                    || !self.files_enabled()
+                    || self.hosting_enabled() != screen
+                    || self.signing_out.load(Ordering::SeqCst)
+                {
+                    return Err(Error::Invalid("sharing start cancelled".into()));
+                }
+                let watch = p
+                    .saved
+                    .as_ref()
+                    .is_some_and(|s| s.scope == scope && s.watch);
+                let previous = p.saved.clone();
+                p.saved = Some(Saved {
+                    version: 1,
+                    scope,
+                    sharing: true,
+                    watch,
+                });
+                p.status = "ready";
+                let saved = p.persist(&*self.store);
+                if saved.is_err() {
+                    p.saved = previous;
+                    p.status = "failed";
+                    self.disable_remote_access_local();
+                }
+                if saved.is_ok() && watch && screen {
+                    self.set_remote_watch(true)?;
+                }
+                saved
+            })()
         };
         if let Err(e) = saved {
-            let _ = self.set_host_capability(false).await;
+            let _ = tokio::time::timeout(
+                Duration::from_secs(2),
+                self.rollback_remote_access_preference(revision),
+            )
+            .await;
             return Err(e);
         }
         Ok(result)
@@ -236,8 +257,9 @@ impl NativeClient {
     /// The injected preflight is the same display/Capture check used by the native switch.
     pub async fn restore_sharing(
         self: &Arc<Self>,
-        desktop: impl FnOnce() -> Result<()>,
+        desktop: impl FnOnce() -> Result<bool>,
     ) -> Result<()> {
+        let _activation = self.sharing_activation.lock().await;
         let (revision, scope) = {
             let mut p = self.preferences.lock().unwrap();
             if p.claimed {
@@ -254,9 +276,11 @@ impl NativeClient {
         let result = self.restore_inner(revision, scope, desktop).await;
         if result.is_err() && self.preference_current(revision) {
             // Keep valid intent, but stop input/approval and best-effort clear advertisement.
-            self.disable_host_local();
-            let _ =
-                tokio::time::timeout(Duration::from_secs(2), self.set_host_capability(false)).await;
+            let _ = tokio::time::timeout(
+                Duration::from_secs(2),
+                self.rollback_remote_access_preference(revision),
+            )
+            .await;
             let mut p = self.preferences.lock().unwrap();
             if p.revision == revision {
                 p.status = "failed";
@@ -268,7 +292,7 @@ impl NativeClient {
         self: &Arc<Self>,
         revision: u64,
         scope: Scope,
-        desktop: impl FnOnce() -> Result<()>,
+        desktop: impl FnOnce() -> Result<bool>,
     ) -> Result<()> {
         self.call("resume", Value::Null).await?;
         {
@@ -293,19 +317,21 @@ impl NativeClient {
         if !self.preference_current(revision) {
             return Err(Error::Invalid("sharing restore cancelled".into()));
         }
-        desktop()?;
-        self.set_host_capability_for_preference(revision).await?;
+        let screen = desktop()?;
+        self.enable_remote_access_for_preference(screen, revision)
+            .await?;
         let s = self.state.lock().await;
         let mut p = self.preferences.lock().unwrap();
         if p.revision != revision
             || Scope::from_state(&s, true)? != scope
-            || !self.hosting_enabled()
+            || !self.files_enabled()
+            || self.hosting_enabled() != screen
             || self.signing_out.load(Ordering::SeqCst)
         {
             return Err(Error::Invalid("sharing restore cancelled".into()));
         }
         // Re-read watch intent under its mutation lock, so opting out during slow startup wins.
-        if p.saved.as_ref().is_some_and(|s| s.watch) {
+        if screen && p.saved.as_ref().is_some_and(|s| s.watch) {
             self.set_remote_watch(true)?;
         }
         p.status = "ready";

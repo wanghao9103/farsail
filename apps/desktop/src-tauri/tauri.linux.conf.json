@@ -6,7 +6,7 @@
     "shortDescription": "FarSail remote desktop client",
     "linux": {
       "deb": {
-        "depends": ["gnome-keyring", "fonts-noto-cjk", "pkexec"]
+        "depends": ["gnome-keyring", "fonts-noto-cjk", "pkexec", "libayatana-appindicator3-1"]
       }
     }
   }

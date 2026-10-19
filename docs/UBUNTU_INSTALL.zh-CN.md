@@ -6,12 +6,18 @@ Ubuntu 客户端提供账号、设备和连接界面，并复用查看端协议�
 
 ## 从源码运行
 
+当前源码在 Ubuntu 上使用**允许远程连接**来接收文件请求，不再单独设置文件接收，也不会启用本机屏幕被控。首次默认关闭，选择会保存；普通重启后验证同一登录/设备及原生传输，再恢复开启。关闭开关会停止本机接入的文件连接，退出登录会清除开启偏好。每次文件连接仍需批准，每个接收文件仍需本机选择保存位置。已发布的 0.1.22 安装包不含此次变化，仍使用重启后关闭的独立文件接收开关。
+
+当前源码关闭主窗口后文件连接继续运行。可用系统托盘提供“打开 FarSail”和“退出 FarSail”，无托盘宿主时窗口最小化到任务栏。侧栏也可明确退出，再次启动 FarSail 会打开已有窗口。待批准连接及文件保存位置仍需在主窗口处理。已发布的 0.1.22 不含此行为。
+
+以当前桌面用户运行 FarSail，不使用 `sudo`。控制 Windows 和传输文件不需要 root；安装/更新授权与应用运行权限是两回事。Windows 的启动 UAC 策略不适用于 Ubuntu。
+
 需要已登录的 Ubuntu 桌面、解锁的登录密钥环、Rust 1.93.0 和 Node/npm。Ubuntu CI 以 24.04 为构建基线，分别在 x64 和 ARM64 原生 runner 上执行。ARM64 使用 `aarch64-unknown-linux-gnu`，Debian 架构名为 `arm64`；本机历史原生检查在 x64 Ubuntu 26.04.1 上执行。更早的 Ubuntu、32 位 ARM 和其他发行版不属于已验证范围。Tauri 在 Linux 上使用 WebKitGTK 4.1，参见[官方前置要求](https://v2.tauri.app/start/prerequisites/)。
 
 ```bash
 sudo apt update
 sudo apt install build-essential curl pkg-config libwebkit2gtk-4.1-dev \
-  libgtk-3-dev librsvg2-dev patchelf gnome-keyring fonts-noto-cjk pkexec
+  libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf gnome-keyring fonts-noto-cjk pkexec
 npm ci
 npm run tauri -w @farsail/desktop -- dev
 ```
@@ -67,6 +73,6 @@ sudo apt install xvfb dbus-x11
 bash scripts/test-desktop-linux.sh
 ```
 
-脚本运行 Rust 测试、Clippy、前端与原生构建，再创建隔离的会话总线、数据目录和密钥环。真实 WebKitGTK 窗口检查 Linux 元数据、不支持的共享入口、工作区边界、设置 IPC 和二进制媒体 IPC。Ubuntu 工作流还会使用 Playwright WebKit 执行账号/设备与查看端的合成回归，并构建 Debian 制品。本地检查不代表 Ubuntu 到 Windows 的物理双机远控、Wayland 会话、Ubuntu 24.04 安装或公开发布已验收。
+脚本运行 Rust 测试、Clippy、前端与原生构建，再创建隔离的会话总线、数据目录和密钥环。真实 WebKitGTK 窗口检查 Linux 元数据、本机屏幕被控能力缺席、工作区边界、设置 IPC 和二进制媒体 IPC。Ubuntu 工作流还会使用 Playwright WebKit 执行账号/设备与查看端的合成回归，并构建 Debian 制品。本地检查不代表 Ubuntu 到 Windows 的物理双机远控、Wayland 会话、Ubuntu 24.04 安装或公开发布已验收。
 
 Ubuntu 绑定返回 422 或需要新的登录提示时，按[现网升级步骤](UPGRADE_UBUNTU_LOGIN.zh-CN.md)先升级协调服务，再安装当前客户端 0.1.21；0.1.18 是该修复的历史引导版本。

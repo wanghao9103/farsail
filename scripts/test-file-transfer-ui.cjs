@@ -53,6 +53,7 @@ const fs = require("node:fs");
     window.filesFixture = {
       signedIn: true,
       filesEnabled: false,
+      sharePreferences: { sharing: false, watch: false, restore: "idle" },
       transportRunning: false,
       devices: [local, remote, unavailable, offline],
       requests: [],
@@ -82,6 +83,8 @@ const fs = require("node:fs");
             canShareLocalScreen: false,
             platform: "linux",
             filesEnabled: f.filesEnabled,
+            remoteAccessEnabled: f.filesEnabled,
+            sharePreferences: f.sharePreferences,
             computerName: "本机测试电脑",
             transportRunning: f.transportRunning,
           };
@@ -89,10 +92,18 @@ const fs = require("node:fs");
           f.transportRunning = true;
           return {};
         }
-        if (command === "files_enable") {
-          f.filesEnabled = args.enabled;
-          local.can_files = args.enabled;
-          if (!args.enabled)
+        if (command === "files_enable") throw "unknown command files_enable";
+        if (["share_enable", "share_disable"].includes(command)) {
+          const enabled = command === "share_enable";
+          f.filesEnabled = enabled;
+          local.can_files = enabled;
+          local.can_host = false;
+          f.sharePreferences = {
+            sharing: enabled,
+            watch: false,
+            restore: enabled ? "ready" : "idle",
+          };
+          if (!enabled)
             f.sessions
               .filter((s) => s.host)
               .forEach((s) => {
@@ -204,16 +215,28 @@ const fs = require("node:fs");
     page.locator("nav").getByRole("button", { name, exact: true });
   await page.goto("http://127.0.0.1:1420/");
   await nav("我的设备").click();
-  // File receiving is a separate choice and never enables Linux screen sharing.
-  await page.getByRole("switch", { name: "允许接收文件", exact: true }).check();
+  // A single explicit remote-access choice permits Files on Linux, never screen sharing.
+  assert.equal(
+    await page
+      .getByRole("switch", { name: "允许接收文件", exact: true })
+      .count(),
+    0,
+  );
+  assert.equal(
+    await page
+      .getByRole("switch", { name: "允许远程连接", exact: true })
+      .isChecked(),
+    false,
+  );
+  await page.getByRole("switch", { name: "允许远程连接", exact: true }).check();
   await page.waitForFunction(() => window.filesFixture.filesEnabled);
   await page
     .locator(".sidebar-status")
-    .getByText("本机屏幕未共享", { exact: true })
+    .getByText("远程连接已允许", { exact: true })
     .waitFor();
   await page
     .locator(".sidebar-status")
-    .getByText("文件接收已开启", { exact: true })
+    .getByText("文件传输", { exact: true })
     .waitFor();
   const enabling = await page.evaluate(() =>
     window.filesFixture.calls.filter((c) =>
@@ -222,7 +245,7 @@ const fs = require("node:fs");
   );
   assert.deepEqual(
     enabling.map((c) => c.command),
-    ["transport_start", "files_enable"],
+    ["transport_start", "share_enable"],
   );
   assert.equal(enabling[0].args.forceRelay, false);
   // Offline and non-receiving targets cannot request files, independently of screen capability.
@@ -418,6 +441,7 @@ const fs = require("node:fs");
   await page.evaluate(() => {
     const f = window.filesFixture;
     f.filesEnabled = false;
+    f.sharePreferences = { sharing: false, watch: false, restore: "idle" };
     f.devices[0].can_files = false;
     f.pending = [
       {
@@ -445,13 +469,13 @@ const fs = require("node:fs");
       .getByRole("button", { name: "允许文件传输", exact: true })
       .isDisabled(),
   );
-  await page.getByRole("switch", { name: "允许接收文件", exact: true }).check();
+  await page.getByRole("switch", { name: "允许远程连接", exact: true }).check();
   await page.getByRole("button", { name: "允许文件传输", exact: true }).click();
   await page.getByRole("heading", { name: "文件传输", exact: true }).waitFor();
   assert.equal(
     await page.evaluate(
       () =>
-        window.filesFixture.calls.filter((c) => c.command === "share_enable")
+        window.filesFixture.calls.filter((c) => c.command === "files_enable")
           .length,
     ),
     0,
@@ -560,15 +584,18 @@ const fs = require("node:fs");
     ),
     1,
   );
-  // Stop receiving ends incoming sessions without touching Linux sharing.
+  // Closing unified remote access ends incoming file sessions and keeps outgoing sessions.
+  const outgoingId = await page.evaluate(
+    () => window.filesFixture.sessions.find((s) => !s.host).id,
+  );
   await nav("共享与设置").click();
   await page
-    .getByRole("switch", { name: "允许接收文件", exact: true })
+    .getByRole("switch", { name: "允许远程连接", exact: true })
     .uncheck();
   await page.waitForFunction(() => !window.filesFixture.filesEnabled);
   await page
     .locator(".sidebar-status")
-    .getByText("文件接收已关闭", { exact: true })
+    .getByText("远程连接已关闭", { exact: true })
     .waitFor();
   assert.equal(
     await page.evaluate(
@@ -576,6 +603,31 @@ const fs = require("node:fs");
         window.filesFixture.sessions.find((s) => s.id === "host-request").state,
     ),
     "closed",
+  );
+  assert.equal(
+    await page.evaluate(() => window.filesFixture.devices[0].can_host),
+    false,
+  );
+  assert.equal(
+    await page.evaluate(() => window.filesFixture.devices[0].can_files),
+    false,
+  );
+  assert.equal(
+    await page.evaluate(
+      (id) => window.filesFixture.sessions.find((s) => s.id === id).state,
+      outgoingId,
+    ),
+    "connected",
+  );
+  assert.equal(
+    await page
+      .getByRole("switch", { name: "允许接收文件", exact: true })
+      .count(),
+    0,
+  );
+  assert.equal(
+    await page.getByRole("heading", { name: "文件接收", exact: true }).count(),
+    0,
   );
   assert.deepEqual(errors, []);
   await browser.close();

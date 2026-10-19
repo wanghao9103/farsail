@@ -4,9 +4,21 @@
 
 # FarSail implementation and handoff record
 
-## Current file-transfer source candidate (2026-10-10)
+## Unified remote setting in current source (2026-10-19)
 
-The current candidate adds independent Files sessions, explicit receiver enablement, per-connection approval and per-file native Open/Save As selection for Ubuntu and Windows. It streams bounded chunks with full SHA-256 verification, a shared file bandwidth budget and non-overwriting publication. The usage, storage/authorization boundaries and known limits are in [file transfer](FILES.md).
+The current source replaces the separate file-receiving switch with **Allow remote connections**. Windows enables incoming screen and file requests together; Ubuntu enables files only. The setting is initially off, saves the user's choice and restores it after an ordinary restart only after login/device and native-runtime validation. Turning it off ends incoming screen and file sessions. Files retain exact independent grants, approval for every connection and native destination selection for each file; remote standby does not automatically approve files. Published 0.1.22 packages do not include this change. Current usage is in [file transfer](FILES.md).
+
+The dated records and WI-005 plan below retain their original scope and evidence. Their independent screen/file switch design describes the earlier baseline; it does not override the current unified setting or establish that this change has passed the historical checks.
+
+The current source also hides the main window to an available system tray when closed, or minimizes it if no tray host is available, preserving enabled remote access and active file transfers. The tray or a second launch can reopen the existing window; the tray/sidebar Quit action performs normal local shutdown, while viewer closure remains scoped to its session. Published 0.1.22 retains its previous close behavior. See [client usage](CLIENT.md).
+
+## Windows startup permission in current source (2026-10-19)
+
+The Windows application manifest now requests `requireAdministrator` with `uiAccess=false` for debug and release builds, retaining the Tauri Common Controls dependency. Windows handles authorization; cancellation cancels launch. The NSIS installer remains per-user, and Ubuntu does not request root at runtime. This is not secure-desktop or unattended-login support and does not bypass game input filtering. Published 0.1.22 packages are unchanged. Installation/profile behavior and outstanding physical UAC/upgrade checks are recorded in [Windows installation](WINDOWS_INSTALL.md); historical “no automatic elevation” records below describe their original versions.
+
+## File-transfer source candidate (2026-10-10)
+
+This candidate added independent Files sessions, explicit receiver enablement, per-connection approval and per-file native Open/Save As selection for Ubuntu and Windows. It streams bounded chunks with full SHA-256 verification, a shared file bandwidth budget and non-overwriting publication. The usage, storage/authorization boundaries and known limits are in [file transfer](FILES.md).
 
 The frontend build and synthetic file/account/device regressions have passed locally. Native/service/transport tests and Windows CI are recorded separately as they finish; this paragraph does not claim a new installer was released or physical Windows transfer was accepted. The historical WI-005 plan below also requires resume, compression and broader performance validation; those requirements remain unimplemented or unverified and the full work item is not complete.
 

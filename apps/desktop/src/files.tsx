@@ -51,50 +51,6 @@ const transferText = (transfer: Transfer) =>
     failed: "传输失败",
   })[transfer.state];
 
-export function FilesControls({
-  state,
-  busy,
-  act,
-  prepareTransport,
-}: {
-  state: FileState;
-  busy: boolean;
-  act: FileAction;
-  prepareTransport: () => Promise<void>;
-}) {
-  return (
-    <div className="sharing-panel file-sharing-panel">
-      <label className="preference-row">
-        <span>
-          <strong>允许接收文件</strong>
-          <small>每次连接需批准，每个文件需选择保存位置。</small>
-        </span>
-        <input
-          type="checkbox"
-          role="switch"
-          aria-label="允许接收文件"
-          checked={!!state.filesEnabled}
-          disabled={busy || !state.deviceId}
-          onChange={() =>
-            void act(
-              async () => {
-                if (!state.filesEnabled) await prepareTransport();
-                await invoke("files_enable", { enabled: !state.filesEnabled });
-              },
-              state.filesEnabled
-                ? "已停止接收文件，现有文件连接已结束"
-                : "已允许接收文件，请逐次批准连接",
-            )
-          }
-        />
-      </label>
-      <p className="hint">
-        独立于屏幕共享；关闭会断开接收连接，重启应用后需重新开启。
-      </p>
-    </div>
-  );
-}
-
 export function FilesPanel({
   requests,
   devices,

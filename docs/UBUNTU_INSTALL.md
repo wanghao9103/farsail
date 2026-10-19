@@ -6,12 +6,18 @@ The Ubuntu client provides the account, device and connection interface and reus
 
 ## Run from source
 
+The current source uses **Allow remote connections** for incoming file requests on Ubuntu; there is no separate receiving switch and no local screen-host capability. The setting is initially off, saves your choice and restores it after an ordinary restart only after the same login/device and native transport are validated. Turning it off stops incoming file connections; logout clears enabled preferences. Each file connection still needs approval and each received file needs a native save destination. Published 0.1.22 packages do not include this change and still have a separate receiving switch that is off after restarting.
+
+With the current source, closing the main window keeps file connections running. An available tray offers “打开 FarSail” (Open FarSail) and “退出 FarSail” (Quit FarSail); without a tray host the window minimizes to the taskbar. The sidebar also offers Quit, and starting FarSail again reopens its existing window. Use the main window for pending connection approvals and file-save choices. Published 0.1.22 does not include this behavior.
+
+Run FarSail as the signed-in desktop user, without `sudo`. Controlling a Windows host and transferring files do not require root; installation/update authorization is separate from application runtime permissions. The Windows startup UAC policy does not apply to Ubuntu.
+
 Use a logged-in Ubuntu desktop with an unlocked login keyring, Rust 1.93.0 and Node/npm. Ubuntu CI uses the 24.04 baseline on separate native x64 and ARM64 runners. ARM64 uses `aarch64-unknown-linux-gnu` and Debian architecture `arm64`; earlier local native checks used x64 Ubuntu 26.04.1. Older Ubuntu releases, 32-bit ARM and other distributions are outside the verified scope. Tauri uses WebKitGTK 4.1 on Linux; see the [official prerequisites](https://v2.tauri.app/start/prerequisites/).
 
 ```bash
 sudo apt update
 sudo apt install build-essential curl pkg-config libwebkit2gtk-4.1-dev \
-  libgtk-3-dev librsvg2-dev patchelf gnome-keyring fonts-noto-cjk pkexec
+  libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf gnome-keyring fonts-noto-cjk pkexec
 npm ci
 npm run tauri -w @farsail/desktop -- dev
 ```
@@ -67,6 +73,6 @@ sudo apt install xvfb dbus-x11
 bash scripts/test-desktop-linux.sh
 ```
 
-The script runs Rust tests, Clippy, the frontend and native build, then creates an isolated session bus, data directory and keyring. The actual WebKitGTK window checks Linux metadata, unavailable host controls, workspace bounds, settings IPC and binary media IPC. The Ubuntu workflow also runs the synthetic account/device and viewer regressions using Playwright WebKit and builds a Debian artifact. Local checks do not establish Ubuntu-to-Windows physical two-computer operation, a Wayland session, Ubuntu 24.04 installation or a public release.
+The script runs Rust tests, Clippy, the frontend and native build, then creates an isolated session bus, data directory and keyring. The actual WebKitGTK window checks Linux metadata, the absence of local screen-host capability, workspace bounds, settings IPC and binary media IPC. The Ubuntu workflow also runs the synthetic account/device and viewer regressions using Playwright WebKit and builds a Debian artifact. Local checks do not establish Ubuntu-to-Windows physical two-computer operation, a Wayland session, Ubuntu 24.04 installation or a public release.
 
 For Ubuntu binding HTTP 422 or distinct login feedback, follow the [production upgrade steps](UPGRADE_UBUNTU_LOGIN.md), then install the current desktop 0.1.21; 0.1.18 is the historical bootstrap version for that fix.

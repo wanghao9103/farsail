@@ -8,9 +8,15 @@
 
 Ubuntu 控制端适配、源码运行、Debian 打包与 Secret Service 边界见 [Ubuntu 桌面客户端](UBUNTU_INSTALL.zh-CN.md)。Linux 本机屏幕共享暂不可用。
 
-0.1.10 的本机共享与远程值守偏好见 [SHARE-020](verification/WI-SHARE-020.zh-CN.md)。DPAPI 只保存这两项已成功开启的选择及服务/账号/设备/登录会话范围，不保存高级连接参数。原生启动仅尝试恢复一次，先重验登录、心跳、传输和桌面，再发布共享能力；界面分别显示记住的意图和有效活动。手动关闭、退出登录、身份变化会取消迟到恢复；普通关窗或故障停止活动而保留有效偏好。首次默认关闭，仍需 Windows 已登录且应用运行，不提供服务、自启动或安全桌面支持。
+当前源码使用**允许远程连接**统一接收屏幕与文件请求；Windows 同时支持两者，Ubuntu 仅支持文件。首次默认关闭，保存选择后仅在同一登录/设备和所需原生服务验证通过时恢复。关闭开关会停止本机接入的屏幕与文件会话，退出登录或身份变更清除开启偏好。已发布的 0.1.22 安装包不含此次变化；文件授权、逐次批准连接及逐文件原生保存仍独立，见[文件传输](FILES.zh-CN.md)。
+
+0.1.10 的本机共享与远程值守偏好见 [SHARE-020](verification/WI-SHARE-020.zh-CN.md)。DPAPI 只保存这两项已成功开启的选择及服务/账号/设备/登录会话范围，不保存高级连接参数。原生启动仅尝试恢复一次，先重验登录、心跳、传输和桌面，再发布共享能力；界面分别显示记住的意图和有效活动。手动关闭、退出登录、身份变化会取消迟到恢复；明确退出应用或故障停止活动而保留有效偏好。首次默认关闭，仍需 Windows 已登录且应用运行，不提供服务、自启动或安全桌面支持。
+
+当前源码关闭主窗口后，已开启的远程访问和文件传输继续运行。系统托盘可用时隐藏到托盘，否则最小化到任务栏。通过托盘“打开 FarSail”或再次启动 FarSail 可打开已有窗口；从托盘或侧栏选择“退出 FarSail”才停止连接并退出。待批准请求和文件保存选择仍需在主窗口本地处理。关闭独立查看窗口仍只结束该窗口的会话。这不等于开机自启动或系统服务，0.1.22 不含此行为。
 
 Windows 客户端位于 `apps/desktop`，React/Vite 页面调用 Tauri 2 命令，账号、设备和授权 HTTP 请求由 `crates/client` 发出。服务协议见 [API.md](API.zh-CN.md)，传输见 [TRANSPORT.md](TRANSPORT.zh-CN.md)，画面与输入细节见 [REMOTE.md](REMOTE.zh-CN.md)。Windows 远程查看与鼠标键盘基线已接入。当前源码候选也包含 Ubuntu/Windows 独立[文件传输](FILES.zh-CN.md)，续传/压缩和物理 Windows 验证不属于此次基线。
+
+当前 Windows 源码在启动时通过系统 UAC 提示申请管理员权限，取消授权会取消本次启动。Ubuntu 继续以当前桌面用户运行，控制 Windows 或传输文件不申请 root 权限。已发布的 0.1.22 安装包不含此启动策略，账号配置与安全桌面边界见 [Windows 安装说明](WINDOWS_INSTALL.zh-CN.md)。
 
 无需开发环境的 Windows x64 预览安装、WebView2、未签名说明及第二台电脑联调步骤见 [WINDOWS_INSTALL.md](WINDOWS_INSTALL.zh-CN.md)；固定下载与实际验证结果见 [WI-008B](verification/WI-008B.zh-CN.md)。
 
@@ -18,7 +24,7 @@ Windows 客户端位于 `apps/desktop`，React/Vite 页面调用 Tauri 2 命令�
 
 ## 本地运行
 
-需要 Windows、Rust 1.93、Node/npm 和 Docker。服务端示例只绑定回环，测试邮件只进入本地 Mailpit。
+需要 Windows、Rust 1.93、Node/npm 和 Docker。服务端示例只绑定回环，测试邮件只进入本地 Mailpit。 当前 Windows 清单也适用于 debug 构建：桌面开发与原生测试命令需在管理员终端运行；命令行创建进程不会自动显示资源管理器启动时的授权提示。
 
 ```powershell
 ./scripts/start-local.ps1
@@ -36,7 +42,7 @@ npm run tauri -w @farsail/desktop -- dev
 1. 注册账号，去 Mailpit 读取本地验证令牌，在验证邮箱页提交；真实部署须配置 TLS SMTP。
 2. 登录后在总览中确认绑定本机。Rust 生成 Ed25519 密钥，签署服务挑战，初始声明 `can_host=false`、`can_files=false`。绑定后启动心跳；退出登录或切换账号会清掉旧的登录与设备凭据、停止旧身份心跳。
 3. “我的设备”逐页读取完整同账号设备，包含离线和管理员停用项，可搜索、按能力筛选、改名和解绑。“账号安全”可改密、退出及撤销其他登录会话。
-4. “设置”启动安全传输并开启本机共享后，Windows DXGI 探测成功才声明 `can_host=true`。同账号另一客户端刷新设备列表即可选择在线主机；目标端仍须逐次明确批准查看或控制，批准窗口显示申请邮箱及设备名。发起端点“连接并查看”，viewer 收到二进制 JPEG，显示显示器选择、实际接收 FPS、路径 RTT 和双方可比较校验码。`control` 允许鼠标键盘，`view` 仅看画面；双方都能本地立即停止。文件需要独立申请权限并获得批准，请按[文件传输](FILES.zh-CN.md)操作，不能复用屏幕/控制批准。
+4. 在“设置”启动安全传输并开启“允许远程连接”后，Windows DXGI 探测成功才声明 `can_host=true`。同账号另一客户端刷新设备列表即可选择在线主机；目标端默认仍须逐次明确批准查看或控制，批准窗口显示申请邮箱及设备名。发起端点“连接并查看”，viewer 收到二进制 JPEG，显示显示器选择、实际接收 FPS、路径 RTT 和双方可比较校验码。`control` 允许鼠标键盘，`view` 仅看画面；双方都能本地立即停止。文件需要独立申请权限并获得批准，请按[文件传输](FILES.zh-CN.md)操作，不能复用屏幕/控制批准。
 5. 管理员账号可在同一客户端查看用户、登录会话和审计元数据，启停账号/设备、调整注册策略、创建和撤销注册邀请。管理员无法代替目标设备批准远控。
 
 <a id="credential-boundaries"></a>
@@ -47,7 +53,7 @@ npm run tauri -w @farsail/desktop -- dev
 - 登录会话、设备凭据、每个服务地址与账号对应的设备私钥分别存放在 Windows 用户作用域的 DPAPI 加密文件中，目录由 Tauri 的 `app_local_data_dir` 提供。iroh 使用这同一把设备私钥。退出先取消本地会话，再删除登录和设备凭据；保留私钥以便同一账号下次重新证明设备身份。移动端需另实现平台安全存储适配。
 - 公网服务地址只能使用证书验证的 HTTPS，包含 HTTPS IP；显式回环地址才允许 HTTP。请求不跟随重定向，响应单次上限 1 MiB。不存在跳过证书验证的开关。
 - 登录撤销和设备 token 失效由服务端决定。网络离线时退出仍删除本机凭据，同时报告远端撤销未确认。下次登录须重新签名绑定设备。授权 grant 留在原生内存，通过设备认证的 iroh 握手交给正确的发起端，页面不接触该凭据。原生层最多处理 8 个同时握手、16 个活跃会话；退出或重启传输后的旧启动/旧连接结果不会写回。
-- 同一配置目录有排他锁，第二个桌面进程不能并发读取并轮换同一刷新令牌。debug IPC 测试可以指定独立的 `FARSAIL_TEST_PROFILE_DIR`。本机共享关闭、退出或窗口关闭先停采集和输入，服务端更新/撤销随后尽力执行；租约仍是兜底边界。
+- 同一配置目录有排他锁，第二个桌面进程不能并发读取并轮换同一刷新令牌。debug IPC 测试可以指定独立的 `FARSAIL_TEST_PROFILE_DIR`。关闭远程连接、退出登录或明确退出应用先停采集、输入和本机接入的文件操作，服务端更新/撤销随后尽力执行；租约仍是兜底边界。
 
 <a id="known-boundaries-and-wi-005006-interfaces"></a>
 
@@ -55,4 +61,4 @@ npm run tauri -w @farsail/desktop -- dev
 
 JPEG 低帧率链路是当前可用基线。系统安全桌面、UAC、无人登录、跨 NAT/公网及第二台 Windows 尚未验证。视频编码、4:4:4 和带宽自适应属于 WI-006。网页预览只能检查布局，无法代表 Windows 原生采集、输入或 IPC。
 
-原生接口 `NativeClient::start_transport`、`connect_transport`、`transport_session` 和 `farsail_transport::Session::send/receive` 仍供文件工作项复用。`Media`、`Control`、`File` 有独立权限和尺寸边界。当前文件基线仅在明确开启本机接收后声明 `can_files=true`；首次绑定与普通重启仍保持 `can_files=false`。已实现分块、SHA-256、共享文件带宽预算和禁止覆盖的安全目标，尚不支持断线续传，见[文件传输](FILES.zh-CN.md)。本机双端验证直连及强制 TLS relay，但没有公网 TLS 代理、第二台电脑、跨 NAT 穿透率或手机真机证据。
+原生接口 `NativeClient::start_transport`、`connect_transport`、`transport_session` 和 `farsail_transport::Session::send/receive` 仍供文件工作项复用。`Media`、`Control`、`File` 有独立权限和尺寸边界。当前文件基线由统一远程设置控制，仅在原生文件处理可用时声明 `can_files=true`。首次绑定保持 `can_files=false`，启动恢复必须重新验证保存的选择后再发布能力。已实现分块、SHA-256、共享文件带宽预算和禁止覆盖的安全目标，尚不支持断线续传，见[文件传输](FILES.zh-CN.md)。本机双端验证直连及强制 TLS relay，但没有公网 TLS 代理、第二台电脑、跨 NAT 穿透率或手机真机证据。

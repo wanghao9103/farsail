@@ -311,6 +311,8 @@ pub struct NativeClient {
     auto_approve: std::sync::atomic::AtomicU64,
     session_tx: broadcast::Sender<(Session, bool)>,
     capability_lock: Mutex<()>,
+    // Keep activation, preference persistence and rollback in one ordered operation.
+    sharing_activation: Mutex<()>,
     preferences: std::sync::Mutex<preferences::Preferences>,
 }
 
@@ -354,13 +356,15 @@ impl NativeClient {
             auto_approve: std::sync::atomic::AtomicU64::new(0),
             session_tx,
             capability_lock: Mutex::new(()),
+            sharing_activation: Mutex::new(()),
             preferences: std::sync::Mutex::new(preferences),
         })
     }
     pub async fn public_state(&self) -> Value {
         let s = self.state.lock().await;
         let preferences = self.preferences.lock().unwrap().public(&s);
-        let mut result = json!({"server": s.base, "signedIn": s.login.is_some(), "deviceId": s.device.as_ref().map(|x| &x.id), "deviceRestoreError": s.device_restore_error, "filesEnabled": self.files_enabled(), "sharing":self.hosting_enabled(), "remoteWatch":self.auto_approve.load(Ordering::SeqCst) & 1 == 1, "sharePreferences":preferences});
+        let files_enabled = self.files_enabled();
+        let mut result = json!({"server": s.base, "signedIn": s.login.is_some(), "deviceId": s.device.as_ref().map(|x| &x.id), "deviceRestoreError": s.device_restore_error, "filesEnabled": files_enabled, "remoteAccessEnabled":files_enabled, "sharing":self.hosting_enabled(), "remoteWatch":self.auto_approve.load(Ordering::SeqCst) & 1 == 1, "sharePreferences":preferences});
         result["defaultRelay"] = json!(
             default_transport_config(&s.base)
                 .ok()
@@ -393,6 +397,11 @@ impl NativeClient {
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |state| {
                 Some(state.wrapping_add(2) & !1)
             });
+    }
+    /// Cancel both incoming capabilities before awaiting storage, sessions or the coordinator.
+    pub fn disable_remote_access_local(&self) {
+        self.disable_host_local();
+        self.disable_files_local();
     }
     /// Runtime-only switch. Explicit user choices use the separate preference methods.
     pub fn set_remote_watch(&self, enabled: bool) -> Result<()> {
@@ -513,8 +522,128 @@ impl NativeClient {
     pub async fn set_host_capability(&self, enabled: bool) -> Result<Value> {
         self.set_host_capability_inner(enabled, None).await
     }
-    async fn set_host_capability_for_preference(&self, revision: u64) -> Result<Value> {
-        self.set_host_capability_inner(true, Some(revision)).await
+    pub async fn disable_remote_access(&self) -> Result<Value> {
+        self.set_remote_access_capability(false, false, None).await
+    }
+    async fn rollback_remote_access_preference(&self, revision: u64) -> Result<()> {
+        // The caller holds sharing_activation through persistence and this rollback.
+        // Recheck after waiting for the capability lock: opting out or changing identity wins.
+        let _guard = self.capability_lock.lock().await;
+        let identity = {
+            let state = self.state.lock().await;
+            if !self.preference_current(revision) {
+                return Ok(());
+            }
+            self.disable_remote_access_local();
+            DeviceSnapshot::from_state(&state)?
+        };
+        self.close_incoming_sessions(false).await;
+        self.transport_request_as(
+            &identity,
+            Method::POST,
+            "/v1/devices/capability",
+            None,
+            Some(json!({"generation":identity.generation,"can_host":false,"can_files":false})),
+        )
+        .await?;
+        Ok(())
+    }
+    async fn enable_remote_access_for_preference(
+        &self,
+        screen: bool,
+        revision: u64,
+    ) -> Result<Value> {
+        self.set_remote_access_capability(true, screen, Some(revision))
+            .await
+    }
+    async fn set_remote_access_capability(
+        &self,
+        enabled: bool,
+        screen: bool,
+        preference: Option<u64>,
+    ) -> Result<Value> {
+        if !enabled {
+            self.disable_remote_access_local();
+            self.close_incoming_sessions(false).await;
+        }
+        let host_started = self.host_state.load(Ordering::SeqCst);
+        let files_started = self.files_state.load(Ordering::SeqCst);
+        let _guard = self.capability_lock.lock().await;
+        if !enabled {
+            // A queued opt-out wins over an activation that finished while this call waited.
+            self.disable_remote_access_local();
+            self.close_incoming_sessions(false).await;
+        } else if self.host_state.load(Ordering::SeqCst) != host_started
+            || self.files_state.load(Ordering::SeqCst) != files_started
+            || preference.is_some_and(|r| !self.preference_current(r))
+            || !self.transport_running().await
+        {
+            return Err(Error::Invalid("remote access start cancelled".into()));
+        }
+        let identity = DeviceSnapshot::from_state(&*self.state.lock().await)?;
+        let result = self
+            .transport_request_as(
+                &identity,
+                Method::POST,
+                "/v1/devices/capability",
+                None,
+                Some(json!({"generation":identity.generation,"can_host":enabled && screen,"can_files":enabled})),
+            )
+            .await;
+        if !enabled {
+            return result;
+        }
+        let current = self.host_state.load(Ordering::SeqCst) == host_started
+            && self.files_state.load(Ordering::SeqCst) == files_started
+            && preference.is_none_or(|r| self.preference_current(r))
+            && !self.signing_out.load(Ordering::SeqCst)
+            && self.transport_running().await
+            && identity.current(&*self.state.lock().await);
+        if result.is_ok()
+            && current
+            && self
+                .host_state
+                .compare_exchange(
+                    host_started,
+                    (host_started & !1) | u64::from(screen),
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                )
+                .is_ok()
+            && self
+                .files_state
+                .compare_exchange(
+                    files_started,
+                    files_started | 1,
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                )
+                .is_ok()
+        {
+            return result;
+        }
+        // Fail both capabilities closed, including a server write whose response was lost.
+        // The captured identity prevents cleanup from affecting a later account/server.
+        self.disable_remote_access_local();
+        self.close_incoming_sessions(false).await;
+        let _ = tokio::time::timeout(
+            Duration::from_secs(2),
+            self.transport_request_as(
+                &identity,
+                Method::POST,
+                "/v1/devices/capability",
+                None,
+                Some(json!({"generation":identity.generation,"can_host":false,"can_files":false})),
+            ),
+        )
+        .await;
+        match result {
+            Err(Error::Http(422, _)) => Err(Error::Invalid(
+                "当前协调服务尚不支持文件传输，请先升级服务端。".into(),
+            )),
+            Err(error) => Err(error),
+            Ok(_) => Err(Error::Invalid("remote access start cancelled".into())),
+        }
     }
     async fn set_host_capability_inner(
         &self,
@@ -620,6 +749,9 @@ impl NativeClient {
             .ok();
     }
     pub async fn close_file_sessions(&self) {
+        self.close_incoming_sessions(true).await;
+    }
+    async fn close_incoming_sessions(&self, files_only: bool) {
         let local = self.transport.lock().await.as_ref().map(Transport::id);
         let sessions: Vec<_> = self
             .transport_sessions
@@ -627,7 +759,7 @@ impl NativeClient {
             .await
             .iter()
             .filter(|(_, session)| {
-                session.permission() == RemotePermission::Files
+                (!files_only || session.permission() == RemotePermission::Files)
                     && local.is_some_and(|id| session.is_host(id))
             })
             .map(|(id, session)| (id.clone(), session.clone()))
@@ -638,7 +770,7 @@ impl NativeClient {
             .await
             .grant
             .iter()
-            .filter(|(_, grant)| grant.permission == RemotePermission::Files)
+            .filter(|(_, grant)| !files_only || grant.permission == RemotePermission::Files)
             .map(|(id, _)| id.clone())
             .collect();
         for (id, session) in sessions {
@@ -1892,10 +2024,8 @@ impl NativeClient {
         true
     }
     pub async fn stop_transport(&self) -> u64 {
-        let was_host = self.hosting_enabled();
-        let was_files = self.files_enabled();
-        self.disable_host_local();
-        self.disable_files_local();
+        let was_enabled = self.hosting_enabled() || self.files_enabled();
+        self.disable_remote_access_local();
         let mut epoch = self.transport_epoch.lock().await;
         *epoch = epoch.wrapping_add(1);
         let next = *epoch;
@@ -1915,13 +2045,9 @@ impl NativeClient {
                 transport.close().await;
             });
         }
-        if was_host {
+        if was_enabled {
             let _ =
-                tokio::time::timeout(Duration::from_secs(2), self.set_host_capability(false)).await;
-        }
-        if was_files {
-            let _ = tokio::time::timeout(Duration::from_secs(2), self.set_files_capability(false))
-                .await;
+                tokio::time::timeout(Duration::from_secs(2), self.disable_remote_access()).await;
         }
         next
     }
