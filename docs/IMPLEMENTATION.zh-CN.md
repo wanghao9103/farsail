@@ -4,6 +4,10 @@
 
 # FarSail 实施与接力记录
 
+## 客户端 0.1.27 更新体验与授权已发布（2026-10-19）
+
+不可变标签 `client-v0.1.27` 指向 `bca87a13e4ea246e0a5e5eed5ade4221d4c781ba`。[正式工作流](https://github.com/wanghao9103/farsail/actions/runs/39233924894)及[公开发行](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.27)通过三平台检查、签名和公开下载核验。移除重复更新说明，将原生和 IPC 内部错误转换为简短用户提示；Ubuntu 增加固定 root 助手、签名及版本复验、按账号保留授权与卸载撤销。两个 Linux 架构的生产签名包沙箱通过，不等同于真实桌面认证或完整系统重启验证。
+
 ## 客户端 0.1.24 画面流畅性更新已发布（2026-10-19）
 
 不可变标签 `client-v0.1.24` 指向 `c3ffb8aab093f2c3db4deeb98c7efcff97d9aa56`。[正式工作流](https://github.com/wanghao9103/farsail/actions/runs/39213734063)与[公开发行](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.24)的三平台原生/安装、签名和公开下载核验通过。新增真实本机认证 QUIC 回归验证无 ACK 时最多两帧在途、窗口恢复只送最新帧、单帧无后续采集也到期，以及未来 ACK 关闭。调整采集周期计时、复用 DXGI staging texture、启用运行时编码加速并清理 img title。采集目标 30 FPS 及合成编码基准不等同于用户游戏或双机实测帧率；这些现场性能仍待测量。

@@ -4,6 +4,10 @@
 
 # FarSail implementation and handoff record
 
+## Client 0.1.27 update feedback and authorization published (2026-10-19)
+
+The immutable `client-v0.1.27` tag points to `bca87a13e4ea246e0a5e5eed5ade4221d4c781ba`. The [release workflow](https://github.com/wanghao9103/farsail/actions/runs/39233924894) and [public release](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.27) passed three-platform checks, signatures and public-download verification. Repeated update explanations were removed and native/IPC diagnostics map to brief user messages. Ubuntu adds a fixed root helper, independent signature/version verification, account-scoped authorization and uninstall revocation. Both Linux architectures passed the production-signed package sandbox; this does not establish live desktop authentication or a full system reboot.
+
 ## Client 0.1.24 frame-flow update published (2026-10-19)
 
 The immutable `client-v0.1.24` tag points to `c3ffb8aab093f2c3db4deeb98c7efcff97d9aa56`. The [release workflow](https://github.com/wanghao9103/farsail/actions/runs/39213734063) and [public release](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.24) passed three-platform native/package, signature and public-download verification. New authenticated local QUIC regressions cover two-frame backpressure, latest-frame coalescing, single-frame expiry without further capture, and rejection of unsent ACKs. Changes include elapsed-time capture pacing, DXGI staging-texture reuse, runtime encoder acceleration and image-title removal. The 30 FPS cadence and synthetic JPEG benchmark do not establish actual user-game or two-computer frame rates; those remain unmeasured.
