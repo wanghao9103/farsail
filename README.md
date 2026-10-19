@@ -8,7 +8,7 @@
 
 # FarSail
 
-FarSail is an open-source remote desktop project with Windows and Ubuntu clients built using Rust, Tauri 2 and React, encrypted peer-to-peer connections, and self-hosted relay support. Bidirectional single-file transfer and an Ubuntu ARM64 client have been available since 0.1.21; version 0.1.22 added an update dialog and interface refinements. The latest public release is [0.1.23](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.23). Older installations need an upgrade for these additions. Mobile clients remain planned.
+FarSail is an open-source remote desktop project with Windows and Ubuntu clients built using Rust, Tauri 2 and React, encrypted peer-to-peer connections, and self-hosted relay support. Bidirectional single-file transfer and an Ubuntu ARM64 client have been available since 0.1.21; version 0.1.22 added an update dialog and interface refinements. The latest public release is [0.1.24](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.24). Older installations need an upgrade for these additions. Mobile clients remain planned.
 
 Version 0.1.23 replaces the separate screen/file receiving switches with **Allow remote connections**: Windows enables both capabilities, while Ubuntu enables files only. File connections still require approval and a native Save As choice for each received file. It also keeps the application running in the tray when its main window is closed; Windows requests administrator permission at startup through the system UAC prompt. See [Windows startup](docs/WINDOWS_INSTALL.md) and [file transfer](docs/FILES.md) for the current flow and restart behavior.
 
@@ -32,6 +32,8 @@ The account, device and authorization coordinator is written in Rust. **WI-001 (
 - 0.1.22 publishes [signed installers for all three targets](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.22) and advances the update channel. It adds an update dialog, simplifies interface copy and improves narrow-window layouts, file-list scrolling and remote toolbar menus. See [client updates](docs/CLIENT_UPDATES.md) for upgrade steps and verification limits.
 
 - 0.1.23 publishes [signed installers for all three targets](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.23), unifies remote screen/file enablement, requests Windows administrator permission at startup and keeps connections running when the main window closes to the tray. The [release workflow](https://github.com/wanghao9103/farsail/actions/runs/39208981511) and public-download checks passed; interactive UAC and physical game/two-computer acceptance remain pending.
+
+- 0.1.24 publishes [signed installers for all three targets](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.24), reduces fixed frame waits, pipelines at most two unacknowledged frames, reuses Windows capture textures, enables encoder acceleration and removes image-hover hints. The [release workflow](https://github.com/wanghao9103/farsail/actions/runs/39213734063) and public-download checks passed. A 30 FPS capture cadence is a target; game performance on user hardware remains unmeasured.
 
 These are recorded milestones. Local candidate work and its verification limits are retained in the verification documents; a local installer build is not a public release.
 

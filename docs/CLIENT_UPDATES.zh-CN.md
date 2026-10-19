@@ -12,7 +12,9 @@ GitHub Actions 构建 Windows x64 NSIS 安装包，以及 Ubuntu x64、ARM64 Deb
 
 2026-10-19，[正式签名发布工作流](https://github.com/wanghao9103/farsail/actions/runs/39199106307)及公开下载核验通过后，更新通道已推进到三平台 [0.1.22 签名版本](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.22)。已安装 0.1.20 或 0.1.21 的用户可打开“共享与设置 → 软件更新 → 检查更新”，下载后按提示安装。下文介绍的更新弹窗在升级到 0.1.22 后可用。
 
-更新通道现已提供 [0.1.23 签名版本](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.23)，由[正式发布工作流](https://github.com/wanghao9103/farsail/actions/runs/39208981511)从 `c217f20823e864ccd2d76bf19f29ad9ccd377309` 构建。三平台安装包、签名及公开下载核验通过，固定更新通道清单与版本附件一致。已有客户端可打开“共享与设置 → 软件更新 → 检查更新”，待进行中的连接结束后选择“安装并重启”。
+此前更新通道提供 [0.1.23 签名版本](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.23)，由[正式发布工作流](https://github.com/wanghao9103/farsail/actions/runs/39208981511)从 `c217f20823e864ccd2d76bf19f29ad9ccd377309` 构建。三平台安装包、签名及公开下载核验通过，固定更新通道清单与版本附件一致。已有客户端可打开“共享与设置 → 软件更新 → 检查更新”，待进行中的连接结束后选择“安装并重启”。
+
+更新通道现已推进至 [0.1.24](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.24)，由[正式工作流](https://github.com/wanghao9103/farsail/actions/runs/39213734063)从 `c3ffb8aab093f2c3db4deeb98c7efcff97d9aa56` 构建。三平台原生/安装检查、公开包签名及摘要通过，普通固定更新地址与版本清单逐字一致。本次改善画面调度和有界流水发送，并移除画面悬停提示；两端都应升级后比较实际效果。30 FPS 是调度目标，不是用户游戏现场实测值。
 
 0.1.23 将屏幕共享与文件接收统一为**允许远程连接**，保存开关选择并按平台启用能力。关闭主窗口后通过托盘/任务栏继续运行，手动安装前应从托盘或侧栏选择“退出 FarSail”。Windows 启动时通过系统 UAC 申请管理员权限，取消则取消本次启动；安装器仍采用当前用户模式。Windows CI 已验证嵌入清单、实际提权进程、托盘关闭/恢复及 NSIS `/UPDATE /R` 重启；交互式 UAC 确认/取消与真实已安装客户端跨版本更新仍未验证。当前行为见[文件传输](FILES.zh-CN.md)。
 

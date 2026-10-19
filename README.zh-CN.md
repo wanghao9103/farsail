@@ -8,7 +8,7 @@
 
 # FarSail · 遥舟
 
-FarSail 是正在开发中的开源远程桌面项目，Windows 与 Ubuntu 客户端采用 Rust、Tauri 2 和 React，支持加密的 P2P 连接及自建中继。自 0.1.21 起提供双向单文件传输与 Ubuntu ARM64 客户端，0.1.22 新增更新弹窗并优化界面，当前公开版本为 [0.1.23](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.23)。旧版需要升级才能获得新增能力；手机端仍属计划能力。
+FarSail 是正在开发中的开源远程桌面项目，Windows 与 Ubuntu 客户端采用 Rust、Tauri 2 和 React，支持加密的 P2P 连接及自建中继。自 0.1.21 起提供双向单文件传输与 Ubuntu ARM64 客户端，0.1.22 新增更新弹窗并优化界面，当前公开版本为 [0.1.24](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.24)。旧版需要升级才能获得新增能力；手机端仍属计划能力。
 
 0.1.23 将屏幕与文件接收开关统一为**允许远程连接**：Windows 同时开启两项能力，Ubuntu 仅开启文件能力。文件连接仍需批准，每个接收文件仍由本机选择保存位置。同时支持关闭主窗口后保留托盘运行；Windows 启动时通过系统 UAC 提示申请管理员权限。详情见 [Windows 启动](docs/WINDOWS_INSTALL.zh-CN.md)与[文件传输](docs/FILES.zh-CN.md)。
 
@@ -34,6 +34,8 @@ FarSail 是正在开发中的开源远程桌面项目，Windows 与 Ubuntu 客�
 - 0.1.22 已公开[三平台签名安装包](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.22)并推进更新通道，新增更新弹窗、精简界面文案，优化窄窗口布局、文件列表滚动与远程工具菜单。升级步骤和验收边界见[客户端更新](docs/CLIENT_UPDATES.zh-CN.md)。
 
 - 0.1.23 已公开[三平台签名安装包](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.23)，统一远程屏幕/文件开关，Windows 启动时申请管理员权限，关闭主窗口后保留托盘与连接。[正式发布工作流](https://github.com/wanghao9103/farsail/actions/runs/39208981511)及公开下载核验通过；交互式 UAC、物理游戏和双机验收仍待完成。
+
+- 0.1.24 已公开[三平台签名包](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.24)，减少远程画面的固定等待，使用最多两帧在途的有界发送，复用 Windows 采集纹理并启用编码加速，移除画面悬停提示。[正式发布](https://github.com/wanghao9103/farsail/actions/runs/39213734063)与公开下载核验通过；30 FPS 是采集调度目标，用户游戏现场帧率仍待测量。
 
 以上是已记录的版本进展。本地候选工作和验收边界保留在验证文档中，本地安装包构建成功不代表公开发布。
 
