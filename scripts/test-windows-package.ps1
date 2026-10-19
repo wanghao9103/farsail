@@ -74,8 +74,8 @@ function Start-App([bool]$SignedOut = $true, [Diagnostics.Process]$ExistingProce
         $script:appProcess.Refresh()
         if ($script:appProcess.HasExited) { throw 'Native release failed to start' }
         $script:mainWindowHandle = [FarSailApplicationChecks]::FindMainWindow($script:appProcess.Id)
-    } while (!$script:mainWindowHandle -and [DateTime]::UtcNow -lt $until)
-    if (!$script:mainWindowHandle) { throw 'No native window' }
+    } while ($script:mainWindowHandle -eq [IntPtr]::Zero -and [DateTime]::UtcNow -lt $until)
+    if ($script:mainWindowHandle -eq [IntPtr]::Zero) { throw 'No native window' }
     Assert-ProcessElevated $script:appProcess
     $script:root = [Windows.Automation.AutomationElement]::FromHandle($script:mainWindowHandle)
     if ($SignedOut) { $null = Find-UI '登录 FarSail'; $null = Find-UI '连接设置' }
