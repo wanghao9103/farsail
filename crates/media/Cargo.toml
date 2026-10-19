@@ -6,7 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-jpeg-encoder = "0.6"
+jpeg-encoder = { version = "0.6", features = ["simd"] }
 jpeg-decoder = "0.3"
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"

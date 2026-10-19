@@ -1,5 +1,6 @@
 //! Bounded JPEG baseline for remote desktop frames. Never call this H.265.
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 use std::io::Cursor;
 use std::time::{Duration, Instant};
 
@@ -8,6 +9,52 @@ pub const MAX_BYTES: usize = 4_000_000;
 /// JPEG payload budget, excluding QUIC/TLS/IP headers and retransmissions.
 pub const BASELINE_PAYLOAD_BPS: u64 = 6_000_000;
 const HEADER: usize = 49;
+
+/// Two frames can overlap a network round trip without an unbounded JPEG queue.
+/// ACKs are cumulative: an older frame becomes obsolete when a newer one arrives.
+#[derive(Default)]
+pub struct MediaWindow {
+    pending: VecDeque<u64>,
+    last_sent: u64,
+}
+
+impl MediaWindow {
+    pub fn is_empty(&self) -> bool {
+        self.pending.is_empty()
+    }
+
+    pub fn blocked_on(&self) -> Option<u64> {
+        (self.pending.len() >= 2).then(|| self.pending[0])
+    }
+
+    pub fn sent(&mut self, sequence: u64) -> Result<()> {
+        if sequence <= self.last_sent || self.blocked_on().is_some() {
+            return Err(Error::Invalid);
+        }
+        self.last_sent = sequence;
+        self.pending.push_back(sequence);
+        Ok(())
+    }
+
+    pub fn failed(&mut self, sequence: u64) {
+        self.pending.retain(|pending| *pending != sequence);
+    }
+
+    pub fn acknowledge(&mut self, sequence: u64) -> Result<bool> {
+        if sequence > self.last_sent {
+            return Err(Error::Invalid);
+        }
+        let before = self.pending.len();
+        while self
+            .pending
+            .front()
+            .is_some_and(|pending| *pending <= sequence)
+        {
+            self.pending.pop_front();
+        }
+        Ok(self.pending.len() < before)
+    }
+}
 
 pub struct ByteBudget {
     rate: u64,
@@ -201,6 +248,39 @@ impl JpegFrame {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn media_window_bounds_stalled_receivers_and_rejects_unsent_ack() {
+        let mut window = MediaWindow::default();
+        window.sent(1).unwrap();
+        window.sent(2).unwrap();
+        assert_eq!(window.blocked_on(), Some(1));
+        assert!(window.sent(3).is_err());
+        assert!(window.acknowledge(3).is_err());
+        assert_eq!(window.blocked_on(), Some(1));
+        assert!(window.acknowledge(1).unwrap());
+        window.sent(20).unwrap();
+        assert_eq!(window.blocked_on(), Some(2));
+        assert!(!window.acknowledge(1).unwrap());
+        assert!(window.acknowledge(20).unwrap());
+        assert_eq!(window.blocked_on(), None);
+        assert!(window.sent(20).is_err());
+    }
+
+    #[test]
+    fn failed_media_send_releases_capacity_without_reusing_sequence() {
+        let mut window = MediaWindow::default();
+        window.sent(1).unwrap();
+        window.sent(2).unwrap();
+        window.failed(2);
+        assert_eq!(window.blocked_on(), None);
+        assert!(!window.acknowledge(0).unwrap());
+        assert!(window.sent(2).is_err());
+        window.sent(3).unwrap();
+        assert_eq!(window.blocked_on(), Some(1));
+        assert!(window.acknowledge(2).unwrap());
+        window.sent(4).unwrap();
+        assert_eq!(window.blocked_on(), Some(3));
+    }
     #[test]
     fn hd_sampling_retains_colored_text_edges_and_byte_limit_still_applies() {
         let meta = FrameMeta {

@@ -1,7 +1,7 @@
 use crate::input_recovery::InputRecovery;
 use farsail_client::NativeClient;
 use farsail_core::RemotePermission;
-use farsail_media::{BASELINE_PAYLOAD_BPS, ByteBudget, JpegFrame, wait_for_ack};
+use farsail_media::{BASELINE_PAYLOAD_BPS, ByteBudget, JpegFrame, MediaWindow, wait_for_ack};
 use farsail_transport::{Channel, Frame, Session};
 use farsail_windows::{
     Capture, Display, Input, InputSink, displays, foreground_window, input_context_ready,
@@ -279,6 +279,127 @@ impl Live {
     }
 }
 
+async fn send_media(
+    session: Session,
+    alive: Arc<AtomicBool>,
+    video_profile: Arc<StdMutex<VideoProfile>>,
+    mut rx: watch::Receiver<Option<Vec<u8>>>,
+    mut ack_rx: watch::Receiver<u64>,
+) {
+    let mut budget = ByteBudget::new(BASELINE_PAYLOAD_BPS);
+    let mut missed = 0;
+    let mut window = MediaWindow::default();
+    let mut last_progress = tokio::time::Instant::now();
+    'sending: loop {
+        if !alive.load(Ordering::SeqCst) {
+            break;
+        }
+        match window.acknowledge(*ack_rx.borrow_and_update()) {
+            Ok(true) => {
+                missed = 0;
+                last_progress = tokio::time::Instant::now();
+            }
+            Ok(false) => (),
+            Err(_) => {
+                session.close_with_reason("invalid_media_ack");
+                break;
+            }
+        }
+        let deadline = Duration::from_secs(if video_profile.lock().unwrap().profile >= 2 {
+            5
+        } else {
+            2
+        });
+        let remaining = deadline.saturating_sub(last_progress.elapsed());
+        if let Some(sequence) = window.blocked_on() {
+            if !wait_for_ack(&mut ack_rx, sequence, remaining).await {
+                missed += 1;
+                last_progress = tokio::time::Instant::now();
+                if missed >= 3 {
+                    session.close_with_reason("media_timeout");
+                    break;
+                }
+            }
+            continue;
+        }
+        tokio::select! {
+            changed = rx.changed() => {
+                if changed.is_err() { break; }
+            }
+            changed = ack_rx.changed() => {
+                if changed.is_err() { break; }
+                continue;
+            }
+            _ = tokio::time::sleep(remaining), if !window.is_empty() => {
+                missed += 1;
+                last_progress = tokio::time::Instant::now();
+                if missed >= 3 {
+                    session.close_with_reason("media_timeout");
+                    break;
+                }
+                continue;
+            }
+        }
+        let (bytes, sequence) = loop {
+            if !alive.load(Ordering::SeqCst) {
+                break 'sending;
+            }
+            let Some(bytes) = rx.borrow_and_update().clone() else {
+                continue 'sending;
+            };
+            let frame = match JpegFrame::from_wire(&bytes) {
+                Ok(frame) => frame,
+                Err(_) => break 'sending,
+            };
+            let age = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(u64::MAX, |t| t.as_millis() as u64)
+                .saturating_sub(frame.meta.captured_ms);
+            let max_age = if frame.meta.width.max(frame.meta.height) > 1920 {
+                2000
+            } else {
+                700
+            };
+            if age > max_age {
+                continue 'sending;
+            }
+            let wait = budget.charge(bytes.len());
+            if !wait.is_zero() {
+                tokio::time::sleep(wait.min(Duration::from_millis(200))).await;
+                continue;
+            }
+            break (bytes, frame.meta.sequence);
+        };
+        let was_empty = window.is_empty();
+        if window.sent(sequence).is_err() {
+            break;
+        }
+        if was_empty {
+            last_progress = tokio::time::Instant::now();
+        }
+        let sent = session
+            .send(Frame {
+                channel: Channel::Media,
+                bytes,
+            })
+            .await;
+        if sent.is_err() && !matches!(sent, Err(farsail_transport::Error::Timeout)) {
+            break;
+        }
+        if sent.is_err() {
+            window.failed(sequence);
+            missed += 1;
+            last_progress = tokio::time::Instant::now();
+            if missed >= 3 {
+                session.close_with_reason("media_timeout");
+                break;
+            }
+        }
+    }
+    alive.store(false, Ordering::SeqCst);
+    session.close();
+}
+
 pub struct RemoteRuntime {
     updating: AtomicBool,
     client: Arc<NativeClient>,
@@ -422,7 +543,7 @@ impl RemoteRuntime {
         {
             return;
         }
-        let (tx, mut rx) = watch::channel::<Option<Vec<u8>>>(None);
+        let (tx, rx) = watch::channel::<Option<Vec<u8>>>(None);
         let initial_profile = *live.video_profile.lock().unwrap();
         let _ = live
             .session
@@ -438,7 +559,7 @@ impl RemoteRuntime {
                 bytes: initial_profile.packet(b"FSP1"),
             })
             .await;
-        let (ack_tx, mut ack_rx) = watch::channel(0u64);
+        let (ack_tx, ack_rx) = watch::channel(0u64);
         let alive = live.alive.clone();
         let selected = live.selected.clone();
         let current = live.current.clone();
@@ -457,6 +578,7 @@ impl RemoteRuntime {
             let mut last_frame: Option<JpegFrame> = None;
             let mut last_emit = std::time::Instant::now();
             while alive.load(Ordering::SeqCst) {
+                let frame_started = std::time::Instant::now();
                 let id = selected.load(Ordering::SeqCst);
                 let profile = video_profile.lock().unwrap().profile;
                 let revision = capture_revision.load(Ordering::SeqCst);
@@ -521,77 +643,21 @@ impl RemoteRuntime {
                         }
                     }
                 }
-                std::thread::sleep(Duration::from_millis(66));
-            }
-        });
-        let sender_live = live.clone();
-        let sender = tokio::spawn(async move {
-            let mut budget = ByteBudget::new(BASELINE_PAYLOAD_BPS);
-            let mut missed = 0;
-            'sending: loop {
-                if missed == 0 && rx.changed().await.is_err() {
-                    break;
-                }
-                let (bytes, sequence) = loop {
-                    if !sender_live.alive.load(Ordering::SeqCst) {
-                        break 'sending;
-                    }
-                    let Some(bytes) = rx.borrow_and_update().clone() else {
-                        continue 'sending;
-                    };
-                    let frame = match JpegFrame::from_wire(&bytes) {
-                        Ok(frame) => frame,
-                        Err(_) => break 'sending,
-                    };
-                    let age = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .map_or(u64::MAX, |t| t.as_millis() as u64)
-                        .saturating_sub(frame.meta.captured_ms);
-                    let max_age = if frame.meta.width.max(frame.meta.height) > 1920 {
-                        2000
-                    } else {
-                        700
-                    };
-                    if age > max_age && missed == 0 {
-                        continue 'sending;
-                    }
-                    let wait = budget.charge(bytes.len());
-                    if !wait.is_zero() {
-                        tokio::time::sleep(wait.min(Duration::from_millis(200))).await;
-                        continue;
-                    }
-                    break (bytes, frame.meta.sequence);
-                };
-                let sent = sender_live
-                    .session
-                    .send(Frame {
-                        channel: Channel::Media,
-                        bytes,
-                    })
-                    .await;
-                if sent.is_err() && !matches!(sent, Err(farsail_transport::Error::Timeout)) {
-                    break;
-                }
-                let ack_deadline = Duration::from_secs(
-                    if sender_live.video_profile.lock().unwrap().profile >= 2 {
-                        5
-                    } else {
-                        2
-                    },
+                // Capture and encoding consume the frame interval rather than
+                // adding a fixed pause after every frame. Never catch up in bursts.
+                std::thread::sleep(
+                    Duration::from_nanos(1_000_000_000 / 30)
+                        .saturating_sub(frame_started.elapsed()),
                 );
-                if sent.is_err() || !wait_for_ack(&mut ack_rx, sequence, ack_deadline).await {
-                    missed += 1;
-                    if missed >= 3 {
-                        sender_live.session.close_with_reason("media_timeout");
-                        break;
-                    }
-                } else {
-                    missed = 0;
-                }
             }
-            sender_live.alive.store(false, Ordering::SeqCst);
-            sender_live.session.close();
         });
+        let sender = tokio::spawn(send_media(
+            live.session.clone(),
+            live.alive.clone(),
+            live.video_profile.clone(),
+            rx,
+            ack_rx,
+        ));
         let mut input_order = InputOrder::default();
         let mut input_window = std::time::Instant::now();
         let mut input_count = 0u32;
@@ -714,7 +780,14 @@ impl RemoteRuntime {
                     && &frame.bytes[..4] == b"FSA1"
                 {
                     let sequence = u64::from_be_bytes(frame.bytes[4..12].try_into().unwrap());
-                    ack_tx.send_replace(sequence);
+                    ack_tx.send_if_modified(|confirmed| {
+                        if sequence > *confirmed {
+                            *confirmed = sequence;
+                            true
+                        } else {
+                            false
+                        }
+                    });
                 } else if frame.channel == Channel::Control
                     && live.session.permission() == RemotePermission::Control
                     && frame.bytes.len() <= 1024
@@ -1435,6 +1508,179 @@ mod tests {
             Ok("synthetic-input-grant".into())
         }
     }
+    async fn media_pair(
+        key: u8,
+    ) -> (
+        Session,
+        Session,
+        farsail_transport::Transport,
+        farsail_transport::Transport,
+    ) {
+        use farsail_transport::{Config, Transport};
+        let viewer = Transport::bind([key; 32], Config::default()).await.unwrap();
+        let host = Transport::bind([key + 1; 32], Config::default())
+            .await
+            .unwrap();
+        let authority = Arc::new(InputAuthority {
+            source: viewer.id(),
+            target: host.id(),
+        });
+        let accepting = tokio::spawn({
+            let host = host.clone();
+            let authority = authority.clone();
+            async move { host.accept(authority).await.unwrap() }
+        });
+        let source = viewer
+            .connect(
+                host.addr(),
+                "media-window-test",
+                RemotePermission::Control,
+                authority,
+            )
+            .await
+            .unwrap();
+        (source, accepting.await.unwrap(), viewer, host)
+    }
+
+    fn synthetic_media(sequence: u64) -> Vec<u8> {
+        JpegFrame::encode_rgb(
+            farsail_media::FrameMeta {
+                monitor: 1,
+                layout: 1,
+                sequence,
+                captured_ms: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64,
+                width: 64,
+                height: 32,
+                origin_x: 0,
+                origin_y: 0,
+            },
+            &[127; 64 * 32 * 3],
+            85,
+        )
+        .unwrap()
+        .to_wire()
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn media_pipeline_overlaps_ack_and_keeps_only_latest_waiting_frame() {
+        let (source, target, _viewer, _host) = media_pair(53).await;
+        let (frames, rx) = watch::channel(None);
+        let (acks, ack_rx) = watch::channel(0);
+        let alive = Arc::new(AtomicBool::new(true));
+        let sender = tokio::spawn(send_media(
+            target.clone(),
+            alive.clone(),
+            Arc::new(StdMutex::new(VideoProfile::default())),
+            rx,
+            ack_rx,
+        ));
+        let (received, mut viewer_frames) = tokio::sync::mpsc::channel(8);
+        let reader = tokio::spawn(async move {
+            while let Ok(frame) = source.receive().await {
+                let image = JpegFrame::from_wire(&frame.bytes).unwrap();
+                if received.send(image.meta.sequence).await.is_err() {
+                    break;
+                }
+            }
+        });
+        for sequence in [1, 2] {
+            frames.send_replace(Some(synthetic_media(sequence)));
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(1), viewer_frames.recv())
+                    .await
+                    .unwrap(),
+                Some(sequence)
+            );
+        }
+        // Neither frame has been ACKed. Producer updates must overwrite one
+        // latest-frame slot, not queue additional JPEGs on the connection.
+        for sequence in 3..=20 {
+            frames.send_replace(Some(synthetic_media(sequence)));
+        }
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        assert!(matches!(
+            viewer_frames.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ));
+        acks.send_replace(2);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), viewer_frames.recv())
+                .await
+                .unwrap(),
+            Some(20)
+        );
+        frames.send_replace(Some(synthetic_media(21)));
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), viewer_frames.recv())
+                .await
+                .unwrap(),
+            Some(21)
+        );
+        // A permanently stalled receiver must still terminate after the
+        // existing three bounded ACK deadlines, rather than grow a send queue.
+        tokio::time::timeout(Duration::from_secs(7), sender)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!alive.load(Ordering::SeqCst));
+        assert_eq!(target.end_reason(), "media_timeout");
+        tokio::time::timeout(Duration::from_secs(1), reader)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn single_unacknowledged_frame_expires_even_when_capture_stops_updating() {
+        let (source, target, _viewer, _host) = media_pair(55).await;
+        let (frames, rx) = watch::channel(None);
+        let (_acks, ack_rx) = watch::channel(0);
+        let alive = Arc::new(AtomicBool::new(true));
+        let sender = tokio::spawn(send_media(
+            target.clone(),
+            alive.clone(),
+            Arc::new(StdMutex::new(VideoProfile::default())),
+            rx,
+            ack_rx,
+        ));
+        frames.send_replace(Some(synthetic_media(1)));
+        source.receive().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(7), sender)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!alive.load(Ordering::SeqCst));
+        assert_eq!(target.end_reason(), "media_timeout");
+    }
+
+    #[tokio::test]
+    async fn unsent_media_ack_closes_without_spinning_or_sending_more_frames() {
+        let (source, target, _viewer, _host) = media_pair(57).await;
+        let (frames, rx) = watch::channel(None);
+        let (acks, ack_rx) = watch::channel(0);
+        let alive = Arc::new(AtomicBool::new(true));
+        let sender = tokio::spawn(send_media(
+            target.clone(),
+            alive.clone(),
+            Arc::new(StdMutex::new(VideoProfile::default())),
+            rx,
+            ack_rx,
+        ));
+        frames.send_replace(Some(synthetic_media(1)));
+        source.receive().await.unwrap();
+        acks.send_replace(999);
+        tokio::time::timeout(Duration::from_secs(1), sender)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!alive.load(Ordering::SeqCst));
+        assert_eq!(target.end_reason(), "invalid_media_ack");
+    }
+
     #[tokio::test]
     async fn authenticated_input_pause_keeps_media_and_explicit_resume_available() {
         use farsail_transport::{Config, Transport};

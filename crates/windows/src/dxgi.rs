@@ -35,6 +35,7 @@ pub struct Duplication {
     duplication: IDXGIOutputDuplication,
     pub rotation: u32,
     has_frame: bool,
+    staging: Option<(D3D11_TEXTURE2D_DESC, ID3D11Texture2D)>,
 }
 struct Held<'a>(&'a IDXGIOutputDuplication);
 impl Drop for Held<'_> {
@@ -106,6 +107,7 @@ impl Duplication {
                         duplication,
                         rotation,
                         has_frame: false,
+                        staging: None,
                     });
                 }
                 output_index += 1;
@@ -153,21 +155,32 @@ impl Duplication {
         desc.BindFlags = 0;
         desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ.0 as u32;
         desc.MiscFlags = 0;
-        let mut staging = None;
-        unsafe { self.device.CreateTexture2D(&desc, None, Some(&mut staging)) }
-            .map_err(unavailable)?;
-        let staging =
-            staging.ok_or_else(|| Error::Unavailable("D3D staging texture missing".into()))?;
-        unsafe { self.context.CopyResource(&staging, &texture) };
+        // Keep the GPU readback allocation across frames. A mode/descriptor
+        // change recreates it before CopyResource; mapped access remains scoped.
+        if self
+            .staging
+            .as_ref()
+            .is_none_or(|(cached, _)| *cached != desc)
+        {
+            let mut staging = None;
+            unsafe { self.device.CreateTexture2D(&desc, None, Some(&mut staging)) }
+                .map_err(unavailable)?;
+            self.staging = Some((
+                desc,
+                staging.ok_or_else(|| Error::Unavailable("D3D staging texture missing".into()))?,
+            ));
+        }
+        let (_, staging) = self.staging.as_ref().unwrap();
+        unsafe { self.context.CopyResource(staging, &texture) };
         let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
         unsafe {
             self.context
-                .Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
+                .Map(staging, 0, D3D11_MAP_READ, 0, Some(&mut mapped))
         }
         .map_err(unavailable)?;
         let _mapped = Mapped {
             context: &self.context,
-            texture: &staging,
+            texture: staging,
         };
         let width = desc.Width as usize;
         let height = desc.Height as usize;
