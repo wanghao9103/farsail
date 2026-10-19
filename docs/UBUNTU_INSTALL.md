@@ -31,6 +31,8 @@ Add this computer once on first use. Reopening the app or signing back into the 
 ## Build a Debian package
 
 ```bash
+cargo build --locked --release -p farsail-update-helper
+install -Dm755 target/release/farsail-update-helper .local/linux-update-helper/farsail-update-helper
 npm run tauri -w @farsail/desktop -- build --bundles deb \
   --config '{"bundle":{"createUpdaterArtifacts":false}}'
 sudo apt install ./target/release/bundle/deb/*.deb

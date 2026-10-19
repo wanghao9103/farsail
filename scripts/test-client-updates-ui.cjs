@@ -284,7 +284,7 @@ async function alignedActions(actions) {
     page.on("pageerror", (error) => errors.push(error.message));
     await page.addInitScript(nativeFixture, initial);
     try {
-      await page.goto("http://127.0.0.1:1420/");
+      await page.goto(process.env.UI_URL || "http://127.0.0.1:1420/");
       if (initial.signedIn === false)
         await page
           .getByRole("heading", { name: "登录 FarSail", exact: true })
@@ -587,17 +587,54 @@ async function alignedActions(actions) {
       );
       await untouchedPreferences(page);
     });
+    await scenario("internal-error-is-not-user-copy", {}, async (page) => {
+      await available(page);
+      const dialog = updateDialog(page);
+      await dialog.waitFor();
+      await page.evaluate(
+        () =>
+          (window.updateFixture.nextDownloadError =
+            "reqwest::Error SendRequest https://internal.invalid/private /tmp/updater.rs:123"),
+      );
+      await dialog
+        .getByRole("button", { name: "立即更新", exact: true })
+        .click();
+      await dialog.getByText("更新未完成，请重试。", { exact: true }).waitFor();
+      assert(
+        !/reqwest|internal\.invalid|updater\.rs/.test(
+          await page.locator("body").innerText(),
+        ),
+      );
+      assert.equal(await dialog.locator(".hint").count(), 0);
+      await dialog.getByRole("button", { name: "稍后", exact: true }).click();
+      await page
+        .getByRole("button", { name: "共享与设置", exact: true })
+        .click();
+      const settings = page.locator(".client-updates");
+      await settings
+        .getByText("更新未完成，请重试。", { exact: true })
+        .waitFor();
+      assert(
+        !/reqwest|internal\.invalid|updater\.rs/.test(
+          await settings.innerText(),
+        ),
+      );
+    });
     await scenario("download-failure-retry", {}, async (page) => {
       await available(page);
       const dialog = updateDialog(page);
       await dialog.waitFor();
       await page.evaluate(
-        () => (window.updateFixture.nextDownloadError = "更新签名校验失败"),
+        () =>
+          (window.updateFixture.nextDownloadError =
+            "更新包校验失败，请重新下载。"),
       );
       await dialog
         .getByRole("button", { name: "立即更新", exact: true })
         .click();
-      await dialog.getByText("更新签名校验失败", { exact: true }).waitFor();
+      await dialog
+        .getByText("更新包校验失败，请重新下载。", { exact: true })
+        .waitFor();
       assert.equal(
         await dialog
           .getByRole("button", { name: "安装并重启", exact: true })
@@ -629,14 +666,16 @@ async function alignedActions(actions) {
         update: {
           availableVersion: "0.1.22",
           phase: "error",
-          message: "更新签名校验失败",
+          message: "更新包校验失败，请重新下载。",
         },
       },
       async (page) => {
         const dialog = updateDialog(page);
         await dialog.waitFor();
         assert.equal(await showCount(page), 1);
-        await dialog.getByText("更新签名校验失败", { exact: true }).waitFor();
+        await dialog
+          .getByText("更新包校验失败，请重新下载。", { exact: true })
+          .waitFor();
         await dialog
           .getByRole("button", { name: "重试更新", exact: true })
           .click();

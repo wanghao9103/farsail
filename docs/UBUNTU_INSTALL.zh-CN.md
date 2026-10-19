@@ -31,6 +31,8 @@ npm run tauri -w @farsail/desktop -- dev
 ## 构建 Debian 安装包
 
 ```bash
+cargo build --locked --release -p farsail-update-helper
+install -Dm755 target/release/farsail-update-helper .local/linux-update-helper/farsail-update-helper
 npm run tauri -w @farsail/desktop -- build --bundles deb \
   --config '{"bundle":{"createUpdaterArtifacts":false}}'
 sudo apt install ./target/release/bundle/deb/*.deb

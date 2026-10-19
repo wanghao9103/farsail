@@ -1979,6 +1979,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "farsail-update-helper"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "fs2",
+ "libc",
+ "minisign-verify",
+ "semver",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "farsail-windows"
 version = "0.1.0"
 dependencies = [

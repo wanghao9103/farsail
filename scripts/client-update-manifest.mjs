@@ -82,6 +82,9 @@ export function buildManifest(
     throw new Error("Client updates require a stable semver version");
   if (!/^[a-f0-9]{40}$/.test(sourceCommit))
     throw new Error("Missing exact source commit");
+  const [major, minor, patch] = version.split(".").map(Number);
+  const requiresUpdateHelper =
+    major > 0 || minor > 1 || (minor === 1 && patch >= 25);
   const files = [];
   const platforms = {};
   for (const [platform, directory, suffix, target, debArchitecture] of [
@@ -149,6 +152,15 @@ export function buildManifest(
     )
       throw new Error(
         `Linux installer verification has not passed for ${platform}`,
+      );
+    if (
+      debArchitecture &&
+      requiresUpdateHelper &&
+      (metadata.update_helper_package !== "passed" ||
+        metadata.update_helper_signed_sandbox !== "passed")
+    )
+      throw new Error(
+        `Signed update helper verification has not passed for ${platform}`,
       );
     if (
       metadata.version !== version ||

@@ -6,7 +6,7 @@
 
 GitHub Actions builds Windows x64 NSIS installers and Ubuntu x64 and ARM64 Debian packages. Successful publication places all three installers in the versioned client release; Actions artifacts are temporary build attachments and are not the update channel. Existing clients without the updater need one manual installation of the first updater-enabled version. Server packages do not update the desktop application.
 
-In Settings, Software updates shows the installed version, check result and download progress. Automatic checking is enabled initially: the installed release checks shortly after startup and once per hour. Automatic downloading and installation is an optional setting. It waits for remote sessions and viewer windows to close, then installs and restarts. Ubuntu installation may require a system authorization prompt; Windows uses the existing per-user installer. Preferences survive restarts. Development builds do not check the public channel automatically.
+In Settings, Software updates shows the installed version, check result and download progress. Automatic checking is enabled initially: the installed release checks shortly after startup and once per hour. Automatic downloading and installation is an optional setting. It waits for remote sessions and viewer windows to close, then installs and restarts. Windows uses the existing per-user installer. Preferences survive restarts. Development builds do not check the public channel automatically.
 
 The channel is [client-updates](https://github.com/wanghao9103/farsail/releases/tag/client-updates), with the feed at `latest.json`. The [signed 0.1.21 release](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.21) and feed were publicly available on 2026-10-10 for Windows x64, Ubuntu x64 and Ubuntu ARM64. GitHub Actions advanced the channel after all three builds, native checks, signatures and public-download checks passed. Ubuntu 24.04 is the x64/ARM64 CI baseline; a local x64 build on Ubuntu 26.04 cannot establish ARM64 compatibility.
 
@@ -33,6 +33,18 @@ Choose Later to close the dialog without another automatic reminder for that ver
 The dialog groups downloading, download progress, retrying a failed update and Install and restart. When the total size is unknown, it shows the downloaded amount instead of a percentage. With automatic installation off, Update now downloads and verifies the package; then choose Install and restart. If a remote screen or file connection or an auxiliary window is still open, installation waits. End those activities and choose Install and restart again. With automatic installation on, the client retries the waiting installation automatically.
 
 Automatic checking controls scheduled discovery; automatic downloading and installation controls what happens to an available update. Enabling automatic downloading and installation also enables automatic checking. Turning off automatic checking alone does not cancel automatic processing of an update already found. Discovering a version, opening the dialog or dismissing it never enables either preference. Preferences survive restarts; invalid preference content disables both automatic settings rather than enabling them.
+
+## Ubuntu update authorization
+
+Version 0.1.25 removes repeated update explanations and maps failures to brief, actionable messages. Native diagnostics are not displayed in the update window. Its Debian package installs a root-owned helper and a dedicated Polkit action. The first successful in-app update authorizes the calling account for later signed FarSail updates. Upgrading through the older pkexec-based updater reuses that installation authorization; a manual installation without a caller identity waits for the first in-app update instead.
+
+The rule applies only to this helper's install action for the same account in an active local session. The helper independently verifies the embedded release key, signed version, package name and native architecture, rejects equal/older versions, and copies the package into a root-owned directory before invoking dpkg. It accepts signed bytes on standard input, never an arbitrary file path or command. Upgrades preserve authorization; uninstalling revokes it. To revoke it separately:
+
+```bash
+pkexec /usr/libexec/farsail-update-helper revoke
+```
+
+The signed-package sandbox tests signature rejection, metadata/version checks, account rule matching, explicit revocation and package maintenance scripts without changing the host installation. It does not establish actual desktop authentication, retained authorization after reboot, or managed-system policy precedence.
 
 ## Maintainer setup
 

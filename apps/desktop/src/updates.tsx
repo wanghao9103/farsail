@@ -53,7 +53,7 @@ export function useClientUpdates(enabled: boolean) {
     try {
       accept(await invoke<Status>(command, args));
     } catch (failure) {
-      setError(String(failure));
+      setError(updateError(failure));
     } finally {
       active.current = false;
       setBusy(false);
@@ -63,6 +63,26 @@ export function useClientUpdates(enabled: boolean) {
 }
 
 type Updates = ReturnType<typeof useClientUpdates>;
+
+// IPC can fail before the native updater maps an error. Never display arbitrary diagnostics.
+const updateMessages = new Set([
+  "暂时无法检查更新，请稍后重试。",
+  "更新通道暂无适用于当前系统架构的安装包，请稍后再检查。",
+  "当前系统架构暂不支持在线更新，请联系维护者。",
+  "更新包校验失败，请重新下载。",
+  "下载中断，请重试。",
+  "更新安装失败，请重试。",
+  "更新授权未完成，请重试。",
+  "无法保存更新设置，请重试。",
+  "更新任务正在进行，请稍候。",
+  "更新来源无效，请联系维护者。",
+  "请先检查更新。",
+  "请先下载更新。",
+]);
+function updateError(failure: unknown) {
+  const message = typeof failure === "string" ? failure : "";
+  return updateMessages.has(message) ? message : "更新未完成，请重试。";
+}
 
 export function useUpdatePrompt(updates: Updates, suspended: boolean) {
   const [open, setOpen] = useState(false);
@@ -177,16 +197,13 @@ export function UpdateDialog({
         <p className="muted">当前版本 {status.currentVersion}</p>
         {(error || !["idle", "available"].includes(status.phase)) && (
           <p role={error || status.phase === "error" ? "alert" : "status"}>
-            {error || status.message}
+            {error ||
+              (status.phase === "error"
+                ? updateError(status.message)
+                : status.message)}
           </p>
         )}
         <UpdateProgress status={status} />
-        <p className="hint">
-          远程连接结束后安装并重启；Ubuntu 安装时可能需要系统授权。
-        </p>
-        {status.preferences.autoInstall && (
-          <p className="hint">关闭窗口后继续自动更新，可在设置中关闭。</p>
-        )}
         <div className="actions update-dialog-actions">
           <button className="secondary" autoFocus onClick={onDismiss}>
             {status.phase === "installing"
@@ -300,10 +317,12 @@ export function UpdateSettings({
         />
         <span>自动下载并安装</span>
       </label>
-      <p className="hint">远程连接结束后安装并重启。</p>
       {(error || status.phase !== "idle") && (
         <p role={error || status.phase === "error" ? "alert" : "status"}>
-          {error || status.message}
+          {error ||
+            (status.phase === "error"
+              ? updateError(status.message)
+              : status.message)}
         </p>
       )}
       <UpdateProgress status={status} />

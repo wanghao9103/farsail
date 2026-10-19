@@ -64,23 +64,23 @@ const fixtures = [
   ["linux-arm64", "arm64.deb", "aarch64-unknown-linux-gnu", "arm64"],
   ["windows", "x64-setup.exe", "x86_64-pc-windows-msvc", null],
 ];
-function withArtifacts(run) {
+function withArtifacts(run, version = "0.1.20") {
   const root = mkdtempSync(join(tmpdir(), "farsail-update-"));
   try {
     for (const [platform, suffix, target, debArchitecture] of fixtures) {
       const dir = join(root, platform);
       mkdirSync(dir);
-      const name = `FarSail_0.1.20_${suffix}`;
+      const name = `FarSail_${version}_${suffix}`;
       const bytes = Buffer.from(
         `${debArchitecture ? "!<arch>\n" : "MZ"}fixture-${target}`,
       );
       const digest = createHash("sha256").update(bytes).digest("hex");
       writeFileSync(join(dir, name), bytes);
-      writeFileSync(join(dir, name + ".sig"), signature(bytes));
+      writeFileSync(join(dir, name + ".sig"), signature(bytes, version));
       writeFileSync(
         join(dir, "release-metadata.json"),
         JSON.stringify({
-          version: "0.1.20",
+          version,
           source_commit: commit,
           installer: name,
           installer_bytes: bytes.length,
@@ -93,6 +93,8 @@ function withArtifacts(run) {
                 native_debug_ipc: "passed",
                 linux_store: "passed",
                 package_dependencies: "passed",
+                update_helper_package: "passed",
+                update_helper_signed_sandbox: "passed",
               }
             : {}),
         }),
@@ -301,4 +303,30 @@ test("Windows installation verification remains required for all-platform public
       buildManifest(root, join(root, "missing-report"), config, commit),
     );
   });
+});
+
+test("0.1.25 publication requires the signed helper sandbox on both Linux architectures", () => {
+  const next = { ...config, version: "0.1.25" };
+  for (const platform of ["linux", "linux-arm64"]) {
+    for (const field of [
+      "update_helper_package",
+      "update_helper_signed_sandbox",
+    ]) {
+      withArtifacts((root) => {
+        changeMetadata(root, platform, { [field]: "not-run" });
+        assert.throws(
+          () => buildManifest(root, join(root, "output"), next, commit),
+          /Signed update helper verification/,
+        );
+      }, next.version);
+    }
+  }
+  withArtifacts(
+    (root) =>
+      assert.equal(
+        buildManifest(root, join(root, "output"), next, commit).version,
+        next.version,
+      ),
+    next.version,
+  );
 });

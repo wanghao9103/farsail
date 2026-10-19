@@ -12,6 +12,8 @@ esac
 npm ci
 npm run build
 cargo fmt --all -- --check
+cargo test --locked -p farsail-update-helper
+cargo clippy --locked -p farsail-update-helper --all-targets -- -D warnings
 cargo test -p farsail-client -p farsail-media -p farsail-windows -p farsail-desktop --lib
 cargo clippy -p farsail-client -p farsail-media -p farsail-windows -p farsail-desktop --all-targets -- -D warnings
 cargo build -p farsail-desktop

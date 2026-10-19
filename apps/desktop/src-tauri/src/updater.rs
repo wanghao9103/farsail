@@ -87,14 +87,15 @@ impl Runtime {
         status.message = message.into();
     }
     fn failed(&self, reason: impl std::fmt::Display) -> String {
-        let message = format!("更新未完成，当前版本仍可使用。{reason}");
+        let message = reason.to_string();
         self.phase("error", &message);
         message
     }
     pub fn preferences(&self, preferences: Preferences) -> Result<Status, String> {
         // Serialize preferences independently of network operations and persist before applying.
         let _writer = self.preference_write.lock().unwrap();
-        let bytes = serde_json::to_vec(&preferences).map_err(|e| e.to_string())?;
+        let bytes = serde_json::to_vec(&preferences)
+            .map_err(|e| user_error("preferences", e, "无法保存更新设置，请重试。"))?;
         let temporary = self.path.with_extension("json.new");
         let mut options = std::fs::OpenOptions::new();
         options.write(true).create(true).truncate(true);
@@ -104,11 +105,14 @@ impl Runtime {
             options.mode(0o600);
         }
         use std::io::Write;
-        let mut file = options.open(&temporary).map_err(|e| e.to_string())?;
+        let mut file = options
+            .open(&temporary)
+            .map_err(|e| user_error("preferences", e, "无法保存更新设置，请重试。"))?;
         file.write_all(&bytes)
             .and_then(|_| file.sync_all())
-            .map_err(|e| e.to_string())?;
-        std::fs::rename(temporary, &self.path).map_err(|e| e.to_string())?;
+            .map_err(|e| user_error("preferences", e, "无法保存更新设置，请重试。"))?;
+        std::fs::rename(temporary, &self.path)
+            .map_err(|e| user_error("preferences", e, "无法保存更新设置，请重试。"))?;
         self.status.lock().unwrap().preferences = preferences;
         Ok(self.snapshot())
     }
@@ -127,7 +131,7 @@ impl Runtime {
                 .timeout(Duration::from_secs(20));
             let mut update = builder
                 .build()
-                .map_err(|e| e.to_string())?
+                .map_err(check_error)?
                 .check()
                 .await
                 .map_err(check_error)?;
@@ -206,7 +210,7 @@ impl Runtime {
                 || {},
             )
             .await;
-        let bytes = result.map_err(|e| self.failed(e))?;
+        let bytes = result.map_err(|e| self.failed(download_error(e)))?;
         self.pending
             .lock()
             .unwrap()
@@ -240,17 +244,14 @@ impl Runtime {
             self.phase("waiting", "更新已就绪，等待屏幕或文件连接结束后安装。");
             return Ok(self.snapshot());
         }
-        self.phase(
-            "installing",
-            "正在安装更新，完成后将重新启动。Ubuntu 可能需要系统授权。",
-        );
+        self.phase("installing", "正在安装更新，完成后将重新启动。");
         let client = app.state::<Arc<NativeClient>>().inner().clone();
         client.cancel_sharing_restore();
         files.stop_all();
         remote.stop_all().await;
         let _ = tokio::time::timeout(Duration::from_secs(2), client.disable_remote_access()).await;
         client.stop_transport().await;
-        let result = tokio::task::spawn_blocking(move || update.install(bytes.as_slice())).await;
+        let result = tokio::task::spawn_blocking(move || install_update(update, &bytes)).await;
         match result {
             Ok(Ok(())) => {
                 app.restart();
@@ -258,12 +259,12 @@ impl Runtime {
             Ok(Err(e)) => {
                 remote.finish_update();
                 files.finish_update();
-                Err(self.failed(format!("{e} 请重新开启共享或连接后重试。")))
+                Err(self.failed(e))
             }
             Err(e) => {
                 remote.finish_update();
                 files.finish_update();
-                Err(self.failed(e))
+                Err(self.failed(user_error("installer task", e, "更新安装失败，请重试。")))
             }
         }
     }
@@ -296,6 +297,63 @@ impl Runtime {
         });
     }
 }
+fn install_update(update: Update, bytes: &[u8]) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::{
+            io::Write,
+            os::unix::fs::MetadataExt,
+            process::{Command, Stdio},
+        };
+        let helper = std::path::Path::new("/usr/libexec/farsail-update-helper");
+        if helper.exists() {
+            for path in helper.ancestors() {
+                let meta = std::fs::symlink_metadata(path)
+                    .map_err(|e| user_error("installer IO", e, "更新安装失败，请重试。"))?;
+                if meta.uid() != 0 || meta.mode() & 0o022 != 0 || meta.file_type().is_symlink() {
+                    return Err("更新安装失败，请重试。".into());
+                }
+            }
+            let mut child = Command::new("/usr/bin/pkexec")
+                .arg(helper)
+                .arg("install")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn()
+                .map_err(|e| user_error("installer IO", e, "更新安装失败，请重试。"))?;
+            let written = (|| -> std::io::Result<()> {
+                let mut stdin = child.stdin.take().unwrap();
+                let header = serde_json::json!({ "signature": update.signature });
+                writeln!(stdin, "{header}")?;
+                stdin.write_all(bytes)
+            })();
+            let output = child
+                .wait_with_output()
+                .map_err(|e| user_error("installer IO", e, "更新安装失败，请重试。"))?;
+            if !output.status.success() {
+                return Err(if matches!(output.status.code(), Some(126 | 127)) {
+                    "更新授权未完成，请重试。".into()
+                } else {
+                    user_error(
+                        "privileged installer",
+                        String::from_utf8_lossy(&output.stderr),
+                        "更新安装失败，请重试。",
+                    )
+                });
+            }
+            return written.map_err(|e| user_error("installer pipe", e, "更新安装失败，请重试。"));
+        }
+    }
+    // Older installations have no helper yet. This signed update installs it via dpkg once.
+    update.install(bytes).map_err(|e| {
+        if matches!(e, tauri_plugin_updater::Error::AuthenticationFailed) {
+            user_error("installer authorization", e, "更新授权未完成，请重试。")
+        } else {
+            user_error("installer", e, "更新安装失败，请重试。")
+        }
+    })
+}
 fn update_target(os: &str, arch: &str) -> Result<&'static str, String> {
     match (os, arch) {
         ("linux", "x86_64") => Ok("linux-x86_64-deb"),
@@ -305,13 +363,31 @@ fn update_target(os: &str, arch: &str) -> Result<&'static str, String> {
     }
 }
 fn check_error(error: tauri_plugin_updater::Error) -> String {
+    eprintln!("FarSail update check: {error}");
     match error {
         tauri_plugin_updater::Error::TargetNotFound(_)
         | tauri_plugin_updater::Error::TargetsNotFound(_) => {
             "更新通道暂无适用于当前系统架构的安装包，请稍后再检查。".into()
         }
-        _ => error.to_string(),
+        _ => "暂时无法检查更新，请稍后重试。".into(),
     }
+}
+fn user_error(operation: &str, error: impl std::fmt::Display, message: &str) -> String {
+    eprintln!("FarSail update {operation}: {error}");
+    message.into()
+}
+fn download_error(error: tauri_plugin_updater::Error) -> String {
+    use tauri_plugin_updater::Error;
+    let message = match &error {
+        Error::Minisign(_)
+        | Error::Base64(_)
+        | Error::SignatureUtf8(_)
+        | Error::SignedVersionMismatch { .. }
+        | Error::MissingSignedVersion
+        | Error::InvalidUpdaterFormat => "更新包校验失败，请重新下载。",
+        _ => "下载中断，请重试。",
+    };
+    user_error("download", error, message)
 }
 fn validate_download(url: &tauri::Url, version: &str, target: &str) -> Result<(), String> {
     let suffix = match target {
@@ -388,6 +464,44 @@ pub async fn update_install(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn public_errors_do_not_include_internal_diagnostics() {
+        use tauri_plugin_updater::Error;
+        let diagnostic = "reqwest /tmp/private/updater.rs:123 https://internal.invalid";
+        assert_eq!(
+            check_error(Error::Network(diagnostic.into())),
+            "暂时无法检查更新，请稍后重试。"
+        );
+        assert_eq!(
+            download_error(Error::Network(diagnostic.into())),
+            "下载中断，请重试。"
+        );
+        assert_eq!(
+            download_error(Error::SignedVersionMismatch {
+                signed: diagnostic.into(),
+                announced: "99.0.0".into()
+            }),
+            "更新包校验失败，请重新下载。"
+        );
+    }
+    #[test]
+    fn preferences_write_failure_is_friendly_and_does_not_change_the_setting() {
+        let path = std::env::temp_dir().join(format!(
+            "farsail-missing-update-dir-{}/child/updates.json",
+            std::process::id()
+        ));
+        let runtime = Runtime::new(path, "0.1.24".into()).unwrap();
+        let message = runtime
+            .preferences(Preferences {
+                auto_check: false,
+                auto_install: true,
+            })
+            .err()
+            .unwrap();
+        assert_eq!(message, "无法保存更新设置，请重试。");
+        assert!(runtime.snapshot().preferences.auto_check);
+        assert!(!runtime.snapshot().preferences.auto_install);
+    }
     #[test]
     fn update_source_must_match_repository_and_signed_version() {
         let url = "https://github.com/wanghao9103/farsail/releases/download/client-v0.1.21/FarSail_0.1.21_amd64.deb";

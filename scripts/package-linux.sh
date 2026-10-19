@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Native Linux Debian packaging; no emulated/cross target is accepted here.
 set -euo pipefail
+umask 022
 cd "$(dirname "$0")/.."
 native_target=$(rustc -vV | sed -n 's/^host: //p')
 target=${FARSAIL_LINUX_TARGET:-$native_target}
@@ -15,6 +16,8 @@ import fs from 'node:fs';
 const report=JSON.parse(fs.readFileSync('.local/linux-native-verification.json'));
 if(!/^[a-f0-9]{40}$/.test(process.env.GITHUB_SHA||'')||!report.ok||report.native_tray!=='passed'||report.target!==process.env.FARSAIL_PACKAGE_TARGET||report.source_commit!==process.env.GITHUB_SHA)throw Error('Packaging requires the native checks for this exact source and target');
 JS
+cargo build --locked --release --target "$target" -p farsail-update-helper
+install -Dm755 "${CARGO_TARGET_DIR:-target}/$target/release/farsail-update-helper" .local/linux-update-helper/farsail-update-helper
 if [[ -n ${TAURI_SIGNING_PRIVATE_KEY:-} ]]; then
   npm run tauri -w @farsail/desktop -- build --target "$target" --bundles deb --config src-tauri/tauri.linux.conf.json -- --locked
 else
@@ -30,6 +33,12 @@ extract=$(mktemp -d "$PWD/.local/deb-extracted.XXXXXX")
 trap 'rm -rf -- "$extract"' EXIT
 dpkg-deb -x "$package" "$extract"
 binary="$extract/usr/bin/farsail-desktop"
+node scripts/verify-linux-architecture.mjs "$extract/usr/libexec/farsail-update-helper" "$target"
+python3 scripts/test-update-helper-package.py "$package"
+cmp .local/linux-update-helper/farsail-update-helper "$extract/usr/libexec/farsail-update-helper"
+if [[ -n ${TAURI_SIGNING_PRIVATE_KEY:-} ]]; then
+  python3 scripts/test-update-helper-sandbox.py "$extract/usr/libexec/farsail-update-helper" "$package" "$package.sig"
+fi
 node scripts/verify-linux-architecture.mjs "$binary" "$target"
 ldd "$binary" | tee .local/deb-dependencies.txt
 if grep -Fq 'not found' .local/deb-dependencies.txt; then
@@ -51,5 +60,5 @@ const elf=verifyLinuxArchitecture(binary,target);
 const installer=`FarSail_${version}_${architecture}.deb`,bytes=fs.readFileSync(`.local/client-artifacts/${installer}`);
 const os=fs.readFileSync('/etc/os-release','utf8').match(/^PRETTY_NAME=(?:"([^"]+)"|(.+))$/m);
 if(!os)throw Error('Missing native Linux build OS identity');
-fs.writeFileSync('.local/client-artifacts/release-metadata.json',JSON.stringify({version,source_commit:process.env.GITHUB_SHA,installer,installer_sha256:crypto.createHash('sha256').update(bytes).digest('hex'),installer_bytes:bytes.length,target,deb_architecture:architecture,elf_machine:elf.machine,application_sha256:crypto.createHash('sha256').update(binary).digest('hex'),build_os:os[1]||os[2],native_debug_ipc:'passed',linux_store:'passed',native_tray:'passed',package_dependencies:'passed'},null,2));
+fs.writeFileSync('.local/client-artifacts/release-metadata.json',JSON.stringify({version,source_commit:process.env.GITHUB_SHA,installer,installer_sha256:crypto.createHash('sha256').update(bytes).digest('hex'),installer_bytes:bytes.length,target,deb_architecture:architecture,elf_machine:elf.machine,application_sha256:crypto.createHash('sha256').update(binary).digest('hex'),build_os:os[1]||os[2],native_debug_ipc:'passed',linux_store:'passed',native_tray:'passed',package_dependencies:'passed',update_helper_package:'passed',update_helper_signed_sandbox:process.env.TAURI_SIGNING_PRIVATE_KEY?'passed':'not-run'},null,2));
 JS
