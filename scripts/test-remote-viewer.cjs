@@ -197,6 +197,19 @@ const fs = require("node:fs");
       name: "切换远端窗口（Alt+Tab）",
       exact: true,
     });
+  const revealToolbar = async () => {
+    // A visibility check can race the auto-hide timer. Start from the hidden
+    // state, then keep the pointer over the toolbar while interacting with it.
+    const screen = await page.locator(".remote-screen").boundingBox();
+    assert(screen);
+    await page.mouse.move(
+      screen.x + screen.width / 2,
+      screen.y + screen.height / 2,
+    );
+    await page.locator(".viewer-toolbar").waitFor({ state: "hidden" });
+    await page.getByRole("button", { name: "显示工具栏", exact: true }).hover();
+    await page.locator(".viewer-toolbar").hover();
+  };
   await load();
   for (const [discovery, label] of [
     ["trying_direct", "正在尝试直连"],
@@ -225,9 +238,7 @@ const fs = require("node:fs");
   await page.waitForFunction(() =>
     document.querySelector(".viewer-status").textContent.includes("已直连"),
   );
-  if (!(await page.locator(".viewer-toolbar").isVisible())) {
-    await page.getByRole("button", { name: "显示工具栏", exact: true }).hover();
-  }
+  await revealToolbar();
   assert(await page.locator(".viewer-titlebar").isVisible());
   assert.equal(await page.getByLabel("画面分辨率").inputValue(), "-2");
   for (const [width, profile] of [
@@ -708,8 +719,7 @@ const fs = require("node:fs");
   }
   // System switching is sent to the remote input queue rather than handled by
   // the local desktop. A delayed release must finish before any shortcut key.
-  if (!(await page.locator(".viewer-toolbar").isVisible()))
-    await page.getByRole("button", { name: "显示工具栏", exact: true }).hover();
+  await revealToolbar();
   await page.getByText("更多操作", { exact: true }).click();
   await switchWindow().waitFor();
   await page.waitForTimeout(100);
@@ -901,8 +911,7 @@ const fs = require("node:fs");
   );
   // If native control is paused while release-all is pending, the shortcut's
   // old generation must not deliver any queued modifier or Tab events.
-  if (!(await page.locator(".viewer-toolbar").isVisible()))
-    await page.getByRole("button", { name: "显示工具栏", exact: true }).hover();
+  await revealToolbar();
   await page.getByText("更多操作", { exact: true }).click();
   await switchWindow().waitFor();
   await page.waitForTimeout(100);
