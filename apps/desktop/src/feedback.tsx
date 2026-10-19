@@ -62,7 +62,7 @@ export function failureMessage(raw: string) {
   if (/HTTP 409/i.test(raw)) return "状态已发生变化，请刷新后再试。";
   if (/HTTP 429/i.test(raw)) return "请求较多，请稍后再试。";
   if (/[\u3400-\u9fff]/.test(raw)) return raw;
-  return "未能完成本次操作。请稍后重试，技术详情可帮助定位问题。";
+  return "未能完成本次操作，请稍后重试。";
 }
 
 export function FailureDialog({

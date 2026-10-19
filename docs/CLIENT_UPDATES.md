@@ -14,6 +14,18 @@ ARM64 uses system name `aarch64`, Debian suffix `arm64.deb` and manifest target 
 
 Native ARM64 CI uses GitHub's official [hosted runner](https://docs.github.com/en/actions/how-tos/write-workflows/choose-where-workflows-run/choose-the-runner-for-a-job); an x64 build or available QEMU is not evidence of native ARM execution.
 
+## Update dialog in the 0.1.22 candidate
+
+The 0.1.22 candidate includes the update dialog and behavior described below. This describes the candidate source, not confirmed public availability or advancement of the update channel; the 0.1.21 publication history above remains separate.
+
+Discovering a new version opens a Software update dialog when the client has no active remote screen or file connection, auxiliary native window or other modal dialog. Automatic reminders also wait during ongoing operations, while a connection or registration invitation is retained, and while registering, verifying email or recovering a password. Each available version prompts at most once during an application run; restarting the client allows a reminder again. This does not depend on how long the keyboard or mouse has been idle.
+
+Choose Later to close the dialog without another automatic reminder for that version during the same run. If automatic downloading and installation is already enabled, the close action is labelled Update in background; once installation starts, it becomes Close window. Closing the dialog does not change either update preference or cancel a download or installation already in progress. The update notice and Software updates settings both have View update, which reopens the dialog manually.
+
+The dialog groups downloading, download progress, retrying a failed update and Install and restart. When the total size is unknown, it shows the downloaded amount instead of a percentage. With automatic installation off, Update now downloads and verifies the package; then choose Install and restart. If a remote screen or file connection or an auxiliary window is still open, installation waits. End those activities and choose Install and restart again. With automatic installation on, the client retries the waiting installation automatically.
+
+Automatic checking controls scheduled discovery; automatic downloading and installation controls what happens to an available update. Enabling automatic downloading and installation also enables automatic checking. Turning off automatic checking alone does not cancel automatic processing of an update already found. Discovering a version, opening the dialog or dismissing it never enables either preference. Preferences survive restarts; invalid preference content disables both automatic settings rather than enabling them.
+
 ## Maintainer setup
 
 The application embeds only the public updater key. Store the matching private key as the GitHub Actions repository secret `TAURI_SIGNING_PRIVATE_KEY`; the repository workflow sets `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` to an empty string for the current passwordless signing key. Back up the private key securely outside the repository. Do not add it to commits, release attachments, logs or documentation. Losing this key prevents existing installations from accepting future signatures. A different key cannot simply replace it for installed clients.

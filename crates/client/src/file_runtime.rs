@@ -402,6 +402,9 @@ impl NativeFiles {
             live.stop();
         }
     }
+    pub fn has_active_sessions(&self) -> bool {
+        self.sessions.lock().unwrap().values().any(|s| s.active())
+    }
     pub fn begin_update(&self) -> bool {
         let sessions = self.sessions.lock().unwrap();
         if sessions.values().any(|s| s.active()) {

@@ -272,9 +272,7 @@ const fs = require("node:fs");
   await page
     .getByRole("button", { name: "选择文件发送", exact: true })
     .waitFor();
-  await page
-    .getByText("已直连 · 文件直接在两台电脑之间传输", { exact: true })
-    .waitFor();
+  await page.getByText("已直连", { exact: true }).waitFor();
   assert.equal(
     await page.evaluate(
       () =>
@@ -477,9 +475,7 @@ const fs = require("node:fs");
       transfers: [],
     });
   });
-  await page
-    .getByText("已直连 · 文件直接在两台电脑之间传输", { exact: true })
-    .waitFor();
+  await page.getByText("已直连", { exact: true }).waitFor();
   // Invites can target a Linux file receiver whose screen-host capability is false.
   await nav("远程连接").click();
   await page.getByRole("button", { name: "邀请他人连接", exact: true }).click();

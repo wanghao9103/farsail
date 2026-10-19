@@ -67,7 +67,7 @@ export function FilesControls({
       <label className="preference-row">
         <span>
           <strong>允许接收文件</strong>
-          <small>连接需逐次批准，每个文件都由你选择保存位置。</small>
+          <small>每次连接需批准，每个文件需选择保存位置。</small>
         </span>
         <input
           type="checkbox"
@@ -89,7 +89,7 @@ export function FilesControls({
         />
       </label>
       <p className="hint">
-        文件权限独立于屏幕共享。关闭后会结束本机接收的文件连接；再次打开应用需重新开启。
+        独立于屏幕共享；关闭会断开接收连接，重启应用后需重新开启。
       </p>
     </div>
   );
@@ -185,9 +185,7 @@ export function FilesPanel({
   return (
     <section className="files-workspace">
       <div className="section-heading">
-        <p className="muted">
-          先批准文件连接，再选择要发送或保存的文件。文件不会自动打开。
-        </p>
+        <p className="muted">收到文件后选择保存位置，文件不会自动打开。</p>
         <button
           className="text-button"
           disabled={busy}
@@ -211,7 +209,12 @@ export function FilesPanel({
         </div>
       )}
       <div className="files-layout">
-        <div className="card file-session-list" aria-label="文件连接列表">
+        <div
+          className="card file-session-list"
+          role="region"
+          tabIndex={0}
+          aria-label="文件连接列表"
+        >
           <h2>文件连接</h2>
           {ids.map((id) => (
             <button
@@ -242,7 +245,7 @@ export function FilesPanel({
           ))}
           {!ids.length && (
             <p className="muted">
-              暂无文件连接。请在“我的设备”选择在线电脑，点击“文件传输”。
+              暂无文件连接。前往“我的设备”选择电脑发起文件传输。
             </p>
           )}
         </div>
@@ -253,7 +256,7 @@ export function FilesPanel({
               <p className="muted" role="status">
                 {connected
                   ? session.path === "direct"
-                    ? "已直连 · 文件直接在两台电脑之间传输"
+                    ? "已直连"
                     : session.path === "relay"
                       ? "已通过中继连接"
                       : "已连接 · 正在确认传输路径"
@@ -330,7 +333,12 @@ export function FilesPanel({
               连接已结束：{session.error}
             </p>
           )}
-          <div className="file-transfer-list" aria-label="文件传输记录">
+          <div
+            className="file-transfer-list"
+            role="region"
+            tabIndex={0}
+            aria-label="文件传输记录"
+          >
             {session?.transfers.map((transfer) => (
               <article
                 className="file-transfer"
@@ -415,9 +423,7 @@ export function FilesPanel({
               </article>
             ))}
             {!session?.transfers.length && (
-              <p className="muted">
-                还没有文件。连接后可选择文件发送；收到文件时会显示保存与拒绝按钮。
-              </p>
+              <p className="muted">暂无传输记录。</p>
             )}
           </div>
         </div>

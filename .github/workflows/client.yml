@@ -43,6 +43,8 @@ jobs:
             $env:NODE_PATH = Join-Path $PWD 'node_modules'
             node scripts/test-desktop-ui.cjs
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            node scripts/test-client-updates-ui.cjs
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             node scripts/test-file-transfer-ui.cjs
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             node scripts/test-remote-viewer.cjs
@@ -55,6 +57,7 @@ jobs:
           path: |
             .local/native-viewer-verification.json
             .local/ui-verification/*.png
+            .local/update-ui/**
   native-input:
     runs-on: windows-latest
     timeout-minutes: 10

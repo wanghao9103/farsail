@@ -3,7 +3,13 @@ import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { Device, Me, Pending, Remote, User } from "@farsail/ui";
-import { useClientUpdates, UpdateNotice, UpdateSettings } from "./updates";
+import {
+  useClientUpdates,
+  useUpdatePrompt,
+  UpdateDialog,
+  UpdateNotice,
+  UpdateSettings,
+} from "./updates";
 import { FilesControls, FilesPanel } from "./files";
 import "./style.css";
 import "./desktop-theme.css";
@@ -104,13 +110,18 @@ function SettingsSharingControls({
   act: Action;
   prepareTransport: () => Promise<void>;
 }) {
-  if (!canShareLocalScreen(state)) return <LocalSharingUnsupported />;
+  if (!canShareLocalScreen(state))
+    return (
+      <p className="hint" role="status">
+        Ubuntu 暂不支持本机屏幕共享或远程值守。
+      </p>
+    );
   return (
     <div className="preference-rows">
       <label className="preference-row">
         <span>
           <strong>本机屏幕共享</strong>
-          <small>开启后，其他设备可申请查看或控制本机。</small>
+          <small>允许其他设备查看或控制本机，默认逐次批准。</small>
         </span>
         <input
           type="checkbox"
@@ -134,7 +145,7 @@ function SettingsSharingControls({
       <label className="preference-row">
         <span>
           <strong>同账号远程值守</strong>
-          <small>开启后，同账号设备无需逐次批准。</small>
+          <small>同账号设备可直接连接，无需逐次批准。</small>
         </span>
         <input
           type="checkbox"
@@ -329,6 +340,14 @@ function App() {
   const [authMode, setAuthMode] = useState<
     "login" | "register" | "verify" | "recover" | "reset"
   >("login");
+  const updatePrompt = useUpdatePrompt(
+    updates,
+    busy ||
+      !!problem ||
+      !!connectionInvite ||
+      !!signupInvite ||
+      (!me && authMode !== "login"),
+  );
   const refreshVersion = useRef(0);
   const refreshFailures = useRef(new RefreshFailureGate());
   const nameMigrationAttempts = useRef(new Set<string>());
@@ -679,7 +698,12 @@ function App() {
             )}
           </div>
         </header>
-        <UpdateNotice updates={updates} onOpen={() => setTab("settings")} />
+        <UpdateNotice updates={updates} onOpen={updatePrompt.show} />
+        <UpdateDialog
+          updates={updates}
+          open={updatePrompt.open}
+          onDismiss={updatePrompt.dismiss}
+        />
         <FailureDialog
           error={problem}
           message={readableError(problem)}
@@ -715,159 +739,170 @@ function App() {
               onSettings={() => setTab("settings")}
             />
           ) : tab === "settings" ? (
-            <section className="stack">
-              <UpdateSettings updates={updates} />
-              <div className="card">
-                <div className="section-heading">
-                  <div>
-                    <div className="eyebrow">CONNECTION</div>
-                    <h2>服务器连接</h2>
-                  </div>
-                </div>
-                <p className="muted">
-                  填写管理员提供的服务器地址。通过互联网连接时，请使用 HTTPS
-                  地址。
-                </p>
-                <form
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    void act(
-                      () => invoke("set_server", { server }),
-                      "服务地址已保存",
-                    );
-                  }}
-                  className="inline-form"
-                >
-                  <input
-                    aria-label="服务地址"
-                    value={server}
-                    onChange={(e) => setServer(e.target.value)}
-                  />
-                  <button className="primary" disabled={busy || !!me}>
-                    保存地址
-                  </button>
-                </form>
-                {me && <p className="hint">请先退出登录再修改服务地址。</p>}
-              </div>
-              <div className="card">
-                <h2>当前连接设置</h2>
-                <p className="muted">
-                  {!publicState.transportRunning
-                    ? "连接尚未启动"
-                    : publicState.transportConfiguration?.relay
-                      ? "中继已配置，可作为直连失败时的备用路径。"
-                      : "当前仅使用直连，未配置中继备用路径。"}
-                </p>
-                {publicState.transportConfiguration?.relay && (
-                  <p className="setting-value">
-                    {publicState.transportConfiguration.relay}
-                  </p>
-                )}
-                <p className="hint">
-                  这里显示当前端点使用的设置；具体连接路径会显示在远程窗口中。
-                </p>
-              </div>
-              <div className="card">
-                <h2>文件接收</h2>
-                <FilesControls
-                  state={publicState}
-                  busy={busy}
-                  act={act}
-                  prepareTransport={prepareTransport}
-                />
-              </div>
-              <div className="card">
-                <h2>本机共享</h2>
-                <SettingsSharingControls
-                  state={publicState}
-                  busy={busy}
-                  act={act}
-                  prepareTransport={prepareTransport}
-                />
-                {canShareLocalScreen(publicState) && (
-                  <div className="input-permission-info">
-                    <strong>Windows 运行权限</strong>
-                    <p className="muted">
-                      {publicState.administratorMode === true
-                        ? "本机 FarSail 已以管理员权限运行。"
-                        : publicState.administratorMode === false
-                          ? "本机 FarSail 当前使用普通权限。"
-                          : "暂时无法读取本机运行权限。"}
-                    </p>
-                    <p className="hint">
-                      要操作以管理员权限运行的窗口，请在被控电脑手动以管理员身份启动
-                      FarSail；控制端不需要更改权限。系统授权确认与登录画面仍需在被控电脑上处理。
-                    </p>
-                  </div>
-                )}
-                <SharingRecovery state={publicState} />
-                {!publicState.deviceId && (
-                  <p className="hint">
-                    {me
-                      ? "请先添加这台电脑。"
-                      : "请先登录账号，再添加这台电脑。"}
-                    <button
-                      className="text-button"
-                      onClick={() => setTab("overview")}
-                    >
-                      {me ? "去添加本机" : "去登录"}
-                    </button>
-                  </p>
-                )}
-                <details className="advanced-settings connection-settings">
-                  <summary>高级连接设置（通常无需修改）</summary>
-                  <p className="muted">
-                    默认中继地址使用服务器的 8443
-                    端口。只有管理员提供了其他参数时才需修改。应用设置会断开本机当前连接并停止共享，之后可重新开启。
-                  </p>
+            <section className="settings-grid">
+              <div className="settings-column">
+                <UpdateSettings updates={updates} onOpen={updatePrompt.show} />
+                <div className="card">
+                  <h2>服务器连接</h2>
                   <form
-                    className="form"
                     onSubmit={(e) => {
                       e.preventDefault();
-                      void act(async () => {
-                        resetConnection();
-                        await invoke("transport_start", {
-                          relayUrl: relayUrl || null,
-                          forceRelay,
-                          bindAddr,
-                        });
-                        setTransportReady(true);
-                      }, "连接设置已应用。如需让他人连接本机，请重新开启共享");
+                      void act(
+                        () => invoke("set_server", { server }),
+                        "服务地址已保存",
+                      );
                     }}
+                    className="inline-form"
                   >
-                    <label>
-                      中继服务器地址
-                      <input
-                        aria-label="中继地址"
-                        placeholder="https://服务器IP:8443/"
-                        value={relayUrl}
-                        onChange={(e) => setRelayUrl(e.target.value)}
-                      />
-                    </label>
-                    <label>
-                      本机 UDP 监听地址
-                      <input
-                        aria-label="UDP 绑定地址"
-                        value={bindAddr}
-                        onChange={(e) => setBindAddr(e.target.value)}
-                      />
-                    </label>
-                    <label className="checkbox-row">
-                      <input
-                        type="checkbox"
-                        checked={forceRelay}
-                        onChange={(e) => setForceRelay(e.target.checked)}
-                      />
-                      <span>始终通过中继连接（排查直连问题时使用）</span>
-                    </label>
-                    <button
-                      className="primary"
-                      disabled={busy || !publicState.deviceId}
-                    >
-                      应用连接设置
+                    <input
+                      aria-label="服务地址"
+                      placeholder="https://服务器地址"
+                      value={server}
+                      disabled={busy || !!me}
+                      onChange={(e) => setServer(e.target.value)}
+                    />
+                    <button className="primary" disabled={busy || !!me}>
+                      保存地址
                     </button>
                   </form>
-                </details>
+                  <p className="hint">
+                    {me
+                      ? "退出登录后可修改地址。"
+                      : "使用管理员提供的地址，公网连接需使用 HTTPS。"}
+                  </p>
+                  <details className="advanced-settings connection-settings">
+                    <summary>高级连接设置</summary>
+                    <p className="hint" role="status">
+                      {!publicState.transportRunning
+                        ? "连接尚未启动"
+                        : publicState.transportConfiguration?.relay
+                          ? publicState.transportConfiguration.forceRelay
+                            ? "始终使用中继"
+                            : "直连优先，中继备用"
+                          : "仅直连 · 未配置中继"}
+                    </p>
+                    {publicState.transportConfiguration?.relay && (
+                      <p className="setting-value">
+                        {publicState.transportConfiguration.relay}
+                      </p>
+                    )}
+                    <p className="muted">
+                      默认使用服务器的 8443 端口，按管理员要求修改。
+                      应用后会断开当前连接并停止共享。
+                    </p>
+                    <form
+                      className="form"
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        void act(async () => {
+                          resetConnection();
+                          await invoke("transport_start", {
+                            relayUrl: relayUrl || null,
+                            forceRelay,
+                            bindAddr,
+                          });
+                          setTransportReady(true);
+                        }, "连接设置已应用。如需让他人连接本机，请重新开启共享");
+                      }}
+                    >
+                      <label>
+                        中继服务器地址
+                        <input
+                          aria-label="中继地址"
+                          placeholder="https://服务器IP:8443/"
+                          value={relayUrl}
+                          onChange={(e) => setRelayUrl(e.target.value)}
+                        />
+                      </label>
+                      <label>
+                        本机 UDP 监听地址
+                        <input
+                          aria-label="UDP 绑定地址"
+                          value={bindAddr}
+                          onChange={(e) => setBindAddr(e.target.value)}
+                        />
+                      </label>
+                      <label className="checkbox-row">
+                        <input
+                          type="checkbox"
+                          checked={forceRelay}
+                          onChange={(e) => setForceRelay(e.target.checked)}
+                        />
+                        <span>始终通过中继连接</span>
+                      </label>
+                      <button
+                        className="primary"
+                        disabled={busy || !publicState.deviceId}
+                      >
+                        应用连接设置
+                      </button>
+                    </form>
+                  </details>
+                </div>
+              </div>
+              <div className="settings-column">
+                <div className="card">
+                  <h2>本机共享</h2>
+                  <SettingsSharingControls
+                    state={publicState}
+                    busy={busy}
+                    act={act}
+                    prepareTransport={prepareTransport}
+                  />
+                  {canShareLocalScreen(publicState) && (
+                    <details className="advanced-settings sharing-permissions">
+                      <summary>Windows 运行权限</summary>
+                      <p className="muted">
+                        {publicState.administratorMode === true
+                          ? "当前以管理员权限运行。"
+                          : publicState.administratorMode === false
+                            ? "当前使用普通权限。"
+                            : "暂时无法读取运行权限。"}
+                      </p>
+                      <p className="hint">
+                        控制管理员窗口时，需在被控电脑以管理员身份启动 FarSail。
+                        系统授权与登录画面仍需在被控电脑处理。
+                      </p>
+                    </details>
+                  )}
+                  <SharingRecovery state={publicState} />
+                  {canShareLocalScreen(publicState) &&
+                    !publicState.deviceId && (
+                      <p className="hint">
+                        {me
+                          ? "添加本机后可开启共享。"
+                          : "登录并添加本机后可开启共享。"}
+                        <button
+                          className="text-button"
+                          onClick={() => setTab("overview")}
+                        >
+                          {me ? "去添加本机" : "去登录"}
+                        </button>
+                      </p>
+                    )}
+                </div>
+                <div className="card settings-files">
+                  <h2>文件接收</h2>
+                  <FilesControls
+                    state={publicState}
+                    busy={busy}
+                    act={act}
+                    prepareTransport={prepareTransport}
+                  />
+                  {!publicState.deviceId && (
+                    <p className="hint">
+                      {me
+                        ? "添加本机后可接收文件。"
+                        : "登录并添加本机后可接收文件。"}
+                      <button
+                        className="text-button"
+                        onClick={() => setTab("overview")}
+                      >
+                        {me ? "去添加本机" : "去登录"}
+                      </button>
+                    </p>
+                  )}
+                </div>
               </div>
             </section>
           ) : tab === "overview" ? (
@@ -1143,17 +1178,17 @@ function Auth({
         </div>
         <div className="eyebrow">SECURE ACCESS</div>
         <h2>{titles[mode]}</h2>
-        <p className="muted">
-          {mode === "verify"
-            ? `请输入${email ? `发送至 ${email} 的` : "邮件中的"}邮箱验证码。未收到时，请检查垃圾邮件或重新发送。`
-            : mode === "reset"
-              ? "输入重置邮件中的完整重置码，再设置至少 12 个字符的新密码。"
-              : mode === "recover"
-                ? "填写注册邮箱，我们会向符合条件的账号发送密码重置邮件。"
-                : mode === "register"
-                  ? "使用邮箱注册，密码至少需要 12 个字符。"
-                  : "登录后即可添加本机、连接电脑或开启共享。"}
-        </p>
+        {mode !== "login" && (
+          <p className="muted">
+            {mode === "verify"
+              ? `请输入${email ? `发送至 ${email} 的` : "邮件中的"}邮箱验证码。未收到时，请检查垃圾邮件或重新发送。`
+              : mode === "reset"
+                ? "输入邮件中的完整重置码。"
+                : mode === "recover"
+                  ? "填写注册邮箱，符合条件的账号会收到重置邮件。"
+                  : "密码至少 12 个字符。"}
+          </p>
+        )}
         <form
           onSubmit={(e) => {
             e.preventDefault();
@@ -1214,7 +1249,12 @@ function Auth({
                 value={newPassword}
                 onChange={(e) => setNewPassword(e.target.value)}
                 autoComplete="new-password"
+                aria-label="新密码"
+                aria-describedby="reset-password-hint"
               />
+              <small id="reset-password-hint" className="muted">
+                至少 12 个字符
+              </small>
             </label>
           )}
           {mode === "register" && (
@@ -1299,7 +1339,6 @@ function Overview({
   return (
     <div className="stack">
       <div className="overview-commandbar">
-        <p className="muted">管理你的电脑，或开始一次远程连接。</p>
         <button className="text-button" onClick={() => void onRefresh()}>
           <ArrowSync20Regular />
           刷新状态
@@ -1308,11 +1347,10 @@ function Overview({
       {!state.deviceId ? (
         <div className="card attention">
           <div>
-            <div className="eyebrow">DEVICE IDENTITY</div>
             <h2>添加这台电脑</h2>
             <p>
               {canShareLocalScreen(state)
-                ? "添加后可连接你的其他电脑。如果希望他人连接本机，还需要开启本机共享。"
+                ? "添加后可连接其他电脑；接收屏幕连接需开启本机共享。"
                 : "添加后可连接已开启共享的 Windows 电脑。Ubuntu 暂不支持共享本机屏幕。"}
             </p>
           </div>
@@ -1341,11 +1379,9 @@ function Overview({
               添加这台电脑
             </button>
           </form>
-          <p className="muted">
-            {state.computerName
-              ? "已读取系统的计算机名称，你也可以自行修改。"
-              : "暂时无法读取计算机名称，请手动填写后添加。"}
-          </p>
+          {!state.computerName && (
+            <p className="muted">无法读取计算机名称，请手动填写。</p>
+          )}
         </div>
       ) : (
         <div className="card local-device">
@@ -1723,7 +1759,7 @@ function Devices({
         ? "设备离线，请在对方电脑上打开 FarSail 并登录。"
         : !device?.can_host
           ? "对方尚未开启共享，请在对方电脑的本机面板中开启。"
-          : "对方批准后，即可进入远程画面。";
+          : "";
   return (
     <section className="device-workspace">
       <div className="device-list-pane">
@@ -1845,7 +1881,7 @@ function Devices({
                   <div>
                     <h3>允许其他设备连接本机</h3>
                     <p className="muted">
-                      默认每次连接需要你批准；启用下方“远程值守”后，同账号设备可自动批准。停止共享会断开正在访问本机的连接。
+                      默认逐次批准；停止共享会断开正在访问本机的连接。
                     </p>
                   </div>
                   <button
@@ -1893,21 +1929,22 @@ function Devices({
                       重试本机共享
                     </button>
                   )}
-                <p className="hint">
-                  {state.sharing
-                    ? "本机正在等待连接；你可以随时停止共享。"
-                    : "共享已关闭，其他设备不能查看或控制本机。"}
-                </p>
                 <div className="sharing-panel">
                   <div>
                     <h3>远程值守</h3>
                     <p className="muted">
-                      开启后，同账号设备可直接连接，无需逐次批准。
+                      同账号设备可直接连接，无需逐次批准。
                     </p>
                     <p className="hint">
-                      本机共享和远程值守会记住你的选择，重启后通过登录、设备和桌面检查才会恢复。关闭后会断开正在访问本机的连接，恢复逐次批准；需要
-                      Windows 已登录且应用保持运行。
+                      关闭会断开当前连接，恢复逐次批准。需要 Windows
+                      已登录且应用保持运行。
                     </p>
+                    <details className="sharing-guidance">
+                      <summary>运行与恢复说明</summary>
+                      <p className="hint">
+                        本机共享和远程值守会记住你的选择，重启后通过登录、设备和桌面检查才会恢复。
+                      </p>
+                    </details>
                   </div>
                   <button
                     disabled={busy || (!state.sharing && !watchChoice(state))}
@@ -2000,7 +2037,7 @@ function Devices({
                     ? "文件连接需对方单独批准，收到文件后再选择保存位置。"
                     : "对方尚未允许接收文件，需在对方电脑开启。"}
                 </p>
-                <p className="muted">{blocked}</p>
+                {blocked && <p className="muted">{blocked}</p>}
                 {(waiting ||
                   connecting ||
                   (connectionNote && openedWindowPresent)) && (
@@ -2248,9 +2285,7 @@ function Requests({
   return (
     <div className="connections-workspace">
       <div className="section-heading connection-intro">
-        <p className="muted">
-          管理远程电脑的连接。屏幕访问与文件传输分别申请权限。
-        </p>
+        <p className="muted">屏幕访问与文件传输分别授权。</p>
         <div className="row-actions">
           <button
             className="text-button"
@@ -2287,8 +2322,7 @@ function Requests({
           <div className="eyebrow">REQUEST ACCESS</div>
           <h2>连接他人电脑</h2>
           <p className="muted">
-            请对方开启对应的屏幕共享或文件接收，并把设备 ID
-            和一次性邀请码发给你。自己的电脑可直接从“我的设备”连接。
+            请对方开启屏幕共享或文件接收，再提供设备 ID 和一次性邀请码。
           </p>
           <form
             className="form"
@@ -2374,7 +2408,7 @@ function Requests({
           <div className="eyebrow">SHARE ACCESS</div>
           <h2>邀请他人连接我的电脑</h2>
           <p className="muted">
-            选择已开启对应功能的电脑，生成一次性邀请码。对方发起连接后，你仍需在那台电脑上批准；文件连接始终逐次批准。
+            一次性邀请码仅用于发起连接，仍需在目标电脑批准；文件连接始终逐次批准。
           </p>
           <form
             className="form"
@@ -2470,9 +2504,7 @@ function Requests({
             </p>
           )}
           {invite && (
-            <p className="muted">
-              如需更换设备或权限，请先取消当前邀请，再生成新的邀请码。
-            </p>
+            <p className="muted">更换设备或权限前，请先取消当前邀请。</p>
           )}
           {invite && generatedInvite && (
             <div className="invite-code">
@@ -2542,7 +2574,7 @@ function Requests({
             <span className="count">{pending.length}</span>
           </div>
           <p className="muted">
-            只批准你认识的连接。文件连接不授予屏幕或鼠标键盘权限，收到文件仍需单独选择保存位置。
+            只批准你认识的连接。文件连接不授予屏幕或操作权限，每个文件需单独选择保存位置。
           </p>
           {!state.sharing && pending.some((p) => p.permission !== "files") && (
             <p className="hint">
@@ -2615,11 +2647,9 @@ function Requests({
         >
           <div className="eyebrow">HISTORY</div>
           <h2>{section === "history" ? "过去的连接" : "当前连接"}</h2>
-          <p className="muted">
-            {section === "history"
-              ? "查看已取消、被拒绝或已过期的连接请求。"
-              : "已批准表示对方已允许访问；点击连接按钮后才会打开画面。结束本次连接后，需要重新申请并获得批准。"}
-          </p>
+          {section !== "history" && (
+            <p className="muted">已批准不代表已连接；结束后需重新申请。</p>
+          )}
           <div
             className="connection-list"
             tabIndex={0}
@@ -3814,9 +3844,7 @@ function Viewer({
                     </button>
                   </form>
                 )}
-                <p className="hint">
-                  高清模式优先保留文字细节；复杂画面会在数据大小上限内调整压缩。系统权限确认和未登录桌面暂不支持控制。
-                </p>
+                <p className="hint">系统授权与登录画面需在被控电脑上处理。</p>
               </div>
             </details>
             <button onClick={() => windowAction("fullscreen")}>全屏切换</button>
@@ -4045,7 +4073,7 @@ function Security({
           <div className="eyebrow">PASSWORD</div>
           <h2>修改密码</h2>
           <p className="muted">
-            修改后，所有客户端都会退出登录，当前连接和共享也会停止。请使用新密码登录，并重新添加本机。
+            修改后所有客户端退出登录，本机共享与当前连接停止。请使用新密码重新登录。
           </p>
           <form
             className="form"
@@ -4091,9 +4119,7 @@ function Security({
           <div className="eyebrow">ACCOUNT</div>
           <h2>登录状态</h2>
           <p className="muted">{me.email}</p>
-          <p className="muted">
-            退出会停止本机共享和当前连接。下次使用时需要重新登录。
-          </p>
+          <p className="muted">退出会停止本机共享和当前连接。</p>
           <button
             className="secondary"
             disabled={busy}
@@ -4123,9 +4149,7 @@ function Security({
             刷新
           </button>
         </div>
-        <p className="muted">
-          这里显示仍可使用此账号的客户端。发现不认识的登录时，可以将其退出；对方需要重新登录才能继续使用。
-        </p>
+        <p className="muted">当前有效的客户端登录；可退出不认识的登录。</p>
         <div
           className="login-records"
           tabIndex={0}
@@ -4136,9 +4160,7 @@ function Security({
               <div className="list-row" key={x.id}>
                 <div>
                   <strong>
-                    {x.id === me.session_id
-                      ? "当前客户端（正在使用）"
-                      : "其他客户端登录"}
+                    {x.id === me.session_id ? "当前客户端" : "其他客户端登录"}
                   </strong>
                   <small>
                     登录时间：{dateLabel(x.created_at)}
@@ -4278,9 +4300,7 @@ function Admin({
           action={{ title: "无法加载管理数据" }}
         />
       )}
-      <div className="notice-strip">
-        管理账号、设备和注册方式。即使是管理员，连接他人电脑也需要对方批准。
-      </div>
+      <div className="notice-strip">管理员连接他人电脑也需要对方批准。</div>
       <div className="two-col">
         <div className="card">
           <div className="eyebrow">REGISTRATION</div>
@@ -4403,7 +4423,7 @@ function Admin({
         <div className="eyebrow">DEVICE POLICY</div>
         <h2>停用或恢复设备</h2>
         <p className="muted">
-          停用会结束此设备的连接并阻止再次连接；恢复后，设备所有者需要在该电脑重新添加设备。
+          停用会断开并阻止连接；恢复后，在该电脑重新登录或刷新状态。
         </p>
         <div className="inline-form">
           <input

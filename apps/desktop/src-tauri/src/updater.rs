@@ -33,6 +33,7 @@ pub struct Status {
     pub total: Option<u64>,
     pub message: String,
     pub preferences: Preferences,
+    pub can_prompt: bool,
 }
 struct Pending {
     update: Update,
@@ -70,6 +71,7 @@ impl Runtime {
                 }
                 .into(),
                 preferences,
+                can_prompt: false,
             }),
             pending: Mutex::new(None),
             operation: tokio::sync::Mutex::new(()),
@@ -340,12 +342,19 @@ fn validate_download(url: &tauri::Url, version: &str, target: &str) -> Result<()
     Ok(())
 }
 #[tauri::command]
-pub fn update_status(
+pub async fn update_status(
     window: tauri::WebviewWindow,
     runtime: tauri::State<'_, Arc<Runtime>>,
 ) -> Result<Status, String> {
     viewer::main_only(&window)?;
-    Ok(runtime.snapshot())
+    let mut status = runtime.snapshot();
+    let app = window.app_handle();
+    let remote = app.state::<Arc<RemoteRuntime>>();
+    let files = app.state::<Arc<NativeFiles>>();
+    status.can_prompt = !app.webview_windows().keys().any(|label| label != "main")
+        && !remote.has_active_sessions().await
+        && !files.has_active_sessions();
+    Ok(status)
 }
 #[tauri::command]
 pub fn update_preferences(

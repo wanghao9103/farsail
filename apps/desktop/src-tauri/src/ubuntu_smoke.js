@@ -26,7 +26,8 @@
     } catch (error) {
       pathBlocked = String(error).includes("not allowed");
     }
-    if (!pathBlocked) throw Error("filesystem plugin must not grant webview path access");
+    if (!pathBlocked)
+      throw Error("filesystem plugin must not grant webview path access");
     const settings = await waitFor(() =>
       Array.from(document.querySelectorAll("nav button")).find((b) =>
         b.textContent.includes("共享与设置"),
@@ -34,7 +35,7 @@
     );
     settings.click();
     await waitFor(() =>
-      document.body.textContent.includes("Ubuntu 客户端可连接 Windows 电脑"),
+      document.body.textContent.includes("Ubuntu 暂不支持本机屏幕共享或远程值守。"),
     );
     if (
       document.querySelector('[aria-label="本机屏幕共享"][role="switch"]') ||
@@ -51,7 +52,8 @@
     if (
       !update.currentVersion ||
       !update.preferences.autoCheck ||
-      update.preferences.autoInstall
+      update.preferences.autoInstall ||
+      update.canPrompt !== true
     )
       throw Error("incorrect native update defaults");
     await invoke("update_preferences", {
@@ -70,6 +72,7 @@
         filesDefaultOff: true,
         webviewFilesystemDenied: true,
         hostControlsHidden: true,
+        updatePromptAvailable: true,
         workspaceFits: true,
         mediaBytes: media.length,
       }),

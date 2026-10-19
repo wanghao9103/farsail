@@ -273,6 +273,11 @@ struct Live {
     send_permits: Semaphore,
     auto_resume_sending: AtomicBool,
 }
+impl Live {
+    fn active(&self) -> bool {
+        self.alive.load(Ordering::SeqCst)
+    }
+}
 
 pub struct RemoteRuntime {
     updating: AtomicBool,
@@ -1206,9 +1211,12 @@ impl RemoteRuntime {
             self.stop(&id).await;
         }
     }
+    pub async fn has_active_sessions(&self) -> bool {
+        self.sessions.lock().await.values().any(|s| s.active())
+    }
     pub async fn begin_update(&self) -> bool {
         let sessions = self.sessions.lock().await;
-        if sessions.values().any(|s| s.alive.load(Ordering::SeqCst)) {
+        if sessions.values().any(|s| s.active()) {
             return false;
         }
         self.updating.store(true, Ordering::SeqCst);

@@ -710,7 +710,7 @@ const fs = require("node:fs");
     .waitFor({ state: "hidden" });
 
   await page.getByRole("button", { name: "账号安全", exact: true }).click();
-  await page.getByText("当前客户端（正在使用）", { exact: true }).waitFor();
+  await page.getByText("当前客户端", { exact: true }).waitFor();
   await assertShell();
   await page.screenshot({ path: ".local/ui-verification/login-records.png" });
   await page.getByRole("button", { name: "退出此登录", exact: true }).click();
@@ -1214,10 +1214,7 @@ const fs = require("node:fs");
   await page.getByRole("button", { name: "刷新", exact: true }).click();
   await page.getByRole("button", { name: "共享与设置", exact: true }).click();
   await page
-    .getByText(
-      "Ubuntu 客户端可连接 Windows 电脑，暂不支持共享本机屏幕或远程值守。",
-      { exact: true },
-    )
+    .getByText("Ubuntu 暂不支持本机屏幕共享或远程值守。", { exact: true })
     .waitFor();
   assert.equal(
     await page.getByRole("switch", { name: "本机屏幕共享" }).count(),
@@ -1269,12 +1266,12 @@ const fs = require("node:fs");
   await upgradeDialog
     .getByRole("button", { name: "知道了", exact: true })
     .click();
-  // Updates stay in settings; a rejected download cannot enable installation.
+  // Settings open the update dialog; a rejected download cannot enable installation.
   await page.getByRole("button", { name: "共享与设置", exact: true }).click();
   const updates = page.locator(".client-updates");
   await updates.getByRole("heading", { name: "软件更新" }).waitFor();
   await updates
-    .getByRole("checkbox", { name: "自动下载，并在远程连接结束后安装更新" })
+    .getByRole("checkbox", { name: "自动下载并安装", exact: true })
     .check();
   await page.waitForFunction(
     () => window.fixture.update.preferences.autoInstall,
@@ -1284,25 +1281,32 @@ const fs = require("node:fs");
   await page.evaluate(
     () => (window.fixture.updateFailure = "更新签名校验失败"),
   );
-  await updates.getByRole("button", { name: "下载更新", exact: true }).click();
-  await updates.getByText("更新签名校验失败", { exact: true }).waitFor();
+  await updates.getByRole("button", { name: "查看更新", exact: true }).click();
+  const updateDialog = page.getByRole("dialog", { name: "软件更新" });
+  await updateDialog.waitFor();
+  await updateDialog
+    .getByRole("button", { name: "立即更新", exact: true })
+    .click();
+  await updateDialog.getByText("更新签名校验失败", { exact: true }).waitFor();
   assert.equal(
-    await updates.getByRole("button", { name: "安装并重启" }).count(),
+    await updateDialog.getByRole("button", { name: "安装并重启" }).count(),
     0,
   );
-  await updates.getByRole("button", { name: "下载更新", exact: true }).click();
-  await updates.getByRole("button", { name: "安装并重启" }).waitFor();
+  await updateDialog
+    .getByRole("button", { name: "重试更新", exact: true })
+    .click();
+  await updateDialog.getByRole("button", { name: "安装并重启" }).waitFor();
   await page.evaluate(() => (window.fixture.updateConnected = true));
-  await updates.getByRole("button", { name: "安装并重启" }).click();
-  await updates
+  await updateDialog.getByRole("button", { name: "安装并重启" }).click();
+  await updateDialog
     .getByText("更新已就绪，等待远程连接结束。请关闭远程窗口后安装。", {
       exact: true,
     })
     .waitFor();
   await page.screenshot({ path: ".local/ui-verification/client-updates.png" });
   await page.evaluate(() => (window.fixture.updateConnected = false));
-  await updates.getByRole("button", { name: "安装并重启" }).click();
-  await updates
+  await updateDialog.getByRole("button", { name: "安装并重启" }).click();
+  await updateDialog
     .getByText("正在安装更新，完成后将重新启动。", { exact: true })
     .waitFor();
   assert(await updates.getByRole("button", { name: "检查更新" }).isDisabled());

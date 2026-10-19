@@ -95,8 +95,16 @@ jobs:
           trap 'kill "$vite"' EXIT
           for n in {1..30}; do curl -fsS http://127.0.0.1:1420/ >/dev/null 2>&1 && break; sleep 1; done
           UI_ENGINE=webkit node scripts/test-desktop-ui.cjs
+          UI_ENGINE=webkit node scripts/test-client-updates-ui.cjs
           UI_ENGINE=webkit node scripts/test-file-transfer-ui.cjs
           UI_ENGINE=webkit node scripts/test-remote-viewer.cjs
+      - name: Update dialog verification
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: update-dialog-${{ matrix.target }}
+          path: .local/update-ui/**
+          if-no-files-found: ignore
       - name: Debian package
         run: bash scripts/package-linux.sh
       - uses: actions/upload-artifact@v4
