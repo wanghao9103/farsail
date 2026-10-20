@@ -1938,6 +1938,8 @@ dependencies = [
  "farsail-transport",
  "farsail-windows",
  "fs2",
+ "gdk",
+ "gtk",
  "iroh",
  "libloading 0.8.9",
  "serde",
@@ -1947,7 +1949,9 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-single-instance",
  "tauri-plugin-updater",
+ "tempfile",
  "tokio",
+ "url",
 ]
 
 [[package]]
@@ -2002,6 +2006,7 @@ dependencies = [
  "thiserror 2.0.21",
  "windows",
  "windows-capture",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

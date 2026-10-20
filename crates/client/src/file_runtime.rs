@@ -44,12 +44,17 @@ struct Live {
     tokens: StdMutex<HashMap<String, Arc<TransferLive>>>,
     error: StdMutex<Option<String>>,
     tx: mpsc::Sender<Command>,
+    frames: Option<mpsc::Sender<farsail_transport::Result<Frame>>>,
+    receive_dir: Option<PathBuf>,
+    received: StdMutex<HashMap<String, PathBuf>>,
 }
 impl Live {
     fn stop(&self) {
         let _gate = self.lifecycle.lock().unwrap();
         self.cancelled.store(true, Ordering::SeqCst);
-        self.session.close();
+        if self.frames.is_none() {
+            self.session.close();
+        }
     }
     fn active(&self) -> bool {
         !self.cancelled.load(Ordering::SeqCst) && self.session.is_open_now()
@@ -64,7 +69,7 @@ impl Live {
     }
     fn status(&self) -> Value {
         let path = self.session.path().0;
-        json!({"id":self.session.id(),"host":self.host,"state":if self.active(){"connected"}else{"closed"},"path":if matches!(path,"direct"|"relay"){path}else{"none"},"error":*self.error.lock().unwrap(),"transfers":*self.transfers.lock().unwrap()})
+        json!({"id":self.session.id(),"permission":self.session.permission(),"host":self.host,"state":if self.active(){"connected"}else{"closed"},"path":if matches!(path,"direct"|"relay"){path}else{"none"},"error":*self.error.lock().unwrap(),"transfers":*self.transfers.lock().unwrap()})
     }
     fn record(&self, offer: &Offer, direction: &str) -> Result<Arc<TransferLive>, String> {
         let mut rows = self.transfers.lock().unwrap();
@@ -81,6 +86,7 @@ impl Live {
             let old = rows.remove(index);
             if let Some(id) = old["id"].as_str() {
                 self.tokens.lock().unwrap().remove(id);
+                self.received.lock().unwrap().remove(id);
             }
         }
         let token = Arc::new(TransferLive::default());
@@ -191,6 +197,18 @@ impl NativeFiles {
         }
     }
     fn attach(self: &Arc<Self>, session: Session, host: bool) {
+        self.attach_inner(session, host, None);
+    }
+    /// The screen runtime owns receive() and routes File frames to this actor.
+    /// Control authorization includes file transfer; View never does.
+    pub fn attach_control(self: &Arc<Self>, session: Session, host: bool, receive_dir: PathBuf) {
+        if session.permission() == RemotePermission::Control
+            && (!host || self.client.files_enabled())
+        {
+            self.attach_inner(session, host, Some(receive_dir));
+        }
+    }
+    fn attach_inner(self: &Arc<Self>, session: Session, host: bool, receive_dir: Option<PathBuf>) {
         let mut sessions = self.sessions.lock().unwrap();
         if let Some(existing) = sessions.get(session.id()) {
             if existing.session.stable_id() != session.stable_id() {
@@ -208,6 +226,8 @@ impl NativeFiles {
             return;
         }
         let (tx, rx) = mpsc::channel(8);
+        let (frame_tx, frame_rx) = mpsc::channel(4);
+        let shared = receive_dir.is_some();
         let live = Arc::new(Live {
             session,
             host,
@@ -217,9 +237,57 @@ impl NativeFiles {
             tokens: StdMutex::new(HashMap::new()),
             error: StdMutex::new(None),
             tx,
+            frames: shared.then_some(frame_tx),
+            receive_dir,
+            received: StdMutex::new(HashMap::new()),
         });
         sessions.insert(live.session.id().into(), live.clone());
-        tokio::spawn(self.clone().actor(live, rx));
+        tokio::spawn(self.clone().actor(live, rx, shared.then_some(frame_rx)));
+    }
+    /// Never block media/input behind file IO or a full file queue.
+    pub fn route_control(&self, id: &str, frame: Frame) {
+        if let Some(live) = self.sessions.lock().unwrap().get(id)
+            && let Some(frames) = &live.frames
+            && frames.try_send(Ok(frame)).is_err()
+        {
+            live.stop();
+        }
+    }
+    /// Only completed native destinations can become clipboard paths.
+    pub fn received_paths(&self, id: &str, ids: &[String]) -> Result<Vec<PathBuf>, String> {
+        let live = self.live(id)?;
+        if live.receive_dir.is_none() || ids.is_empty() || ids.len() > HISTORY {
+            return Err("文件粘贴请求无效。".into());
+        }
+        let paths = live.received.lock().unwrap();
+        ids.iter()
+            .map(|id| {
+                paths
+                    .get(id)
+                    .cloned()
+                    .ok_or_else(|| "文件尚未传输完成。".into())
+            })
+            .collect()
+    }
+    pub async fn wait_sent(&self, id: &str, transfer: &str) -> Result<(), String> {
+        let live = self.live(id)?;
+        loop {
+            if !self.allowed(&live) {
+                return Err("文件连接已结束。".into());
+            }
+            if let Some(token) = live.token(transfer)
+                && token.published.load(Ordering::SeqCst)
+            {
+                return Ok(());
+            }
+            if live.terminal(transfer) {
+                return Err("文件传输未完成，请重试。".into());
+            }
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_millis(50)) => (),
+                _ = live.session.wait_closed() => return Err("文件连接已结束。".into()),
+            }
+        }
     }
     pub fn status(&self, id: Option<&str>) -> Result<Value, String> {
         let sessions = self.sessions.lock().unwrap();
@@ -267,6 +335,9 @@ impl NativeFiles {
         tokio::select! {p=self.io.clone().acquire_owned()=>p.map_err(|_|"文件任务已取消。".into()),_=live.session.wait_closed()=>Err("文件连接已结束。".into())}
     }
     pub async fn send_path(&self, id: &str, path: PathBuf) -> Result<(), String> {
+        self.send_path_id(id, path).await.map(|_| ())
+    }
+    pub async fn send_path_id(&self, id: &str, path: PathBuf) -> Result<String, String> {
         let live = self.live(id)?;
         let permit = self.permit(&live).await?;
         let cancelled = live.cancelled.clone();
@@ -280,12 +351,14 @@ impl NativeFiles {
         if !self.allowed(&live) {
             return Err("文件连接已结束。".into());
         }
+        let transfer = sender.offer().id.clone();
         let (tx, rx) = oneshot::channel();
         live.tx
             .send(Command::Send(sender, tx))
             .await
             .map_err(|_| "文件连接已结束。")?;
-        rx.await.map_err(|_| "文件连接已结束。")?
+        rx.await.map_err(|_| "文件连接已结束。")??;
+        Ok(transfer)
     }
     pub async fn accept_path(
         &self,
@@ -753,9 +826,58 @@ impl NativeFiles {
                                 (live.session.id().into(), offer.id.clone()),
                                 offer.clone(),
                             );
+                            let mut receiver = None;
+                            if let Some(root) = &live.receive_dir {
+                                // IDs are validated by Message::decode. A private per-file
+                                // directory preserves names without allowing replacement.
+                                let directory = root.join(&offer.id);
+                                let path = directory.join(&offer.name);
+                                let worker_offer = offer.clone();
+                                let permit = self.permit(live).await?;
+                                let result = tokio::task::spawn_blocking(move || {
+                                    let _permit = permit;
+                                    std::fs::create_dir(&directory)?;
+                                    Receiver::accept(worker_offer, path)
+                                })
+                                .await
+                                .map_err(|_| "无法准备接收文件。")?;
+                                match result {
+                                    Ok(saved) if self.allowed(live) => {
+                                        receiver = Some(saved);
+                                        self.wire(
+                                            live,
+                                            Message::Accept {
+                                                id: offer.id.clone(),
+                                            },
+                                        )
+                                        .await?;
+                                    }
+                                    Ok(saved) => {
+                                        self.discard(saved).await;
+                                        break;
+                                    }
+                                    Err(error) => {
+                                        live.update(
+                                            &offer.id,
+                                            "failed",
+                                            None,
+                                            Some(file_error(error)),
+                                        );
+                                        self.wire(
+                                            live,
+                                            Message::Reject {
+                                                id: offer.id,
+                                                reason: files::RejectReason::Io,
+                                            },
+                                        )
+                                        .await?;
+                                        continue;
+                                    }
+                                }
+                            }
                             *incoming = Some(Incoming {
                                 offer,
-                                receiver: None,
+                                receiver,
                                 at: Instant::now(),
                                 token,
                             });
@@ -875,7 +997,11 @@ impl NativeFiles {
                             .await
                             .map_err(|_| "文件校验或保存失败。")?;
                             match result {
-                                Ok(_) => (),
+                                Ok(path) => {
+                                    if live.receive_dir.is_some() {
+                                        live.received.lock().unwrap().insert(id.clone(), path);
+                                    }
+                                }
                                 Err(files::Error::Cancelled)
                                     if old.token.cancelled.load(Ordering::SeqCst)
                                         && self.allowed(live) =>
@@ -945,10 +1071,22 @@ impl NativeFiles {
         }
         Ok(())
     }
-    async fn actor(self: Arc<Self>, live: Arc<Live>, mut commands: mpsc::Receiver<Command>) {
+    async fn actor(
+        self: Arc<Self>,
+        live: Arc<Live>,
+        mut commands: mpsc::Receiver<Command>,
+        routed: Option<mpsc::Receiver<farsail_transport::Result<Frame>>>,
+    ) {
         let (tx, mut frames) = mpsc::channel(4);
+        if let Some(routed) = routed {
+            frames = routed;
+        }
         let reader = live.session.clone();
+        let shared = live.frames.is_some();
         let receive = tokio::spawn(async move {
+            if shared {
+                return;
+            }
             loop {
                 let frame = tokio::select! {r=reader.receive()=>r,_=reader.wait_closed()=>break};
                 if matches!(frame, Err(farsail_transport::Error::Timeout)) && reader.is_open_now() {
@@ -1027,6 +1165,7 @@ mod tests {
     struct FileAuthority {
         source: String,
         target: String,
+        permission: RemotePermission,
     }
     impl Authority for FileAuthority {
         async fn inspect(&self, id: &str, token: &str) -> farsail_transport::Result<Claims> {
@@ -1035,7 +1174,7 @@ mod tests {
             }
             Ok(Claims {
                 session_id: id.into(),
-                permission: RemotePermission::Files,
+                permission: self.permission,
                 source_public_key: self.source.clone(),
                 target_public_key: self.target.clone(),
                 nonce: "09".repeat(32),
@@ -1057,6 +1196,7 @@ mod tests {
         let authority = Arc::new(FileAuthority {
             source: hex::encode(source_endpoint.id().as_bytes()),
             target: hex::encode(target_endpoint.id().as_bytes()),
+            permission: RemotePermission::Files,
         });
         let accept = tokio::spawn({
             let target_endpoint = target_endpoint.clone();
@@ -1136,5 +1276,124 @@ mod tests {
     #[tokio::test]
     async fn complete_before_finish_is_rejected() {
         reject_out_of_order_confirmation(true).await;
+    }
+
+    #[tokio::test]
+    async fn control_files_share_authorization_and_leave_media_running() {
+        let source_endpoint = Transport::bind([71; 32], Config::default()).await.unwrap();
+        let target_endpoint = Transport::bind([72; 32], Config::default()).await.unwrap();
+        let authority = Arc::new(FileAuthority {
+            source: hex::encode(source_endpoint.id().as_bytes()),
+            target: hex::encode(target_endpoint.id().as_bytes()),
+            permission: RemotePermission::Control,
+        });
+        let accept = tokio::spawn({
+            let endpoint = target_endpoint.clone();
+            let authority = authority.clone();
+            async move { endpoint.accept(authority).await.unwrap() }
+        });
+        let source = source_endpoint
+            .connect(
+                target_endpoint.addr(),
+                "files-actor-test",
+                RemotePermission::Control,
+                authority,
+            )
+            .await
+            .unwrap();
+        let target = accept.await.unwrap();
+        let sender = NativeFiles::new(Arc::new(NativeClient::new(Arc::new(EmptyStore)).unwrap()));
+        let receiver = NativeFiles::new(Arc::new(NativeClient::new(Arc::new(EmptyStore)).unwrap()));
+        let source_dir = tempfile::tempdir().unwrap();
+        let target_dir = tempfile::tempdir().unwrap();
+        // A disabled file capability must not tear down an approved screen.
+        receiver.attach_control(target.clone(), true, target_dir.path().to_owned());
+        assert!(receiver.status(Some("files-actor-test")).is_err());
+        assert!(target.is_open_now());
+        receiver.client.files_state.store(1, Ordering::SeqCst);
+        sender.attach_control(source.clone(), false, source_dir.path().to_owned());
+        receiver.attach_control(target.clone(), true, target_dir.path().to_owned());
+        let (media_tx, mut media_rx) = mpsc::channel(4);
+        let route = |session: Session, runtime: Arc<NativeFiles>, media: mpsc::Sender<Vec<u8>>| {
+            tokio::spawn(async move {
+                while let Ok(frame) = session.receive().await {
+                    if frame.channel == Channel::File {
+                        runtime.route_control(session.id(), frame);
+                    } else {
+                        media.send(frame.bytes).await.unwrap();
+                    }
+                }
+            })
+        };
+        let source_reader = route(source.clone(), sender.clone(), media_tx.clone());
+        let target_reader = route(target.clone(), receiver.clone(), media_tx);
+        let mut ids = Vec::new();
+        for (name, bytes) in [
+            ("多块文件.bin", vec![31; files::CHUNK_SIZE * 3 + 1]),
+            ("empty.txt", vec![]),
+        ] {
+            let path = source_dir.path().join(name);
+            std::fs::write(&path, &bytes).unwrap();
+            let id = sender.send_path_id("files-actor-test", path).await.unwrap();
+            target
+                .send(Frame {
+                    channel: Channel::Media,
+                    bytes: b"screen-keeps-running".to_vec(),
+                })
+                .await
+                .unwrap();
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(5), media_rx.recv())
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                b"screen-keeps-running"
+            );
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                sender.wait_sent("files-actor-test", &id),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            let paths = receiver
+                .received_paths("files-actor-test", std::slice::from_ref(&id))
+                .unwrap();
+            assert!(paths[0].starts_with(target_dir.path()));
+            assert_eq!(paths[0].file_name().unwrap(), name);
+            assert_eq!(std::fs::read(&paths[0]).unwrap(), bytes);
+            ids.push(id);
+        }
+        assert_eq!(
+            receiver
+                .received_paths("files-actor-test", &ids)
+                .unwrap()
+                .len(),
+            2
+        );
+        assert!(
+            receiver
+                .received_paths("files-actor-test", &["unreceived".into()])
+                .is_err()
+        );
+        assert_eq!(
+            sender.status(Some("files-actor-test")).unwrap()["permission"],
+            "control"
+        );
+        receiver.stop("files-actor-test");
+        assert!(source.is_open_now() && target.is_open_now());
+        target
+            .send(Frame {
+                channel: Channel::Media,
+                bytes: b"still-running".to_vec(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(media_rx.recv().await.unwrap(), b"still-running");
+        source.close();
+        source_reader.abort();
+        target_reader.abort();
+        sender.stop_all();
+        receiver.stop_all();
     }
 }

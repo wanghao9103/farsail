@@ -561,7 +561,7 @@ impl Channel {
         match self {
             Self::Control => p == RemotePermission::Control,
             Self::Media => p != RemotePermission::Files,
-            Self::File => p == RemotePermission::Files,
+            Self::File => matches!(p, RemotePermission::Files | RemotePermission::Control),
         }
     }
 }
@@ -937,6 +937,14 @@ impl Session {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn file_channel_is_included_in_control_but_excluded_from_view() {
+        use super::*;
+        assert!(Channel::File.permits(RemotePermission::Control));
+        assert!(Channel::File.permits(RemotePermission::Files));
+        assert!(!Channel::File.permits(RemotePermission::View));
+        assert!(!Channel::Control.permits(RemotePermission::Files));
+    }
     use super::*;
     struct TestAuthority {
         source: EndpointId,

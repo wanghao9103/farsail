@@ -27,6 +27,11 @@ const fs = require("node:fs");
       retryable: false,
       permission: "control",
       inputBlocked: false,
+      fileSupport: false,
+      pasteFilesResult: true,
+      pasteFilesError: null,
+      holdPaste: false,
+      releasePaste: null,
       inputGeneration: 0,
       staleInput: null,
       mouse: { generation: 0, rejected: false },
@@ -85,6 +90,14 @@ const fs = require("node:fs");
       metadata: { currentWindow: { label: "viewer-test" } },
       invoke: async (cmd, args = {}) => {
         f.calls.push({ cmd, args });
+        if (["remote_paste_files", "remote_send_files"].includes(cmd)) {
+          if (f.holdPaste)
+            await new Promise((resolve) => {
+              f.releasePaste = resolve;
+            });
+          if (f.pasteFilesError) throw f.pasteFilesError;
+          return f.pasteFilesResult;
+        }
         if (cmd === "remote_status") {
           const reportedInput = f.staleInput ?? {
             generation: f.inputGeneration,
@@ -98,6 +111,7 @@ const fs = require("node:fs");
             state: f.closed ? "closed" : f.path,
             discovery: f.discovery,
             permission: f.permission,
+            files: { supported: f.fileSupport, status: { transfers: [] } },
             video: f.video,
             input: reportedInput,
             mouse: f.mouse,
@@ -240,6 +254,125 @@ const fs = require("node:fs");
   );
   await revealToolbar();
   assert(await page.locator(".viewer-titlebar").isVisible());
+  assert(
+    await page
+      .getByRole("button", { name: "传输文件", exact: true })
+      .isDisabled(),
+    "old peers do not silently receive file data",
+  );
+  await page.evaluate(() => {
+    window.fixture.fileSupport = true;
+    window.fixture.holdPaste = true;
+  });
+  await page.waitForFunction(
+    () =>
+      !Array.from(document.querySelectorAll("button")).find(
+        (b) => b.textContent === "传输文件",
+      )?.disabled,
+  );
+  await page.locator(".remote-screen").focus();
+  const pasteStart = await page.evaluate(() => window.fixture.calls.length);
+  await page.keyboard.press("Control+v");
+  await page.waitForFunction(() => window.fixture.releasePaste !== null);
+  await page.keyboard.press("Control+v");
+  assert.equal(
+    await page.evaluate(
+      (start) =>
+        window.fixture.calls
+          .slice(start)
+          .filter((c) => c.cmd === "remote_paste_files").length,
+      pasteStart,
+    ),
+    1,
+    "repeated paste cannot start another transfer",
+  );
+  assert.equal(
+    await page.evaluate(
+      (start) =>
+        window.fixture.calls
+          .slice(start)
+          .filter((c) => c.cmd === "remote_input" && c.args.input?.vk === 0x56)
+          .length,
+      pasteStart,
+    ),
+    0,
+    "file paste never sends an early V into the remote app",
+  );
+  assert(await page.getByAltText("远端桌面").isVisible());
+  await page.screenshot({
+    path: ".local/ui-verification/clipboard-paste-progress.png",
+  });
+  await page.evaluate(() => {
+    window.fixture.holdPaste = false;
+    window.fixture.releasePaste();
+    window.fixture.releasePaste = null;
+  });
+  await page
+    .getByText("文件已传入远程剪贴板并发送粘贴，请在目标窗口查看。", {
+      exact: true,
+    })
+    .waitFor();
+  await revealToolbar();
+  await page.getByRole("button", { name: "传输文件", exact: true }).click();
+  await page.waitForFunction(() =>
+    window.fixture.calls.some((c) => c.cmd === "remote_send_files"),
+  );
+  await page.evaluate(() => {
+    window.fixture.pasteFilesResult = false;
+  });
+  const fallbackStart = await page.evaluate(() => window.fixture.calls.length);
+  await page.locator(".remote-screen").focus();
+  await page.keyboard.press("Control+v");
+  await page.waitForFunction(
+    (start) =>
+      window.fixture.calls
+        .slice(start)
+        .some(
+          (c) =>
+            c.cmd === "remote_input" &&
+            c.args.input?.vk === 0xa2 &&
+            c.args.input?.down === false,
+        ),
+    fallbackStart,
+  );
+  assert.equal(
+    await page.evaluate(
+      (start) =>
+        window.fixture.calls
+          .slice(start)
+          .filter((c) => c.cmd === "remote_input" && c.args.input?.vk === 0x56)
+          .length,
+      fallbackStart,
+    ),
+    2,
+    "no local files preserves ordinary remote clipboard paste",
+  );
+  await page.evaluate(() => {
+    window.fixture.pasteFilesResult = true;
+  });
+  await page.evaluate(() => {
+    window.fixture.pasteFilesError = "剪贴板读取失败测试";
+  });
+  await page.locator(".remote-screen").focus();
+  await page.keyboard.press("Control+v");
+  await page.getByText("剪贴板读取失败测试", { exact: true }).first().waitFor();
+  assert(
+    await page.getByAltText("远端桌面").isVisible(),
+    "clipboard failure preserves screen connection",
+  );
+  await page.getByRole("button", { name: "知道了", exact: true }).click();
+  await page.evaluate(() => {
+    window.fixture.pasteFilesError = null;
+    window.fixture.fileSupport = false;
+  });
+  await page.waitForFunction(
+    () =>
+      Array.from(document.querySelectorAll("button")).find(
+        (b) => b.textContent === "传输文件",
+      )?.disabled,
+  );
+  await load();
+  await revealToolbar();
   assert.equal(await page.getByLabel("画面分辨率").inputValue(), "-2");
   for (const [width, profile] of [
     [2560, 2],
@@ -316,6 +449,8 @@ const fs = require("node:fs");
   assert(await page.getByAltText("远端桌面").isVisible());
   await page.evaluate(() => (window.fixture.heartbeat = true));
   const verifyFillPixels = async () => {
+    // This assertion measures a static frame. Avoid revoking its blob URL while img.decode() is pending.
+    await page.evaluate(() => (window.fixture.heartbeat = false));
     await page.mouse.move(400, 300);
     await page.locator(".viewer-toolbar").waitFor({ state: "hidden" });
     await page.getByAltText("远端桌面").evaluate((img) => img.decode());
@@ -361,6 +496,7 @@ const fs = require("node:fs");
         "all source corners must reach viewport corners without blank bands or cropping",
       ),
     );
+    await page.evaluate(() => (window.fixture.heartbeat = true));
   };
   for (const size of [
     { width: 640, height: 420 },

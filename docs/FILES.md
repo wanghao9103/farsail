@@ -4,7 +4,17 @@
 
 [Client 0.1.21](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.21) provides bidirectional single-file transfer on Ubuntu and Windows desktops, with x64 and ARM64 Ubuntu packages. This does not establish the same capability for older installers. Upgrade both desktops and the coordinator together: the coordinator must accept Linux file capability and keep file approval independent from screen sharing. Windows code, NTFS, native viewer and installation/restart/reinstallation/uninstallation CI checks passed. Native file dialogs have not yet been accepted on a physical Windows machine; the three signed 0.1.21 installers are publicly released.
 
-## Send and receive
+## Copy and paste during remote control (current source, unreleased)
+
+With this feature on both clients, one **Remote control** approval includes file transfer. No additional Files connection or per-file confirmation is required. Screen-capable devices integrate file actions into remote control; devices that only receive files retain the standalone entry.
+
+1. Connect with remote control, open the destination folder remotely and keep that window in the foreground.
+2. Copy regular files in the local file manager, focus the remote picture and press **Ctrl+V**, or use **Transfer files** in the viewer toolbar.
+3. Up to 32 regular files transfer sequentially with progress. After every file passes integrity checks, the remote client publishes the file clipboard and sends paste. Success means the paste action was sent; the file manager still performs the final copy and handles existing destination names.
+
+Local sources support Windows file lists and Ubuntu URI file lists; the destination currently requires Windows. Folders, links, network URIs and copying remote files back locally are not supported. View-only sessions cannot transfer files, and old peers without the capability keep the button disabled. Receivers use a private native staging directory without a Save dialog, retaining it until application exit so ending a session does not remove a source while the system is copying it. Abnormal exit can leave temporary files. A changed foreground window, ended authorization or paused input prevents automatic paste. When no local files are copied, Ctrl+V retains ordinary paste from the remote clipboard.
+
+## Send and receive through a standalone file connection
 
 These steps apply from client 0.1.23. Older 0.1.22 packages use the separate **Allow receiving files** switch, which starts off after each application restart; update to use the unified setting and validated restoration.
 
@@ -21,7 +31,7 @@ For another account, create a one-time invitation with **Only transfer files**, 
 
 ## Local scope and integrity
 
-Files use a distinct `files` authorization grant and `Channel::File`; `view` and `control` sessions cannot use this channel. The unified remote setting declares `can_files=true` only while native transport and file handling are available. Windows also enables `can_host` after its screen checks pass; Ubuntu keeps `can_host=false`. These remain separate protocol capabilities and grants, without separate user switches. Turning off remote connections stops incoming screen and file sessions locally before attempting server capability updates. Logout, transport shutdown and authorization loss also stop local operations; delayed picker results cannot revive an ended session.
+Standalone file connections use a `files` authorization grant and `Channel::File`. Current source also permits this channel in `control` sessions, sharing the same identity, connection and short lease; `view` still cannot use it. The unified remote setting declares `can_files=true` only while native transport and file handling are available. Windows also enables `can_host` after its screen checks pass; Ubuntu keeps `can_host=false`. These remain separate protocol capabilities and grants, without separate user switches. Turning off remote connections stops incoming screen and file sessions locally before attempting server capability updates. Logout, transport shutdown and authorization loss also stop local operations; delayed picker results cannot revive an ended session.
 
 The peer cannot browse local directories or select arbitrary local paths. Each native Open dialog grants access to one chosen source file, and each native Save As dialog grants a destination for one offered file. React receives session/task IDs, display names, sizes, progress and errors, never full local paths, signing keys, account/device tokens or grants.
 
@@ -35,7 +45,7 @@ File connections reuse the existing iroh endpoint identity and path-discovery st
 
 The protocol streams at most 64 KiB per chunk and waits for its acknowledgement before sending the next chunk. All outgoing file sessions in one application share a fixed 4 MiB/s file bandwidth budget. This is a file-protocol budget, not a guarantee about link speed, aggregate screen-plus-file traffic or network overhead. A single file is limited to 64 GiB. The sender checks the source content before offering it and rechecks the content while sending; the receiver checks the full SHA-256 before reporting successful completion. Larger files take time to hash before the offer appears.
 
-Current limits: individual regular files only; no recursive directories, remote filesystem browser, overwrite, pause/resume across disconnects, selective compression or automatic execution. After a failed or ended transfer, obtain a new connection approval if needed, select the file again and select a new destination name. File-content validation and permission checks do not prove physical cross-NAT reachability or performance on every disk/network.
+Standalone connections select one regular file at a time; remote paste supports up to 32 files. Shared limits: no recursive directories, remote filesystem browser, overwrite, pause/resume across disconnects, selective compression or automatic execution. After a failed or ended transfer, obtain a new connection approval if needed, select the file again and select a new destination name. File-content validation and permission checks do not prove physical cross-NAT reachability or performance on every disk/network.
 
 ## Verification and troubleshooting
 

@@ -7,6 +7,8 @@ use farsail_core::RemotePermission;
 use farsail_transport::Config as TransportConfig;
 use std::sync::Arc;
 use tauri::Manager;
+mod clipboard;
+use clipboard::{remote_paste_files, remote_send_files};
 mod computer;
 mod desktop;
 use desktop::app_exit;
@@ -405,8 +407,8 @@ pub fn run() {
             app.manage(updater.clone());
             let store = Arc::new(PlatformStore::new(dir)?);
             let client = Arc::new(NativeClient::new(store)?);
-            let remote=RemoteRuntime::new(client.clone());
             let files=NativeFiles::new(client.clone());
+            let remote=RemoteRuntime::new(client.clone(), files.clone());
             tauri::async_runtime::spawn(files.clone().listen());
             app.manage(files);
             let heartbeat = client.clone();
@@ -469,6 +471,8 @@ pub fn run() {
     });
     #[cfg(debug_assertions)]
     let builder = builder.invoke_handler(tauri::generate_handler![
+        remote_paste_files,
+        remote_send_files,
         files_status,
         files_send,
         files_accept,
@@ -508,6 +512,8 @@ pub fn run() {
     ]);
     #[cfg(not(debug_assertions))]
     let builder = builder.invoke_handler(tauri::generate_handler![
+        remote_paste_files,
+        remote_send_files,
         files_status,
         files_send,
         files_accept,

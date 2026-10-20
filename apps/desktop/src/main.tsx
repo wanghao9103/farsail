@@ -117,7 +117,7 @@ function RemoteAccessControls({
           <strong>允许远程连接</strong>
           <small>
             {canShareLocalScreen(state)
-              ? "允许屏幕连接和文件传输，默认逐次批准。"
+              ? "远程控制包含文件传输，每次连接批准一次。"
               : "允许文件传输，每次连接需批准。"}
           </small>
         </span>
@@ -144,7 +144,7 @@ function RemoteAccessControls({
         <label className="preference-row">
           <span>
             <strong>同账号远程值守</strong>
-            <small>同账号设备可直接查看和控制屏幕；文件连接仍需批准。</small>
+            <small>同账号设备可直接控制屏幕并传输文件。</small>
           </span>
           <input
             type="checkbox"
@@ -165,7 +165,11 @@ function RemoteAccessControls({
           Ubuntu 暂不支持共享本机屏幕或远程值守。
         </p>
       )}
-      <p className="hint">每个接收文件仍需选择保存位置。</p>
+      <p className="hint">
+        {canShareLocalScreen(state)
+          ? "远控会话内可直接粘贴文件，无需再次批准。"
+          : "独立文件连接中，接收时选择保存位置。"}
+      </p>
       <details className="sharing-guidance">
         <summary>运行与恢复说明</summary>
         <p className="hint">
@@ -253,8 +257,9 @@ const copyText = async (value: string) => {
 };
 const short = (id: string) => id.slice(0, 8);
 const permissionLabel = (value: string) =>
-  ({ view: "仅查看屏幕", control: "查看并控制", files: "文件传输" })[value] ??
-  "未知权限";
+  ({ view: "仅查看屏幕", control: "控制与文件传输", files: "文件传输" })[
+    value
+  ] ?? "未知权限";
 const requestLabel = (value: string) =>
   ({
     pending: "等待批准",
@@ -1538,7 +1543,7 @@ function IncomingApprovals({
             {p.permission === "files"
               ? "仅允许传输文件；每个文件仍需你选择保存位置，不授予屏幕或鼠标键盘权限。"
               : p.permission === "control"
-                ? "允许后对方能看到屏幕并操作鼠标键盘。"
+                ? "允许后对方能查看屏幕、操作鼠标键盘，并直接粘贴文件。"
                 : "允许后对方只能看到屏幕。"}
           </p>
           <div className="row-actions">
@@ -1571,7 +1576,7 @@ function IncomingApprovals({
               {p.permission === "files"
                 ? "允许文件传输"
                 : p.permission === "control"
-                  ? "允许查看和控制"
+                  ? "允许控制和传输文件"
                   : "允许查看"}
             </button>
           </div>
@@ -1919,7 +1924,7 @@ function Devices({
                     onClick={() => connect("control")}
                   >
                     <Desktop20Regular aria-hidden="true" />
-                    远程控制<small>查看屏幕并操作鼠标键盘</small>
+                    远程控制<small>操作鼠标键盘 · 复制粘贴文件</small>
                   </button>
                   <button
                     className="secondary"
@@ -1938,27 +1943,36 @@ function Devices({
                     仅查看屏幕
                   </button>
                 </div>
-                <button
-                  className="secondary file-device-action"
-                  disabled={
-                    busy ||
-                    connecting ||
-                    !!waiting ||
-                    !state.deviceId ||
-                    !device.enabled ||
-                    !device.online ||
-                    !device.can_files
-                  }
-                  onClick={() => connect("files")}
-                >
-                  <Folder20Regular aria-hidden="true" />
-                  文件传输
-                </button>
-                <p className="muted">
-                  {device.can_files
-                    ? "文件连接需对方单独批准，收到文件后再选择保存位置。"
-                    : "对方尚未开放文件传输，请检查对方的远程连接设置。"}
-                </p>
+                {device.can_host ? (
+                  <p className="muted">
+                    远程控制包含文件传输：本地复制文件后，在远程目标文件夹按
+                    Ctrl+V，无需再次批准。
+                  </p>
+                ) : (
+                  <>
+                    <button
+                      className="secondary file-device-action"
+                      disabled={
+                        busy ||
+                        connecting ||
+                        !!waiting ||
+                        !state.deviceId ||
+                        !device.enabled ||
+                        !device.online ||
+                        !device.can_files
+                      }
+                      onClick={() => connect("files")}
+                    >
+                      <Folder20Regular aria-hidden="true" />
+                      文件传输
+                    </button>
+                    <p className="muted">
+                      {device.can_files
+                        ? "此设备支持独立文件连接；连接后选择文件和保存位置。"
+                        : "对方尚未开放文件传输，请检查对方的远程连接设置。"}
+                    </p>
+                  </>
+                )}
                 {blocked && <p className="muted">{blocked}</p>}
                 {(waiting ||
                   connecting ||
@@ -2207,7 +2221,9 @@ function Requests({
   return (
     <div className="connections-workspace">
       <div className="section-heading connection-intro">
-        <p className="muted">屏幕访问与文件传输分别授权。</p>
+        <p className="muted">
+          远程控制包含文件传输，仅查看屏幕不允许传输文件。
+        </p>
         <div className="row-actions">
           <button
             className="text-button"
@@ -2330,7 +2346,7 @@ function Requests({
           <div className="eyebrow">SHARE ACCESS</div>
           <h2>邀请他人连接我的电脑</h2>
           <p className="muted">
-            一次性邀请码仅用于发起连接，仍需在目标电脑批准；文件连接始终逐次批准。
+            一次性邀请码用于发起连接，需在目标电脑批准；远程控制与文件传输共用一次授权。
           </p>
           <form
             className="form"
@@ -2496,7 +2512,7 @@ function Requests({
             <span className="count">{pending.length}</span>
           </div>
           <p className="muted">
-            只批准你认识的连接。文件连接不授予屏幕或操作权限，每个文件需单独选择保存位置。
+            只批准你认识的连接。远程控制包含文件传输；独立文件连接不授予屏幕或操作权限。
           </p>
           {!state.sharing && pending.some((p) => p.permission !== "files") && (
             <p className="hint">
@@ -2552,7 +2568,7 @@ function Requests({
                       {p.permission === "files"
                         ? "允许文件传输"
                         : p.permission === "control"
-                          ? "允许查看和控制"
+                          ? "允许控制和传输文件"
                           : "允许查看"}
                     </button>
                   </div>
@@ -2745,6 +2761,20 @@ function Requests({
   );
 }
 type RemoteStatus = {
+  files?: {
+    supported: boolean;
+    status?: {
+      transfers: {
+        id: string;
+        name: string;
+        size: number;
+        transferred: number;
+        direction: string;
+        state: string;
+      }[];
+    } | null;
+  };
+
   video?: {
     profile: number;
     generation: number;
@@ -2870,6 +2900,10 @@ function Viewer({
   const inputPending = useRef(0);
   const lastMove = useRef(0);
   const [ended, setEnded] = useState(false);
+  const [fileBusy, setFileBusy] = useState(false);
+  const fileInFlight = useRef(false);
+  const swallowPasteUp = useRef(false);
+  const [fileNote, setFileNote] = useState("");
   const [reconnecting, setReconnecting] = useState(false);
   const [reconnectFailed, setReconnectFailed] = useState(false);
   const [recoveryStatus, setRecoveryStatus] = useState<RecoveryStatus | null>(
@@ -2956,7 +2990,12 @@ function Viewer({
     return () => window.removeEventListener("resize", refresh);
   }, []);
   const showToolbar =
-    toolbarVisible || toolsOpen || toolbarPinned || reconnecting || displayBusy;
+    toolbarVisible ||
+    toolsOpen ||
+    toolbarPinned ||
+    reconnecting ||
+    displayBusy ||
+    fileBusy;
   const scheduleHide = () => {
     window.clearTimeout(toolbarTimer.current);
     if (!toolbarPinned && !toolsOpen && !toolbarHovered.current)
@@ -3048,6 +3087,7 @@ function Viewer({
   const control =
     !ended &&
     !inputBlocked &&
+    !fileBusy &&
     !displayBusy &&
     !!picture &&
     status?.state !== "closed" &&
@@ -3102,6 +3142,76 @@ function Viewer({
         inputPending.current--;
       });
   };
+  const pasteFiles = async (choose = false) => {
+    if (
+      !controlRef.current ||
+      fileInFlight.current ||
+      !status?.files?.supported
+    )
+      return;
+    fileInFlight.current = true;
+    const lease = viewerLease.current;
+    generation.current++;
+    clearPointer();
+    setFileBusy(true);
+    setFileNote(
+      choose
+        ? "请选择文件；文件将粘贴到远程当前文件夹。"
+        : "正在准备剪贴板文件…",
+    );
+    try {
+      await inputQueue.current;
+      if (!lease.active) return;
+      await invoke("remote_input", { id, input: null });
+      if (!lease.active) return;
+      const pasted = await invoke<boolean | undefined>(
+        choose ? "remote_send_files" : "remote_paste_files",
+        { id },
+      );
+      if (!lease.active) return;
+      if (choose && !pasted) {
+        setFileNote("");
+        return;
+      }
+      if (!choose && !pasted) {
+        // No local file list: preserve ordinary paste in the remote app.
+        for (const [vk, down] of [
+          [0xa2, true],
+          [0x56, true],
+          [0x56, false],
+          [0xa2, false],
+        ] as const) {
+          if (!lease.active) return;
+          await invoke("remote_input", {
+            id,
+            input: { kind: "key", vk, down },
+            generation: inputGeneration.current,
+          });
+        }
+        setFileNote("");
+      } else setFileNote("文件已传入远程剪贴板并发送粘贴，请在目标窗口查看。");
+    } catch (e) {
+      if (lease.active) {
+        setFileNote("");
+        setProblem(errorText(e));
+      }
+    } finally {
+      fileInFlight.current = false;
+      if (lease.active) {
+        setFileBusy(false);
+        screen.current?.focus({ preventScroll: true });
+      }
+    }
+  };
+  const activeFile = status?.files?.status?.transfers.find(
+    (t) =>
+      t.direction === "send" && ["offered", "transferring"].includes(t.state),
+  );
+  useEffect(() => {
+    if (!fileNote || fileBusy) return;
+    const timer = window.setTimeout(() => setFileNote(""), 6000);
+    return () => window.clearTimeout(timer);
+  }, [fileNote, fileBusy]);
   const keyVk = (e: React.KeyboardEvent) => {
     if (e.location === KeyboardEvent.DOM_KEY_LOCATION_RIGHT) {
       if (e.key === "Control") return 0xa3;
@@ -3656,6 +3766,20 @@ function Viewer({
           </label>
 
           <div className="viewer-toolbar-actions">
+            {status?.permission === "control" && (
+              <button
+                disabled={!control || !status.files?.supported}
+                title={
+                  status.files?.supported
+                    ? "先在远端打开目标文件夹，再选择文件；也可本地复制后按 Ctrl+V"
+                    : "需两端更新至支持远控文件传输的版本"
+                }
+                onClick={() => void pasteFiles(true)}
+              >
+                <Folder20Regular aria-hidden="true" />
+                {fileBusy ? "正在传输…" : "传输文件"}
+              </button>
+            )}
             <details
               className="viewer-more"
               onToggle={(e) => setToolsOpen(e.currentTarget.open)}
@@ -3780,7 +3904,10 @@ function Viewer({
             正在切换画面分辨率…
           </div>
         )}
-        {(reconnecting || (displayBusy && !ended) || recoveryNotice) && (
+        {(reconnecting ||
+          (displayBusy && !ended) ||
+          recoveryNotice ||
+          (!ended && (fileBusy || fileNote))) && (
           <div
             className="viewer-session-notice"
             role="status"
@@ -3794,7 +3921,11 @@ function Viewer({
                     ? "暂未收到所选屏幕的画面，请重新选择屏幕。"
                     : "原选中屏幕暂不可用或布局已变化，请选择要显示的屏幕。"
                   : "连接已建立，正在恢复所选屏幕…"
-                : recoveryNotice}
+                : fileBusy || fileNote
+                  ? activeFile
+                    ? `正在传输 ${activeFile.name} · ${activeFile.size ? Math.round((activeFile.transferred / activeFile.size) * 100) : 0}%`
+                    : fileNote
+                  : recoveryNotice}
           </div>
         )}
         <FailureDialog
@@ -3861,9 +3992,25 @@ function Viewer({
           onKeyDown={(e) => {
             if (!control) return;
             e.preventDefault();
+            if (
+              (e.ctrlKey || e.metaKey) &&
+              !e.altKey &&
+              !e.shiftKey &&
+              e.code === "KeyV" &&
+              status?.files?.supported
+            ) {
+              swallowPasteUp.current = true;
+              if (!e.repeat) void pasteFiles();
+              return;
+            }
             send({ kind: "key", vk: keyVk(e), down: true, repeat: e.repeat });
           }}
           onKeyUp={(e) => {
+            if (e.code === "KeyV" && swallowPasteUp.current) {
+              swallowPasteUp.current = false;
+              e.preventDefault();
+              return;
+            }
             if (!control) return;
             e.preventDefault();
             send({ kind: "key", vk: keyVk(e), down: false });

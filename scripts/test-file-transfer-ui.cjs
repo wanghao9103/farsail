@@ -34,15 +34,15 @@ const fs = require("node:fs");
       ...local,
       id: "file-remote",
       name: "远端测试电脑",
-      platform: "windows",
-      can_host: true,
+      platform: "linux",
+      can_host: false,
       can_files: true,
     };
     const unavailable = {
       ...local,
       id: "file-unavailable",
       name: "未接收文件电脑",
-      can_host: true,
+      can_host: false,
     };
     const offline = {
       ...remote,
@@ -520,12 +520,32 @@ const fs = require("node:fs");
     ),
     "files",
   );
-  // View/control still open the viewer and never acquire Files permission.
+  // Screen-capable devices integrate files into Control, without a second request.
+  await page.evaluate(() => {
+    const remote = window.filesFixture.devices.find(
+      (d) => d.id === "file-remote",
+    );
+    remote.can_host = true;
+    remote.platform = "windows";
+  });
   await nav("我的设备").click();
   await page
     .locator(".device-list")
     .getByRole("button", { name: /^远端测试电脑/ })
     .click();
+  await page.getByRole("button", { name: "刷新", exact: true }).click();
+  assert.equal(
+    await devicePanel
+      .getByRole("button", { name: "文件传输", exact: true })
+      .count(),
+    0,
+  );
+  await devicePanel
+    .getByText("远程控制包含文件传输", { exact: false })
+    .waitFor();
+  await page.screenshot({
+    path: ".local/ui-verification/clipboard-device-integrated.png",
+  });
   await devicePanel
     .getByRole("button", { name: "仅查看屏幕", exact: true })
     .click();

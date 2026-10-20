@@ -25,6 +25,7 @@ type Transfer = {
   error?: string | null;
 };
 type FileSession = {
+  permission?: "files" | "control";
   id: string;
   host: boolean;
   state: "connected" | "closed";
@@ -88,7 +89,12 @@ export function FilesPanel({
       if (version !== readVersion.current) return;
       if (!next || !Array.isArray(next.sessions))
         throw new Error("无法读取文件传输状态，请确认客户端版本。");
-      setSnapshot(next);
+      setSnapshot({
+        ...next,
+        sessions: next.sessions.filter(
+          (session) => session.permission !== "control",
+        ),
+      });
       setReadError("");
     } catch (failure) {
       if (version === readVersion.current) setReadError(String(failure));

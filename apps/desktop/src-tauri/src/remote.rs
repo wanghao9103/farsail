@@ -1,5 +1,6 @@
+use crate::clipboard::Packet as ClipboardPacket;
 use crate::input_recovery::InputRecovery;
-use farsail_client::NativeClient;
+use farsail_client::{NativeClient, file_runtime::NativeFiles};
 use farsail_core::RemotePermission;
 use farsail_media::{BASELINE_PAYLOAD_BPS, ByteBudget, JpegFrame, MediaWindow, wait_for_ack};
 use farsail_transport::{Channel, Frame, Session};
@@ -17,6 +18,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::{Mutex, Semaphore, watch};
+type ClipboardReply = (u64, tokio::sync::oneshot::Sender<Result<(), String>>);
 
 #[derive(Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -272,6 +274,11 @@ struct Live {
     send_lock: Mutex<()>,
     send_permits: Semaphore,
     auto_resume_sending: AtomicBool,
+    file_supported: AtomicBool,
+    clipboard_serial: AtomicU64,
+    clipboard_gate: Mutex<()>,
+    clipboard_reply: StdMutex<Option<ClipboardReply>>,
+    clipboard_target: StdMutex<Option<(u64, farsail_windows::ForegroundWindow)>>,
 }
 impl Live {
     fn active(&self) -> bool {
@@ -405,14 +412,23 @@ pub struct RemoteRuntime {
     client: Arc<NativeClient>,
     sessions: Mutex<HashMap<String, Arc<Live>>>,
     finished: Mutex<HashMap<String, Value>>,
+    files: Arc<NativeFiles>,
+    // Explorer may still be copying after the session closes. Keep verified
+    // clipboard sources until application exit rather than deleting them early.
+    staging: Option<tempfile::TempDir>,
 }
 impl RemoteRuntime {
-    pub fn new(client: Arc<NativeClient>) -> Arc<Self> {
+    pub fn new(client: Arc<NativeClient>, files: Arc<NativeFiles>) -> Arc<Self> {
         let runtime = Arc::new(Self {
             client,
             sessions: Mutex::new(HashMap::new()),
             updating: AtomicBool::new(false),
             finished: Mutex::new(HashMap::new()),
+            files,
+            staging: tempfile::Builder::new()
+                .prefix("farsail-clipboard-")
+                .tempdir()
+                .ok(),
         });
         let mut receiver = runtime.client.subscribe_sessions();
         let owner = runtime.clone();
@@ -451,6 +467,23 @@ impl RemoteRuntime {
             .duration_since(UNIX_EPOCH)
             .map_or(1, |t| t.as_millis() as u64);
         let (tx, rx) = watch::channel(None);
+        let directory = if session.permission() == RemotePermission::Control {
+            self.staging.as_ref().and_then(|root| {
+                tempfile::Builder::new()
+                    .prefix("session-")
+                    .tempdir_in(root.path())
+                    .ok()
+            })
+        } else {
+            None
+        };
+        let file_ready = if let Some(directory) = directory {
+            self.files
+                .attach_control(session.clone(), host, directory.keep());
+            self.files.status(Some(session.id())).is_ok()
+        } else {
+            false
+        };
         let live = Arc::new(Live {
             session: session.clone(),
             host,
@@ -473,17 +506,32 @@ impl RemoteRuntime {
             send_lock: Mutex::new(()),
             send_permits: Semaphore::new(32),
             auto_resume_sending: AtomicBool::new(false),
+            file_supported: AtomicBool::new(false),
+            clipboard_serial: AtomicU64::new(0),
+            clipboard_gate: Mutex::new(()),
+            clipboard_reply: StdMutex::new(None),
+            clipboard_target: StdMutex::new(None),
         });
         sessions.insert(session.id().into(), live.clone());
         drop(sessions);
         let owner = self.clone();
         tokio::spawn(async move {
+            if file_ready && host {
+                let _ = live
+                    .session
+                    .send(Frame {
+                        channel: Channel::Media,
+                        bytes: b"FSFC1".to_vec(),
+                    })
+                    .await;
+            }
             if host {
                 owner.run_host(live.clone()).await;
             } else {
                 owner.run_viewer(live.clone(), tx).await;
             }
             live.alive.store(false, Ordering::SeqCst);
+            owner.files.stop(live.session.id());
             if let Err(e) = live.input.lock().unwrap().release_all() {
                 *live.error.lock().unwrap() = Some(format!("input cleanup incomplete: {e}"));
             }
@@ -749,6 +797,15 @@ impl RemoteRuntime {
                     Err(farsail_transport::Error::Timeout) => continue,
                     Err(_) => break,
                 };
+                if frame.channel == Channel::File {
+                    if ClipboardPacket::is_packet(&frame.bytes) {
+                        self.clipboard_packet(&live, &frame.bytes, Some(input_order.last))
+                            .await;
+                    } else {
+                        self.files.route_control(live.session.id(), frame);
+                    }
+                    continue;
+                }
                 if frame.channel == Channel::Media
                     && frame.bytes.len() == 8
                     && &frame.bytes[..4] == b"FSS1"
@@ -979,6 +1036,21 @@ impl RemoteRuntime {
                 Err(farsail_transport::Error::Timeout) => continue,
                 Err(_) => break,
             };
+            if frame.channel == Channel::File {
+                if ClipboardPacket::is_packet(&frame.bytes) {
+                    self.clipboard_packet(&live, &frame.bytes, None).await;
+                } else {
+                    self.files.route_control(live.session.id(), frame);
+                }
+                continue;
+            }
+            if frame.channel == Channel::Media
+                && frame.bytes == b"FSFC1"
+                && live.session.permission() == RemotePermission::Control
+            {
+                live.file_supported.store(true, Ordering::SeqCst);
+                continue;
+            }
             if frame.channel == Channel::Control
                 && live.session.permission() == RemotePermission::Control
             {
@@ -1048,6 +1120,202 @@ impl RemoteRuntime {
         }
     }
 
+    pub async fn check_file_control(&self, id: &str) -> Result<(), String> {
+        let live = self
+            .sessions
+            .lock()
+            .await
+            .get(id)
+            .cloned()
+            .ok_or("远程会话已结束。")?;
+        if live.host
+            || live.session.permission() != RemotePermission::Control
+            || !live.active()
+            || !live.session.is_open_now()
+            || live.input_state.lock().unwrap().blocked
+        {
+            return Err("当前会话不能粘贴文件，请恢复远程控制后重试。".into());
+        }
+        if !live.file_supported.load(Ordering::SeqCst) {
+            return Err("对方暂不支持远控文件粘贴，请更新两端客户端。".into());
+        }
+        if self.files.status(Some(id))?["state"] != "connected" {
+            return Err("文件通道已结束，请重新连接。".into());
+        }
+        Ok(())
+    }
+
+    async fn clipboard_exchange(&self, live: &Live, packet: ClipboardPacket) -> Result<(), String> {
+        let serial = packet.serial();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        *live.clipboard_reply.lock().unwrap() = Some((serial, tx));
+        let result = async {
+            live.session.send(Frame { channel: Channel::File, bytes: packet.encode() }).await.map_err(|_| "文件粘贴连接中断。")?;
+            tokio::select! {
+                result = tokio::time::timeout(Duration::from_secs(15), rx) => result.map_err(|_| "远程文件粘贴超时，请重试。")?.map_err(|_| "文件粘贴已取消。")?,
+                _ = live.session.wait_closed() => Err("远程会话已结束。".into()),
+            }
+        }.await;
+        live.clipboard_reply.lock().unwrap().take();
+        result
+    }
+
+    pub async fn paste_paths(
+        &self,
+        id: &str,
+        paths: Vec<std::path::PathBuf>,
+    ) -> Result<(), String> {
+        self.check_file_control(id).await?;
+        if paths.is_empty() || paths.len() > farsail_windows::clipboard::MAX_FILES {
+            return Err("一次请选择 1 至 32 个普通文件。".into());
+        }
+        let live = self
+            .sessions
+            .lock()
+            .await
+            .get(id)
+            .cloned()
+            .ok_or("远程会话已结束。")?;
+        let _gate = live
+            .clipboard_gate
+            .try_lock()
+            .map_err(|_| "正在传输文件，请稍候。")?;
+        self.check_file_control(id).await?;
+        let prepared = live.clipboard_serial.fetch_add(1, Ordering::SeqCst) + 1;
+        self.clipboard_exchange(
+            &live,
+            ClipboardPacket::Prepare {
+                serial: prepared,
+                after: live.send_sequence.load(Ordering::SeqCst),
+            },
+        )
+        .await?;
+        let mut ids = Vec::new();
+        for path in paths {
+            self.check_file_control(id).await?;
+            let transfer = self.files.send_path_id(id, path).await?;
+            self.files.wait_sent(id, &transfer).await?;
+            ids.push(transfer);
+        }
+        self.check_file_control(id).await?;
+        let serial = live.clipboard_serial.fetch_add(1, Ordering::SeqCst) + 1;
+        self.clipboard_exchange(
+            &live,
+            ClipboardPacket::Paste {
+                serial,
+                prepared,
+                ids,
+            },
+        )
+        .await
+    }
+
+    async fn clipboard_packet(&self, live: &Arc<Live>, bytes: &[u8], input_sequence: Option<u64>) {
+        if live.session.permission() != RemotePermission::Control {
+            return;
+        }
+        let Ok(packet) = ClipboardPacket::decode(bytes) else {
+            return;
+        };
+        if let ClipboardPacket::Result { serial, error } = packet {
+            if !live.host {
+                let mut pending = live.clipboard_reply.lock().unwrap();
+                if pending
+                    .as_ref()
+                    .is_some_and(|(expected, _)| *expected == serial)
+                    && let Some((_, reply)) = pending.take()
+                {
+                    let _ = reply.send(error.map_or(Ok(()), Err));
+                }
+            }
+            return;
+        }
+        if !live.host {
+            return;
+        }
+        let serial = packet.serial();
+        let result = if !live.active()
+            || !live.session.is_open_now()
+            || !self.client.hosting_enabled()
+            || !self.client.files_enabled()
+            || live.input_state.lock().unwrap().blocked
+        {
+            Err("远程控制已暂停或授权已结束。".into())
+        } else {
+            match packet {
+                ClipboardPacket::Prepare { serial, after } => {
+                    live.clipboard_target.lock().unwrap().take();
+                    if input_sequence != Some(after) {
+                        let _ = live
+                            .session
+                            .send(Frame {
+                                channel: Channel::File,
+                                bytes: ClipboardPacket::Result {
+                                    serial,
+                                    error: Some("正在同步远程按键，请稍后重新粘贴。".into()),
+                                }
+                                .encode(),
+                            })
+                            .await;
+                        return;
+                    }
+                    match foreground_window().filter(|w| input_context_ready(*w)) {
+                        Some(target) => match live.input.lock().unwrap().release_all() {
+                            Ok(()) => {
+                                *live.clipboard_target.lock().unwrap() = Some((serial, target));
+                                Ok(())
+                            }
+                            Err(_) => Err("无法松开远程按键，请恢复控制后重试。".into()),
+                        },
+                        None => Err("请先在远程电脑打开目标文件夹。".into()),
+                    }
+                }
+                ClipboardPacket::Paste { prepared, ids, .. } => {
+                    let target = live
+                        .clipboard_target
+                        .lock()
+                        .unwrap()
+                        .take()
+                        .filter(|(serial, _)| *serial == prepared);
+                    match (target, self.files.received_paths(live.session.id(), &ids)) {
+                        (Some((_, target)), Ok(paths)) => {
+                            let live = live.clone();
+                            let client = self.client.clone();
+                            tokio::task::spawn_blocking(move || {
+                                let mut sink = live.input.lock().unwrap();
+                                if !live.active() || !live.session.is_open_now() || !client.hosting_enabled() || !client.files_enabled() || live.input_state.lock().unwrap().blocked || foreground_window() != Some(target) || !input_context_ready(target) {
+                                    return Err("目标窗口已变化或控制已暂停，请回到目标文件夹后重新粘贴。".into());
+                                }
+                                sink.release_all().map_err(|_| "无法松开远程按键。")?;
+                                farsail_windows::clipboard::write_files(&paths)?;
+                                if !live.session.is_open_now() || !client.hosting_enabled() || !client.files_enabled() || foreground_window() != Some(target) || !input_context_ready(target) {
+                                    return Err("远程目标或授权已变化，文件已传入剪贴板，请在远端手动粘贴。".into());
+                                }
+                                let result = [(0xa2, true), (0x56, true), (0x56, false), (0xa2, false)].into_iter().try_for_each(|(vk, down)| sink.apply(Input::Key { vk, down, repeat: false }, None, 0).map_err(|_| "无法执行远程粘贴，请在远端手动粘贴。".to_owned()));
+                                let cleanup = sink.release_all().map_err(|_| "无法松开远程按键，请恢复控制。".to_owned());
+                                result.and(cleanup)
+                            }).await.unwrap_or_else(|_| Err("远程文件粘贴失败。".into()))
+                        }
+                        (_, Err(error)) => Err(error),
+                        _ => Err("粘贴目标已失效，请重新粘贴。".into()),
+                    }
+                }
+                ClipboardPacket::Result { .. } => unreachable!(),
+            }
+        };
+        let _ = live
+            .session
+            .send(Frame {
+                channel: Channel::File,
+                bytes: ClipboardPacket::Result {
+                    serial,
+                    error: result.err(),
+                }
+                .encode(),
+            })
+            .await;
+    }
+
     pub async fn status(&self, id: &str) -> Result<Value, String> {
         let live = self.sessions.lock().await.get(id).cloned();
         let Some(live) = live else {
@@ -1076,7 +1344,7 @@ impl RemoteRuntime {
         let discovery = self.client.transport_discovery_state(path).await;
         let profile = *live.video_profile.lock().unwrap();
         Ok(
-            json!({"id":id,"state":path,"rtt_ms":rtt,"discovery":discovery,"permission":live.session.permission(),"sharing":live.host,"verification_code":live.session.verification_code().map_err(|e|e.to_string())?,"displays":*live.displays.lock().unwrap(),"error":*live.error.lock().unwrap(),"input":*live.input_state.lock().unwrap(),"mouse":*live.mouse_state.lock().unwrap(),"video":{"profile":profile.profile,"generation":profile.generation,"supported":live.video_supported.load(Ordering::SeqCst),"max_profile":live.video_max_profile.load(Ordering::SeqCst)}}),
+            json!({"id":id,"state":path,"rtt_ms":rtt,"discovery":discovery,"permission":live.session.permission(),"sharing":live.host,"verification_code":live.session.verification_code().map_err(|e|e.to_string())?,"displays":*live.displays.lock().unwrap(),"error":*live.error.lock().unwrap(),"input":*live.input_state.lock().unwrap(),"mouse":*live.mouse_state.lock().unwrap(),"files":{"supported":live.file_supported.load(Ordering::SeqCst),"status":self.files.status(Some(id)).ok()},"video":{"profile":profile.profile,"generation":profile.generation,"supported":live.video_supported.load(Ordering::SeqCst),"max_profile":live.video_max_profile.load(Ordering::SeqCst)}}),
         )
     }
     pub async fn next_frame(&self, id: &str, after: u64) -> Result<Vec<u8>, String> {
