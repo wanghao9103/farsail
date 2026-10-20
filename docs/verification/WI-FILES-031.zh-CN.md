@@ -46,3 +46,9 @@ GitHub 源码提交 `f334a68` 的 [backend](https://github.com/wanghao9103/farsa
 证据位于忽略目录 `.local/clipboard-*.log` 与 `.local/ui-verification/clipboard-*.png`。已查看截图，进度复用底部提示，避免被悬浮工具栏遮挡。静态像素验证在解码时暂停合成帧刷新，避免 blob URL 被撤销的竞争，保留所有角点断言。
 
 部分验收：未执行物理 Windows 剪贴板/Explorer 粘贴、Ubuntu 到 Windows 双机、实际原生多文件选择器、UAC/安全桌面、公网性能或安装升级；未发布或部署生产。文件夹、链接及远端复制回本机暂不支持。临时来源保留至应用退出以供系统复制，异常退出可能遗留；前台窗口身份检查不证明同一 Explorer 窗口内的文件夹始终未变化。
+
+## 2026-10-20：0.1.28 发布补证
+
+不可变源码 `11a75bbfe5a49fd2665c98b34bb3d7c817cd255c` 已发布为 [0.1.28](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.28)。[签名工作流](https://github.com/wanghao9103/farsail/actions/runs/39365699777)的三个原始 package job 与最终发布重试通过。精确标签的 Windows、Ubuntu x64/ARM64、传输、后端、服务端升级及双语检查全部通过。首轮发布仅在最终固定更新清单字节比对失败，随后本地首次普通 URL 已返回 0.1.28；只重跑 publish 后显示 `This exact update is already published`，保留全部安装包字节和身份，没有捕获到旧缓存响应正文。
+
+12 个公开附件均匿名下载，API 摘要/尺寸、三平台内容/版本签名、篡改拒绝、原生安装元数据、精确源码重建（12/12）和校验文件重建（11/11）通过。普通固定清单 SHA-256 为 `71db68537e23195be9a82eb8d93365dd3f9ec4b9f0ef85a5ef80958687e48463`。ARM64 普通下载较慢后改用 8 路匿名 HTTPS Range，逐段及最终合并摘要均核验。证据为 `.local/client-public-0.1.28/verification.json`、下载来源、分段来源和原始 CI 日志；这证明发布与更新入口可用，不等同物理双机粘贴或已安装客户端跨版本升级。

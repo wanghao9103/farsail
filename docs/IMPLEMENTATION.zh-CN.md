@@ -4,6 +4,10 @@
 
 # FarSail 实施与接力记录
 
+## 客户端 0.1.28 远控文件粘贴已发布（2026-10-20）
+
+不可变标签 `client-v0.1.28` 指向 `11a75bbfe5a49fd2665c98b34bb3d7c817cd255c`。[正式工作流](https://github.com/wanghao9103/farsail/actions/runs/39365699777)及[公开发行](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.28)通过三平台签名包/原生安装检查与公开下载重建核验。Control 授权在同一连接和租约内包含文件传输，View 保持只读。Windows/Linux 原生文件剪贴板支持最多 32 个普通文件，粘贴到远端 Windows 窗口。固定更新清单与签名版本附件一致。物理双机剪贴板/Explorer 验收仍待完成，见[文件传输](FILES.zh-CN.md)。
+
 ## 客户端 0.1.27 更新体验与授权已发布（2026-10-19）
 
 不可变标签 `client-v0.1.27` 指向 `bca87a13e4ea246e0a5e5eed5ade4221d4c781ba`。[正式工作流](https://github.com/wanghao9103/farsail/actions/runs/39233924894)及[公开发行](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.27)通过三平台检查、签名和公开下载核验。移除重复更新说明，将原生和 IPC 内部错误转换为简短用户提示；Ubuntu 增加固定 root 助手、签名及版本复验、按账号保留授权与卸载撤销。两个 Linux 架构的生产签名包沙箱通过，不等同于真实桌面认证或完整系统重启验证。

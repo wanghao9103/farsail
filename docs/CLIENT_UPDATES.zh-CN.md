@@ -4,6 +4,8 @@
 
 ## 用户安装什么
 
+更新通道现已推进至 [0.1.28](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.28)，由[正式工作流](https://github.com/wanghao9103/farsail/actions/runs/39365699777)从 `11a75bbfe5a49fd2665c98b34bb3d7c817cd255c` 构建。三平台签名包、原生安装检查和公开字节/签名核验通过，普通固定更新清单与版本附件及重建结果一致。本版增加远控一次批准后的文件复制粘贴。两端均需更新，打开**共享与设置 → 软件更新 → 检查更新**，结束连接后安装。物理双机文件粘贴仍待验收。
+
 GitHub Actions 构建 Windows x64 NSIS 安装包，以及 Ubuntu x64、ARM64 Debian 包。发布成功后，三种安装包都会放到对应版本的客户端 Release；Actions 附件只是临时构建产物，不是更新通道。旧客户端没有更新器，需要手动安装一次首个支持更新的版本。服务端升级包不会升级桌面应用。
 
 “共享与设置”的“软件更新”显示当前版本、检查结果和下载进度。默认开启自动检查：正式安装版在启动后稍等片刻检查，之后每小时检查一次。自动下载与安装可以选择开启；有远程会话或查看窗口时，会等待结束后再安装并重启。Windows 沿用当前用户安装方式。设置会保留到下次启动。开发版不自动检查公网更新通道。
@@ -22,7 +24,7 @@ ARM64 系统名为 `aarch64`，Debian 包名后缀为 `arm64.deb`，清单目标
 
 原生 ARM64 CI 使用 GitHub 官方[托管 runner](https://docs.github.com/en/actions/how-tos/write-workflows/choose-where-workflows-run/choose-the-runner-for-a-job)，不把 x64 构建或 QEMU 可用当作 ARM 原生运行证据。
 
-更新通道现已推进至 [0.1.27](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.27)，由[正式工作流](https://github.com/wanghao9103/farsail/actions/runs/39233924894)从 `bca87a13e4ea246e0a5e5eed5ade4221d4c781ba` 构建。三平台原生/安装检查、公开包签名和摘要通过，普通固定更新地址与版本清单逐字一致。两个 Linux 架构的真实签名助手沙箱及包内权限检查通过；真实桌面认证、系统重启后的授权保留和受管理系统策略仍待现场验证。
+更新通道此前推进至 [0.1.27](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.27)，由[正式工作流](https://github.com/wanghao9103/farsail/actions/runs/39233924894)从 `bca87a13e4ea246e0a5e5eed5ade4221d4c781ba` 构建。三平台原生/安装检查、公开包签名和摘要通过，普通固定更新地址与版本清单逐字一致。两个 Linux 架构的真实签名助手沙箱及包内权限检查通过；真实桌面认证、系统重启后的授权保留和受管理系统策略仍待现场验证。
 
 ## 0.1.22 的更新弹窗
 

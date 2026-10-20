@@ -4,6 +4,10 @@
 
 # FarSail implementation and handoff record
 
+## Client 0.1.28 remote-control file paste published (2026-10-20)
+
+The immutable `client-v0.1.28` tag points to `11a75bbfe5a49fd2665c98b34bb3d7c817cd255c`. The [release workflow](https://github.com/wanghao9103/farsail/actions/runs/39365699777) and [public release](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.28) passed three-platform signed-package/native-installation checks and public-download reconstruction. Control authorization now includes file transfer over the same connection and lease; View remains read-only. Native Windows/Linux file clipboard sources support up to 32 regular files pasted into a remote Windows window. The fixed feed matches the signed versioned artifacts. Physical two-machine clipboard/Explorer acceptance is still pending; see [file transfer](FILES.md).
+
 ## Client 0.1.27 update feedback and authorization published (2026-10-19)
 
 The immutable `client-v0.1.27` tag points to `bca87a13e4ea246e0a5e5eed5ade4221d4c781ba`. The [release workflow](https://github.com/wanghao9103/farsail/actions/runs/39233924894) and [public release](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.27) passed three-platform checks, signatures and public-download verification. Repeated update explanations were removed and native/IPC diagnostics map to brief user messages. Ubuntu adds a fixed root helper, independent signature/version verification, account-scoped authorization and uninstall revocation. Both Linux architectures passed the production-signed package sandbox; this does not establish live desktop authentication or a full system reboot.

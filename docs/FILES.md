@@ -4,7 +4,9 @@
 
 [Client 0.1.21](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.21) provides bidirectional single-file transfer on Ubuntu and Windows desktops, with x64 and ARM64 Ubuntu packages. This does not establish the same capability for older installers. Upgrade both desktops and the coordinator together: the coordinator must accept Linux file capability and keep file approval independent from screen sharing. Windows code, NTFS, native viewer and installation/restart/reinstallation/uninstallation CI checks passed. Native file dialogs have not yet been accepted on a physical Windows machine; the three signed 0.1.21 installers are publicly released.
 
-## Copy and paste during remote control (current source, unreleased)
+[Client 0.1.28](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.28) is published from `11a75bbfe5a49fd2665c98b34bb3d7c817cd255c`. Its [release workflow](https://github.com/wanghao9103/farsail/actions/runs/39365699777), public package signatures and byte-for-byte feed verification passed. Both clients must update to use remote file paste. Physical two-machine clipboard/Explorer acceptance remains pending.
+
+## Copy and paste during remote control (0.1.28)
 
 With this feature on both clients, one **Remote control** approval includes file transfer. No additional Files connection or per-file confirmation is required. Screen-capable devices integrate file actions into remote control; devices that only receive files retain the standalone entry.
 
@@ -31,7 +33,7 @@ For another account, create a one-time invitation with **Only transfer files**, 
 
 ## Local scope and integrity
 
-Standalone file connections use a `files` authorization grant and `Channel::File`. Current source also permits this channel in `control` sessions, sharing the same identity, connection and short lease; `view` still cannot use it. The unified remote setting declares `can_files=true` only while native transport and file handling are available. Windows also enables `can_host` after its screen checks pass; Ubuntu keeps `can_host=false`. These remain separate protocol capabilities and grants, without separate user switches. Turning off remote connections stops incoming screen and file sessions locally before attempting server capability updates. Logout, transport shutdown and authorization loss also stop local operations; delayed picker results cannot revive an ended session.
+Standalone file connections use a `files` authorization grant and `Channel::File`. Client 0.1.28 also permits this channel in `control` sessions, sharing the same identity, connection and short lease; `view` still cannot use it. The unified remote setting declares `can_files=true` only while native transport and file handling are available. Windows also enables `can_host` after its screen checks pass; Ubuntu keeps `can_host=false`. These remain separate protocol capabilities and grants, without separate user switches. Turning off remote connections stops incoming screen and file sessions locally before attempting server capability updates. Logout, transport shutdown and authorization loss also stop local operations; delayed picker results cannot revive an ended session.
 
 The peer cannot browse local directories or select arbitrary local paths. Each native Open dialog grants access to one chosen source file, and each native Save As dialog grants a destination for one offered file. React receives session/task IDs, display names, sizes, progress and errors, never full local paths, signing keys, account/device tokens or grants.
 
