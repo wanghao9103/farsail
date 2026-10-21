@@ -1083,7 +1083,7 @@ const fs = require("node:fs");
     [null],
     "a paused input generation must discard the queued remote shortcut",
   );
-  assert.equal(await page.getByText("会话已结束，远端画面已清除").count(), 0);
+  assert.equal(await page.getByText("连接已结束").count(), 0);
   const blockedBefore = await page.evaluate(
     () => window.fixture.calls.filter((c) => c.cmd === "remote_input").length,
   );
@@ -1129,7 +1129,7 @@ const fs = require("node:fs");
     () => window.fixture.calls.filter((c) => c.cmd === "remote_input").length,
   );
   await page.evaluate(() => (window.fixture.closed = true));
-  await page.getByText("会话已结束，远端画面已清除").waitFor();
+  await page.getByText("连接已结束").waitFor();
   assert.equal(await page.getByAltText("远端桌面").count(), 0);
   assert.equal(await switchWindow().count(), 0, "ended control cannot switch");
   await page.evaluate(() => window.fixture.release());
@@ -1159,12 +1159,12 @@ const fs = require("node:fs");
   });
   await page
     .locator(".viewer-empty-state")
-    .getByRole("button", { name: "取消重连并关闭" })
+    .getByRole("button", { name: "取消重连" })
     .waitFor();
   assert.equal(await page.getByAltText("远端桌面").count(), 0);
   await page
     .locator(".viewer-empty-state")
-    .getByRole("button", { name: "取消重连并关闭" })
+    .getByRole("button", { name: "取消重连" })
     .click();
   assert.equal(
     await page.evaluate(

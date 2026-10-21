@@ -134,7 +134,8 @@ function Wait-Restore {
 }
 function Close-App {
     if ($script:appProcess -and !$script:appProcess.HasExited) {
-        Click-UI '退出 FarSail'
+        Click-UI '应用菜单'
+        Click-UI '退出'
         if (!$script:appProcess.WaitForExit(15000)) { throw 'Native close failed' }
     }
 }

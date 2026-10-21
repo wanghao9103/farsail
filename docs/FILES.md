@@ -27,7 +27,7 @@ These steps apply from client 0.1.23. Older 0.1.22 packages use the separate **A
 5. The recipient sees the offer and chooses **Save to…** or **Reject**. A native Save As dialog selects the exact destination for that file. Cancelling this dialog keeps the offer waiting; no file is created until a destination is selected. Sending approval alone never writes a file automatically.
 6. Both sides can send files through the approved connection. The record shows pending offers, progress, completion, rejection, cancellation or a failure reason. A completed file is not opened or executed automatically. Use **Cancel transfer** to stop an offered outgoing file or an active transfer, and **End file connection** to revoke this connection.
 
-Closing the main window from 0.1.23 hides FarSail to an available system tray or minimizes it otherwise, without stopping file transfers. Reopen the interface for approvals and save choices; explicitly quitting through the tray or sidebar stops transfers. Older 0.1.22 packages retain their previous close behavior.
+Closing the main window from 0.1.23 hides FarSail to an available system tray or minimizes it otherwise, without stopping file transfers. Reopen the interface for approvals and save choices; explicitly quitting through the tray or window menu stops transfers. Older 0.1.22 packages retain their previous close behavior.
 
 For another account, create a one-time invitation with **Only transfer files**, then give the recipient device ID and invitation code to the requester. The target still approves the connection. The invitation cannot grant screen or control access. See [client usage](CLIENT.md) and [authorization API](API.md).
 

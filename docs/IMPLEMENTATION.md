@@ -26,7 +26,7 @@ The current source replaces the separate file-receiving switch with **Allow remo
 
 The dated records and WI-005 plan below retain their original scope and evidence. Their independent screen/file switch design describes the earlier baseline; it does not override the current unified setting or establish that this change has passed the historical checks.
 
-The current source also hides the main window to an available system tray when closed, or minimizes it if no tray host is available, preserving enabled remote access and active file transfers. The tray or a second launch can reopen the existing window; the tray/sidebar Quit action performs normal local shutdown, while viewer closure remains scoped to its session. Published 0.1.22 retains its previous close behavior. See [client usage](CLIENT.md).
+The current source also hides the main window to an available system tray when closed, or minimizes it if no tray host is available, preserving enabled remote access and active file transfers. The tray or a second launch can reopen the existing window; the tray/window menu Quit action performs normal local shutdown, while viewer closure remains scoped to its session. Published 0.1.22 retains its previous close behavior. See [client usage](CLIENT.md).
 
 ## Windows startup permission in current source (2026-10-19)
 

@@ -123,7 +123,7 @@ function nativeFixture(initial) {
         Object.assign(fixture.update, {
           phase: fixture.update.canPrompt ? "installing" : "waiting",
           message: fixture.update.canPrompt
-            ? "正在安装更新，完成后将重新启动。"
+            ? "正在安装更新。"
             : "更新已就绪，等待远程连接结束。请关闭远程窗口后安装。",
         });
         return snapshot();
@@ -367,6 +367,14 @@ async function alignedActions(actions) {
               .getByRole("button", { name: "查看更新", exact: true })
               .evaluate((button) => button.classList.contains("primary")),
           );
+          assert.equal(await notice(page).count(), 0);
+          await page.screenshot({
+            path: path.join(
+              directory,
+              `settings-${viewport.width}x${viewport.height}.png`,
+            ),
+          });
+          await page.getByRole("button", { name: "总览", exact: true }).click();
           const alert = notice(page);
           await alert.waitFor();
           const alertButton = alert.getByRole("button", {
@@ -398,9 +406,12 @@ async function alignedActions(actions) {
           await page.screenshot({
             path: path.join(
               directory,
-              `settings-${viewport.width}x${viewport.height}.png`,
+              `notice-${viewport.width}x${viewport.height}.png`,
             ),
           });
+          await page
+            .getByRole("button", { name: "共享与设置", exact: true })
+            .click();
           await settings
             .getByRole("button", { name: "查看更新", exact: true })
             .click();
@@ -538,13 +549,13 @@ async function alignedActions(actions) {
         .getByRole("button", { name: "查看更新", exact: true })
         .click();
       await dialog
-        .getByRole("button", { name: "安装并重启", exact: true })
+        .getByRole("button", { name: "安装更新", exact: true })
         .waitFor();
       await page.evaluate(
         () => (window.updateFixture.update.canPrompt = false),
       );
       await dialog
-        .getByRole("button", { name: "安装并重启", exact: true })
+        .getByRole("button", { name: "安装更新", exact: true })
         .click();
       await dialog.getByText(/等待远程连接结束/).waitFor();
       await dialog.getByRole("button", { name: "稍后", exact: true }).click();
@@ -553,7 +564,7 @@ async function alignedActions(actions) {
       await page.evaluate(() =>
         Object.assign(window.updateFixture.update, {
           phase: "installing",
-          message: "正在安装更新，完成后将重新启动。",
+          message: "正在安装更新。",
         }),
       );
       await polls(page);
@@ -637,7 +648,7 @@ async function alignedActions(actions) {
         .waitFor();
       assert.equal(
         await dialog
-          .getByRole("button", { name: "安装并重启", exact: true })
+          .getByRole("button", { name: "安装更新", exact: true })
           .count(),
         0,
       );
@@ -647,7 +658,7 @@ async function alignedActions(actions) {
       await page.waitForFunction(() => !!window.updateFixture.pendingDownload);
       await page.evaluate(() => window.updateFixture.finishDownload());
       await dialog
-        .getByRole("button", { name: "安装并重启", exact: true })
+        .getByRole("button", { name: "安装更新", exact: true })
         .waitFor();
       assert.equal(
         await page.evaluate(
@@ -684,7 +695,7 @@ async function alignedActions(actions) {
         );
         await page.evaluate(() => window.updateFixture.finishDownload());
         await dialog
-          .getByRole("button", { name: "安装并重启", exact: true })
+          .getByRole("button", { name: "安装更新", exact: true })
           .waitFor();
         await dialog.getByRole("button", { name: "稍后", exact: true }).click();
         await polls(page);

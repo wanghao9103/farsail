@@ -134,7 +134,7 @@ const fs = require("node:fs");
               phase: f.updateConnected ? "waiting" : "installing",
               message: f.updateConnected
                 ? "更新已就绪，等待远程连接结束。请关闭远程窗口后安装。"
-                : "正在安装更新，完成后将重新启动。",
+                : "正在安装更新。",
             });
           return { ...f.update, preferences: { ...f.update.preferences } };
         }
@@ -347,22 +347,30 @@ const fs = require("node:fs");
     };
   });
   await page.goto(process.env.UI_URL || "http://127.0.0.1:1420/");
-  await page.getByRole("button", { name: "创建账号", exact: true }).click();
+  assert.equal(
+    await page.locator(".sidebar button").filter({ hasText: /退出/ }).count(),
+    0,
+  );
+  const appMenu = page.getByRole("button", { name: "应用菜单", exact: true });
+  await appMenu.click();
+  await page.getByRole("button", { name: "退出", exact: true }).waitFor();
+  await appMenu.press("Escape");
+  assert.equal(
+    await page.getByRole("button", { name: "退出", exact: true }).isVisible(),
+    false,
+  );
+  await page.getByRole("tab", { name: "注册", exact: true }).click();
   await page
     .getByLabel("邮箱地址", { exact: true })
     .fill("tester@example.invalid");
   await page.getByLabel("密码", { exact: true }).fill("synthetic-password-123");
-  await page
-    .getByRole("button", { name: "注册并验证邮箱", exact: true })
-    .click();
+  await page.getByRole("button", { name: "注册", exact: true }).click();
   await page.getByLabel("邮箱验证码", { exact: true }).waitFor();
   await page.getByLabel("邮箱验证码", { exact: true }).fill("012345");
   await page
-    .getByRole("button", { name: "没收到验证码？重新发送", exact: true })
+    .getByRole("button", { name: "重新发送验证码", exact: true })
     .click();
-  await page
-    .getByText("重发请求已提交，请检查收件箱和垃圾邮件。", { exact: true })
-    .waitFor();
+  await page.getByText("验证码重发请求已提交", { exact: true }).waitFor();
   assert.equal(
     await page.getByLabel("邮箱验证码", { exact: true }).inputValue(),
     "012345",
@@ -382,7 +390,7 @@ const fs = require("node:fs");
   });
   await page.evaluate(() => (window.fixture.failNextOp = "resend"));
   await page
-    .getByRole("button", { name: "没收到验证码？重新发送", exact: true })
+    .getByRole("button", { name: "重新发送验证码", exact: true })
     .click();
   await page.getByRole("alertdialog").filter({ hasText: "HTTP 503" }).waitFor();
   await page
@@ -681,13 +689,9 @@ const fs = require("node:fs");
   await page.screenshot({ path: ".local/ui-verification/many-devices.png" });
 
   await page.getByRole("button", { name: "远程连接", exact: true }).click();
-  await page
-    .getByRole("heading", { name: "谁想连接这台电脑", exact: true })
-    .waitFor();
+  await page.getByRole("heading", { name: "连接请求", exact: true }).waitFor();
   await page.getByRole("button", { name: "拒绝", exact: true }).click();
-  await page
-    .getByText("目前没有等待本机处理的请求。", { exact: true })
-    .waitFor();
+  await page.getByText("暂无待批准请求", { exact: true }).waitFor();
   await page.getByRole("button", { name: /^当前连接/ }).click();
   assert(
     (await page.locator(".connection-list-pane:visible").innerText()).includes(
@@ -775,15 +779,11 @@ const fs = require("node:fs");
       .getByRole("button", { name: "取消邀请", exact: true })
       .isVisible(),
   );
-  await page
-    .getByText("邀请码已收起，收起不会取消邀请", { exact: true })
-    .waitFor();
+  await page.getByText("邀请码已收起", { exact: true }).waitFor();
   await page.getByRole("button", { name: "我的设备", exact: true }).click();
   await page.getByRole("button", { name: "远程连接", exact: true }).click();
   await page.getByRole("button", { name: "邀请他人连接", exact: true }).click();
-  await page
-    .getByText("邀请码已收起，收起不会取消邀请", { exact: true })
-    .waitFor();
+  await page.getByText("邀请码已收起", { exact: true }).waitFor();
   assert.equal(
     await page.getByLabel("允许对方连接哪台电脑", { exact: true }).inputValue(),
     "local-0001",
@@ -920,9 +920,7 @@ const fs = require("node:fs");
   await page.evaluate(() => {
     window.fixture.failNextOp = "recover_complete";
   });
-  await page
-    .getByRole("button", { name: "保存新密码并返回登录", exact: true })
-    .click();
+  await page.getByRole("button", { name: "重置密码", exact: true }).click();
   await page
     .getByRole("alertdialog")
     .filter({ hasText: "操作未完成" })
@@ -932,9 +930,7 @@ const fs = require("node:fs");
     .getByLabel("关闭错误", { exact: true })
     .click();
   assert(await page.getByLabel("邮件中的重置码", { exact: true }).isVisible());
-  await page
-    .getByRole("button", { name: "保存新密码并返回登录", exact: true })
-    .click();
+  await page.getByRole("button", { name: "重置密码", exact: true }).click();
   await page
     .getByRole("heading", { name: "登录 FarSail", exact: true })
     .waitFor();
@@ -1057,7 +1053,7 @@ const fs = require("node:fs");
   await loginAgain();
   await page.getByRole("button", { name: "远程连接", exact: true }).click();
   const approvedConnect = page.getByRole("button", {
-    name: "连接并查看",
+    name: "仅查看屏幕",
     exact: true,
   });
   assert(await approvedConnect.isEnabled());
@@ -1187,9 +1183,7 @@ const fs = require("node:fs");
   );
   await page.getByRole("button", { name: "我的设备", exact: true }).click();
   await page.getByRole("button", { name: "管理控制台", exact: true }).click();
-  await page
-    .getByText("邀请码已收起，收起不会取消邀请", { exact: true })
-    .waitFor();
+  await page.getByText("邀请码已收起", { exact: true }).waitFor();
   assert.equal(
     await page.getByLabel("受邀邮箱", { exact: true }).inputValue(),
     "invited@example.invalid",
@@ -1209,9 +1203,7 @@ const fs = require("node:fs");
     .getByLabel("当前密码", { exact: true })
     .fill("synthetic-password-new");
   await page.getByLabel("新密码").fill("synthetic-password-next");
-  await page
-    .getByRole("button", { name: "修改密码并退出所有登录", exact: true })
-    .click();
+  await page.getByRole("button", { name: "修改密码", exact: true }).click();
   await page
     .getByRole("heading", { name: "登录 FarSail", exact: true })
     .waitFor();
@@ -1446,7 +1438,7 @@ const fs = require("node:fs");
   const updates = page.locator(".client-updates");
   await updates.getByRole("heading", { name: "软件更新" }).waitFor();
   await updates
-    .getByRole("checkbox", { name: "自动下载并安装", exact: true })
+    .getByRole("checkbox", { name: "自动安装更新", exact: true })
     .check();
   await page.waitForFunction(
     () => window.fixture.update.preferences.autoInstall,
@@ -1466,15 +1458,15 @@ const fs = require("node:fs");
     .getByText("更新包校验失败，请重新下载。", { exact: true })
     .waitFor();
   assert.equal(
-    await updateDialog.getByRole("button", { name: "安装并重启" }).count(),
+    await updateDialog.getByRole("button", { name: "安装更新" }).count(),
     0,
   );
   await updateDialog
     .getByRole("button", { name: "重试更新", exact: true })
     .click();
-  await updateDialog.getByRole("button", { name: "安装并重启" }).waitFor();
+  await updateDialog.getByRole("button", { name: "安装更新" }).waitFor();
   await page.evaluate(() => (window.fixture.updateConnected = true));
-  await updateDialog.getByRole("button", { name: "安装并重启" }).click();
+  await updateDialog.getByRole("button", { name: "安装更新" }).click();
   await updateDialog
     .getByText("更新已就绪，等待远程连接结束。请关闭远程窗口后安装。", {
       exact: true,
@@ -1482,10 +1474,8 @@ const fs = require("node:fs");
     .waitFor();
   await page.screenshot({ path: ".local/ui-verification/client-updates.png" });
   await page.evaluate(() => (window.fixture.updateConnected = false));
-  await updateDialog.getByRole("button", { name: "安装并重启" }).click();
-  await updateDialog
-    .getByText("正在安装更新，完成后将重新启动。", { exact: true })
-    .waitFor();
+  await updateDialog.getByRole("button", { name: "安装更新" }).click();
+  await updateDialog.getByText("正在安装更新。", { exact: true }).waitFor();
   assert(await updates.getByRole("button", { name: "检查更新" }).isDisabled());
   assert.deepEqual(errors, []);
   console.log(

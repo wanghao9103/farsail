@@ -250,7 +250,7 @@ impl Runtime {
             self.phase("waiting", "更新已就绪，等待屏幕或文件连接结束后安装。");
             return Ok(self.snapshot());
         }
-        self.phase("installing", "正在安装更新，完成后将重新启动。");
+        self.phase("installing", "正在安装更新。");
         let client = app.state::<Arc<NativeClient>>().inner().clone();
         client.cancel_sharing_restore();
         files.stop_all();

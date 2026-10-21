@@ -94,18 +94,36 @@ nav button:hover {
   color: var(--muted);
   font-size: 12px;
 }
-.app-exit {
-  margin-top: 12px;
-  padding: 8px 12px;
-  justify-content: flex-start;
+.window-menu-trigger {
+  min-height: 32px;
+  padding: 0 8px;
   border: 0;
+  border-radius: 0;
   background: transparent;
-  color: var(--muted);
+  color: var(--text);
   font-size: 12px;
 }
-.app-exit:hover {
+.window-menu-trigger:hover,
+.window-titlebar:has(.window-menu:popover-open) .window-menu-trigger {
   background: #263039;
+}
+.window-menu {
+  position: fixed;
+  inset: 34px auto auto 8px;
+  margin: 0;
+  padding: 4px;
+  min-width: 140px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--surface-raised);
   color: var(--text);
+  box-shadow: 0 8px 24px #0005;
+}
+.window-menu button {
+  width: 100%;
+  justify-content: flex-start;
+  background: transparent;
+  border: 0;
 }
 .sidebar-foot small,
 .muted,
@@ -128,6 +146,29 @@ main {
   padding-bottom: 18px;
   margin-bottom: 0;
   min-height: 64px;
+  flex-wrap: wrap;
+  gap: 12px 20px;
+}
+.topbar > div:first-child {
+  min-width: 0;
+}
+.page-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-inline-start: auto;
+  min-width: 0;
+  max-width: 100%;
+}
+.page-actions:empty {
+  display: none;
+}
+.page-actions > button {
+  min-height: 38px;
+  margin: 0;
+  padding: 8px 12px;
 }
 h1 {
   font-size: 24px;
@@ -205,13 +246,23 @@ h3 {
 }
 .card {
   min-width: 0;
-  padding: 22px;
+  padding: 20px;
+}
+.page-settings .card,
+.page-security .card {
+  padding: 20px;
+}
+.two-col,
+.page-security .two-col,
+.page-security > .stack,
+.page-admin > .stack {
+  gap: 16px;
 }
 .section-heading {
   flex-wrap: wrap;
   gap: 12px 16px;
 }
-.section-heading > div:first-child {
+.section-heading > div:first-child:not(.row-actions) {
   flex: 1 1 180px;
   min-width: 0;
 }
@@ -263,6 +314,13 @@ h3 {
 .ghost:hover:not(:disabled) {
   background: #303b45;
 }
+.primary,
+.secondary,
+.ghost {
+  min-height: 38px;
+  padding: 8px 14px;
+  line-height: 1.5;
+}
 .text-button,
 .auth-links button {
   color: var(--accent);
@@ -273,8 +331,26 @@ select {
   border-color: #42505e;
   color: var(--text);
   border-radius: 4px;
-  min-height: 36px;
+  min-height: 38px;
+  padding: 8px 12px;
+  font-size: 13px;
+  line-height: 1.5;
   font-weight: 400;
+}
+.form label > small {
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.5;
+}
+.card > h2 + .form {
+  margin-top: 16px;
+}
+.inline-form {
+  align-items: stretch;
+}
+.inline-form > button {
+  flex: none;
+  max-width: 100%;
 }
 input::placeholder {
   color: #8696a4;
@@ -361,7 +437,7 @@ input[type="checkbox"] {
 }
 .local-device {
   min-height: 136px;
-  padding: 24px;
+  padding: 20px;
   gap: 20px;
   flex-wrap: wrap;
 }
@@ -584,6 +660,9 @@ input[type="checkbox"] {
 .file-transfer-pane > .section-heading,
 .file-transfer-pane > .hint {
   flex: none;
+}
+.file-transfer-pane > .section-heading {
+  align-items: flex-start;
 }
 .file-transfer-list {
   display: flex;
@@ -845,12 +924,12 @@ input[type="checkbox"] {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   align-items: start;
-  gap: 18px;
+  gap: 16px;
 }
 .settings-column {
   display: grid;
   align-content: start;
-  gap: 18px;
+  gap: 16px;
   min-width: 0;
 }
 .settings-column > .card {
@@ -989,6 +1068,9 @@ input[type="checkbox"] {
   margin-top: 20px;
   font-size: 20px;
 }
+.auth-card .form {
+  margin-top: 20px;
+}
 .auth-tabs {
   display: flex;
   border-bottom: 1px solid var(--line);
@@ -1012,8 +1094,12 @@ input[type="checkbox"] {
   justify-content: space-between;
   gap: 8px;
 }
+.auth-links:empty {
+  display: none;
+}
 .auth-links button {
   font-size: 12px;
+  padding-inline: 0;
 }
 table {
   border-collapse: collapse;
@@ -1074,6 +1160,21 @@ td {
 .viewer-more > summary {
   min-height: 36px;
   height: 36px;
+}
+.viewer-input-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+.viewer-window .viewer-popover .inline-form {
+  gap: 8px;
+}
+.viewer-popover .inline-form input,
+.viewer-popover .inline-form button {
+  min-height: 36px;
+  margin: 0;
 }
 .viewer-reveal {
   background: #242d35ed;
@@ -1300,12 +1401,6 @@ td {
     grid-template-columns: 1fr;
     gap: 0;
   }
-  .app-exit {
-    justify-content: center;
-  }
-  .app-exit > span {
-    display: none;
-  }
   nav button {
     justify-content: center;
     gap: 0;
@@ -1347,6 +1442,14 @@ td {
   }
 }
 @media (max-width: 580px) {
+  .page-settings .card,
+  .page-security .card {
+    padding: 16px;
+  }
+  .page-actions {
+    justify-content: flex-start;
+    margin-inline-start: 0;
+  }
   .files-layout {
     grid-template-rows: 144px minmax(300px, 1fr);
     min-height: 462px;
@@ -1375,13 +1478,28 @@ td {
     width: 100%;
     height: 52px;
     padding: 6px 8px;
+    gap: 6px;
+    justify-content: flex-start;
   }
-  .brand {
-    padding: 0;
+  .sidebar .brand {
+    display: none;
   }
-  .brand img {
-    width: 30px;
-    height: 30px;
+  .sidebar nav {
+    display: grid;
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(0, 1fr);
+    flex: 1;
+    min-width: 0;
+    gap: 2px;
+    overflow: visible;
+  }
+  .sidebar nav button,
+  .sidebar nav button:not(.active) {
+    width: 100%;
+    height: 38px;
+    min-height: 38px;
+    min-width: 0;
+    padding: 6px;
   }
   .sidebar-foot {
     flex: none;
@@ -1389,11 +1507,6 @@ td {
     padding: 0;
     border: 0;
     align-self: center;
-  }
-  .app-exit {
-    flex: none;
-    margin: 0;
-    padding: 8px;
   }
   nav button {
     padding: 7px;

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import type { Device, Remote } from "@farsail/ui";
 import { ArrowUpload20Regular, Folder20Regular } from "@fluentui/react-icons";
+import { PageActions } from "./page-actions";
 
 type FileState = { deviceId: string | null; filesEnabled?: boolean };
 type FileAction = (
@@ -146,8 +147,7 @@ export function FilesPanel({
   };
   return (
     <section className="files-workspace">
-      <div className="section-heading">
-        <p className="muted">收到文件后选择保存位置，文件不会自动打开。</p>
+      <PageActions>
         <button
           className="text-button"
           disabled={busy}
@@ -164,7 +164,7 @@ export function FilesPanel({
         >
           刷新文件状态
         </button>
-      </div>
+      </PageActions>
       {readError && (
         <div className="alert" role="alert">
           无法读取文件状态：{readError}
@@ -205,31 +205,29 @@ export function FilesPanel({
               </span>
             </button>
           ))}
-          {!ids.length && (
-            <p className="muted">
-              暂无文件连接。前往“我的设备”选择电脑发起文件传输。
-            </p>
-          )}
+          {!ids.length && <p className="muted">在“我的设备”中发起文件连接。</p>}
         </div>
         <div className="card file-transfer-pane">
           <div className="section-heading">
             <div>
-              <h2>{currentId ? peerName(currentId) : "文件传输"}</h2>
-              <p className="muted" role="status">
-                {connected
-                  ? session.path === "direct"
-                    ? "已直连"
-                    : session.path === "relay"
-                      ? "已通过中继连接"
-                      : "已连接 · 正在确认传输路径"
-                  : session?.state === "closed"
-                    ? "文件连接已结束"
-                    : request?.state === "pending"
-                      ? "等待对方批准文件连接"
-                      : request?.state === "approved"
-                        ? "已批准，等待建立文件连接"
-                        : "选择文件连接后开始传输"}
-              </p>
+              <h2>{currentId ? peerName(currentId) : "传输记录"}</h2>
+              {currentId && (
+                <p className="muted" role="status">
+                  {connected
+                    ? session.path === "direct"
+                      ? "已直连"
+                      : session.path === "relay"
+                        ? "已通过中继连接"
+                        : "已连接 · 正在确认传输路径"
+                    : session?.state === "closed"
+                      ? "文件连接已结束"
+                      : request?.state === "pending"
+                        ? "等待对方批准文件连接"
+                        : request?.state === "approved"
+                          ? "已批准，等待建立文件连接"
+                          : "尚未连接"}
+                </p>
+              )}
             </div>
             <div className="row-actions">
               {request?.state === "approved" &&
@@ -292,7 +290,7 @@ export function FilesPanel({
           </div>
           {session?.error && (
             <p className="hint" role="alert">
-              连接已结束：{session.error}
+              {session.error}
             </p>
           )}
           <div

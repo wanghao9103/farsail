@@ -540,9 +540,6 @@ const fs = require("node:fs");
       .count(),
     0,
   );
-  await devicePanel
-    .getByText("远程控制包含文件传输", { exact: false })
-    .waitFor();
   await page.screenshot({
     path: ".local/ui-verification/clipboard-device-integrated.png",
   });

@@ -193,9 +193,11 @@ export function UpdateDialog({
         <p id={description}>
           {status.availableVersion
             ? `FarSail ${status.availableVersion} 已可更新。`
-            : "检查并安装 FarSail 更新。"}
+            : `当前版本 ${status.currentVersion}`}
         </p>
-        <p className="muted">当前版本 {status.currentVersion}</p>
+        {status.availableVersion && (
+          <p className="muted">当前版本 {status.currentVersion}</p>
+        )}
         {(error || !["idle", "available"].includes(status.phase)) && (
           <p role={error || status.phase === "error" ? "alert" : "status"}>
             {error ||
@@ -233,7 +235,7 @@ export function UpdateDialog({
                 : status.phase === "checking"
                   ? "正在检查…"
                   : ready
-                    ? "安装并重启"
+                    ? "安装更新"
                     : status.phase === "error"
                       ? "重试更新"
                       : status.availableVersion
@@ -262,7 +264,7 @@ export function UpdateNotice({
     <div className="alert success update-notice" role="status">
       <span>
         FarSail {status.availableVersion} 可更新。
-        {status.phase === "waiting" ? "将在远程连接结束后安装。" : ""}
+        {status.phase === "waiting" ? "等待远程连接结束。" : ""}
       </span>
       <button className="text-button update-notice-action" onClick={onOpen}>
         查看更新
@@ -316,7 +318,7 @@ export function UpdateSettings({
             })
           }
         />
-        <span>自动下载并安装</span>
+        <span>自动安装更新</span>
       </label>
       {(error || status.phase !== "idle") && (
         <p role={error || status.phase === "error" ? "alert" : "status"}>
