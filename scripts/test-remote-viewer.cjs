@@ -1129,7 +1129,7 @@ const fs = require("node:fs");
     () => window.fixture.calls.filter((c) => c.cmd === "remote_input").length,
   );
   await page.evaluate(() => (window.fixture.closed = true));
-  await page.getByText("连接已结束").waitFor();
+  await page.getByText("连接已结束", { exact: true }).waitFor();
   assert.equal(await page.getByAltText("远端桌面").count(), 0);
   assert.equal(await switchWindow().count(), 0, "ended control cannot switch");
   await page.evaluate(() => window.fixture.release());
