@@ -45,8 +45,19 @@ function Find-UI([string]$Name, [string[]]$Type = @()) {
 }
 function Click-UI([string]$Name) {
     $item = Find-UI $Name 'Button'
-    $pattern = $item.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern)
-    $pattern.Invoke()
+    $supported = ($item.GetSupportedPatterns() | ForEach-Object { $_.ProgrammaticName }) -join ', '
+    Write-Host "Activating own app control: $Name ($supported)"
+    $pattern = $null
+    if ($item.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern, [ref]$pattern)) {
+        $pattern.Invoke()
+        return
+    }
+    # WebView2 can expose a popover trigger as ExpandCollapse rather than Invoke.
+    if ($Name -eq '应用菜单' -and $item.TryGetCurrentPattern([Windows.Automation.ExpandCollapsePattern]::Pattern, [ref]$pattern)) {
+        $pattern.Expand()
+        return
+    }
+    throw "Control '$Name' has no supported activation pattern ($supported)"
 }
 function Set-UISwitch([string]$Name, [bool]$Enabled) {
     # Chromium's native UIA maps role=switch to Button; older bridges can expose CheckBox.

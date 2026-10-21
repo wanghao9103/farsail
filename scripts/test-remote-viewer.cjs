@@ -308,7 +308,7 @@ const fs = require("node:fs");
     window.fixture.releasePaste = null;
   });
   await page
-    .getByText("文件已传入远程剪贴板并发送粘贴，请在目标窗口查看。", {
+    .getByText("已发送文件粘贴请求。", {
       exact: true,
     })
     .waitFor();
