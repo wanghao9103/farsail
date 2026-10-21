@@ -4,6 +4,10 @@
 
 # FarSail implementation and handoff record
 
+## Client 0.1.29 copy and layout cleanup published (2026-10-21)
+
+The immutable `client-v0.1.29` tag points to `167a3dc387fb3355844bff69aed798c115d20204`. The [release workflow](https://github.com/wanghao9103/farsail/actions/runs/39566630437) and [public release](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.29) passed three-platform signed-package, native-installation and public-download reconstruction checks. Desktop, 13-case update-dialog, file and viewer UI regressions passed on Windows and Ubuntu x64 / ARM64. Labels name the operation, page actions sit beside the main heading, spacing is consistent, and narrow navigation and file headings are aligned. Quit moves into the window menu while retaining normal shutdown cleanup. Actual installed-client cross-version updates, physical two-machine behavior and interactive UAC remain unverified; see [client updates](CLIENT_UPDATES.md).
+
 ## Client 0.1.28 remote-control file paste published (2026-10-20)
 
 The immutable `client-v0.1.28` tag points to `11a75bbfe5a49fd2665c98b34bb3d7c817cd255c`. The [release workflow](https://github.com/wanghao9103/farsail/actions/runs/39365699777) and [public release](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.28) passed three-platform signed-package/native-installation checks and public-download reconstruction. Control authorization now includes file transfer over the same connection and lease; View remains read-only. Native Windows/Linux file clipboard sources support up to 32 regular files pasted into a remote Windows window. The fixed feed matches the signed versioned artifacts. Physical two-machine clipboard/Explorer acceptance is still pending; see [file transfer](FILES.md).

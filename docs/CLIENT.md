@@ -14,6 +14,8 @@ For the local sharing and remote standby preferences in 0.1.10, see [SHARE-020](
 
 From 0.1.23, closing the main window keeps enabled remote access and active file transfers running. With an available system tray, the window hides there; otherwise it minimizes to the taskbar. Choose “打开 FarSail” (Open FarSail) from the tray or launch FarSail again to reopen the existing window. Choose “退出 FarSail” (Quit FarSail) from the tray or “退出” (Quit) from the window menu to stop connections and quit. Pending requests and file-save choices still need local action in the main window. Closing a separate viewer still ends only that viewer's session. This is not system startup or a background service.
 
+Since 0.1.29, Quit is in the top-left window menu; the sidebar entry has been removed. Older versions keep the sidebar entry.
+
 The Windows client is in `apps/desktop`. Its React/Vite pages call Tauri 2 commands, while `crates/client` sends account, device and authorization HTTP requests. For the service protocol, see [API.md](API.md); for transport, see [TRANSPORT.md](TRANSPORT.md); for screen and input details, see [REMOTE.md](REMOTE.md). The Windows remote-viewing and mouse/keyboard baseline is integrated. Independent [file transfer](FILES.md) for Ubuntu/Windows has been available since 0.1.21; resume/compression and physical Windows validation remain outside this baseline.
 
 Windows client 0.1.23 requests administrator permission through the system UAC prompt at startup. Cancelling authorization cancels that launch. Ubuntu continues to run as the signed-in desktop user; it does not request root for controlling Windows or transferring files. Account/profile and secure-desktop limits are described in [Windows installation](WINDOWS_INSTALL.md).

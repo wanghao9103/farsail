@@ -4,7 +4,7 @@
 
 ## 用户安装什么
 
-更新通道现已推进至 [0.1.28](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.28)，由[正式工作流](https://github.com/wanghao9103/farsail/actions/runs/39365699777)从 `11a75bbfe5a49fd2665c98b34bb3d7c817cd255c` 构建。三平台签名包、原生安装检查和公开字节/签名核验通过，普通固定更新清单与版本附件及重建结果一致。本版增加远控一次批准后的文件复制粘贴。两端均需更新，打开**共享与设置 → 软件更新 → 检查更新**，结束连接后安装。物理双机文件粘贴仍待验收。
+更新通道现已推进至 [0.1.29](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.29)，由[正式工作流](https://github.com/wanghao9103/farsail/actions/runs/39566630437)从 `167a3dc387fb3355844bff69aed798c115d20204` 构建。三平台签名包、原生安装检查与完整界面回归通过，公开安装包、普通固定更新清单与重建结果一致。本版精简按钮与重复说明，统一页面操作、卡片间距和窄窗口导航；退出入口收进左上角窗口菜单。打开**共享与设置 → 软件更新 → 检查更新**，结束连接后安装。真实已安装客户端的跨版本安装及物理双机仍待验收。
 
 GitHub Actions 构建 Windows x64 NSIS 安装包，以及 Ubuntu x64、ARM64 Debian 包。发布成功后，三种安装包都会放到对应版本的客户端 Release；Actions 附件只是临时构建产物，不是更新通道。旧客户端没有更新器，需要手动安装一次首个支持更新的版本。服务端升级包不会升级桌面应用。
 

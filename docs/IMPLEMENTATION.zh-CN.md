@@ -4,6 +4,10 @@
 
 # FarSail 实施与接力记录
 
+## 客户端 0.1.29 文案与布局清理已发布（2026-10-21）
+
+不可变标签 `client-v0.1.29` 指向 `167a3dc387fb3355844bff69aed798c115d20204`。[发布工作流](https://github.com/wanghao9103/farsail/actions/runs/39566630437)与[公开版本](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.29)通过三平台签名包、原生安装与公开下载重建核验。Windows、Ubuntu x64 / ARM64 的桌面、更新弹窗13项、文件及远控界面回归通过。按钮只表达操作，页面操作移到主标题旁，统一控件与卡片间距，修正窄窗口导航及文件标题对齐。侧栏退出入口收进窗口菜单，仍走原有正常退出清理。真实已安装客户端跨版本更新、物理双机及交互式 UAC 仍待验收，见[客户端更新](CLIENT_UPDATES.zh-CN.md)。
+
 ## 客户端 0.1.28 远控文件粘贴已发布（2026-10-20）
 
 不可变标签 `client-v0.1.28` 指向 `11a75bbfe5a49fd2665c98b34bb3d7c817cd255c`。[正式工作流](https://github.com/wanghao9103/farsail/actions/runs/39365699777)及[公开发行](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.28)通过三平台签名包/原生安装检查与公开下载重建核验。Control 授权在同一连接和租约内包含文件传输，View 保持只读。Windows/Linux 原生文件剪贴板支持最多 32 个普通文件，粘贴到远端 Windows 窗口。固定更新清单与签名版本附件一致。物理双机剪贴板/Explorer 验收仍待完成，见[文件传输](FILES.zh-CN.md)。

@@ -14,6 +14,8 @@ Ubuntu 控制端适配、源码运行、Debian 打包与 Secret Service 边界�
 
 0.1.23 起关闭主窗口后，已开启的远程访问和文件传输继续运行。系统托盘可用时隐藏到托盘，否则最小化到任务栏。通过托盘“打开 FarSail”或再次启动 FarSail 可打开已有窗口；从托盘选择“退出 FarSail”或从窗口菜单选择“退出”才停止连接并退出。待批准请求和文件保存选择仍需在主窗口本地处理。关闭独立查看窗口仍只结束该窗口的会话。这不等于开机自启动或系统服务。
 
+0.1.29 起，侧栏不再显示退出入口，可在左上角窗口菜单选择“退出”。旧版入口位于侧栏。
+
 Windows 客户端位于 `apps/desktop`，React/Vite 页面调用 Tauri 2 命令，账号、设备和授权 HTTP 请求由 `crates/client` 发出。服务协议见 [API.md](API.zh-CN.md)，传输见 [TRANSPORT.md](TRANSPORT.zh-CN.md)，画面与输入细节见 [REMOTE.md](REMOTE.zh-CN.md)。Windows 远程查看与鼠标键盘基线已接入。自 0.1.21 起也提供 Ubuntu/Windows 独立[文件传输](FILES.zh-CN.md)，续传/压缩和物理 Windows 验证不属于此次基线。
 
 Windows 客户端 0.1.23 起在启动时通过系统 UAC 提示申请管理员权限，取消授权会取消本次启动。Ubuntu 继续以当前桌面用户运行，控制 Windows 或传输文件不申请 root 权限。账号配置与安全桌面边界见 [Windows 安装说明](WINDOWS_INSTALL.zh-CN.md)。
