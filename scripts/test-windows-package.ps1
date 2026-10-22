@@ -7,6 +7,9 @@ if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hoste
     throw 'Only run on a disposable GitHub-hosted Windows runner.'
 }
 Set-Location (Split-Path $PSScriptRoot -Parent)
+. (Join-Path $PSScriptRoot 'windows-application-checks.ps1')
+# Hosted runners already provide an elevated shell. Never disable UAC to make a test pass.
+Assert-ProcessElevated (Get-Process -Id $PID)
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
 $artifacts = Join-Path $PWD '.local/windows-package/artifacts'
 $meta = Get-Content (Join-Path $artifacts 'release-metadata.json') -Raw | ConvertFrom-Json
@@ -17,18 +20,22 @@ if (Test-Path $profileDir) { throw 'Runner already has an application profile' }
 if (Test-Path $installDir) { throw 'Runner already has an installation' }
 $script:appProcess = $null
 $script:root = $null
+$script:mainWindowHandle = [IntPtr]::Zero
 $fixtureProcess = $null
-function Install {
-    $p = Start-Process -FilePath $installer -ArgumentList "/S /D=$installDir" -PassThru -Wait -WindowStyle Hidden
+function Install([bool]$Restart = $false) {
+    $arguments = if ($Restart) { "/S /UPDATE /R /D=$installDir" } else { "/S /D=$installDir" }
+    # Start-Process -Wait also waits for descendants, including the restarted application.
+    $p = Start-Process -FilePath $installer -ArgumentList $arguments -PassThru -WindowStyle Hidden
+    if (!$p.WaitForExit(120000)) { throw 'NSIS install did not finish' }
     if ($p.ExitCode -ne 0) { throw "NSIS install failed: $($p.ExitCode)" }
 }
-function Find-UI([string]$Name, [string]$Type = '') {
+function Find-UI([string]$Name, [string[]]$Type = @()) {
     $until = [DateTime]::UtcNow.AddSeconds(45)
     do {
         if ($script:appProcess.HasExited) { throw 'Native application exited unexpectedly' }
         $items = $script:root.FindAll([Windows.Automation.TreeScope]::Descendants, [Windows.Automation.Condition]::TrueCondition)
         foreach ($item in $items) {
-            if ($item.Current.Name -like $Name -and (!$Type -or $item.Current.ControlType.ProgrammaticName -eq "ControlType.$Type")) { return $item }
+            if ($item.Current.Name -like $Name -and (!$Type -or $Type -contains $item.Current.ControlType.ProgrammaticName.Split('.')[-1])) { return $item }
         }
         Start-Sleep -Milliseconds 500
     } while ([DateTime]::UtcNow -lt $until)
@@ -38,19 +45,51 @@ function Find-UI([string]$Name, [string]$Type = '') {
 }
 function Click-UI([string]$Name) {
     $item = Find-UI $Name 'Button'
-    $pattern = $item.GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern)
-    $pattern.Invoke()
+    $supported = ($item.GetSupportedPatterns() | ForEach-Object { $_.ProgrammaticName }) -join ', '
+    Write-Host "Activating own app control: $Name ($supported)"
+    $pattern = $null
+    if ($item.TryGetCurrentPattern([Windows.Automation.InvokePattern]::Pattern, [ref]$pattern)) {
+        $pattern.Invoke()
+        return
+    }
+    # WebView2 can expose a popover trigger as ExpandCollapse rather than Invoke.
+    if ($Name -eq '应用菜单' -and $item.TryGetCurrentPattern([Windows.Automation.ExpandCollapsePattern]::Pattern, [ref]$pattern)) {
+        $pattern.Expand()
+        return
+    }
+    throw "Control '$Name' has no supported activation pattern ($supported)"
 }
-function Start-App([bool]$SignedOut = $true) {
-    $script:appProcess = Start-Process -FilePath $exe -PassThru -WindowStyle Hidden
+function Set-UISwitch([string]$Name, [bool]$Enabled) {
+    # Chromium's native UIA maps role=switch to Button; older bridges can expose CheckBox.
+    $item = Find-UI $Name @('Button', 'CheckBox')
+    $pattern = $item.GetCurrentPattern([Windows.Automation.TogglePattern]::Pattern)
+    $desired = if ($Enabled) { [Windows.Automation.ToggleState]::On } else { [Windows.Automation.ToggleState]::Off }
+    if ($pattern.Current.ToggleState -ne $desired) { $pattern.Toggle() }
+    $until = [DateTime]::UtcNow.AddSeconds(45)
+    do {
+        if ($pattern.Current.ToggleState -eq $desired) { return }
+        Start-Sleep -Milliseconds 250
+    } while ([DateTime]::UtcNow -lt $until)
+    throw "Native switch did not settle: $Name"
+}
+function Assert-RemoteCapabilities([bool]$Enabled) {
+    $status = Invoke-RestMethod ($fixture.server+'/fixture/status')
+    if ($status.sharing -ne $Enabled -or $status.files -ne $Enabled) {
+        throw 'Screen and file capabilities did not follow unified remote access'
+    }
+}
+function Start-App([bool]$SignedOut = $true, [Diagnostics.Process]$ExistingProcess = $null) {
+    $script:appProcess = if ($ExistingProcess) { $ExistingProcess } else { Start-Process -FilePath $exe -PassThru -WindowStyle Hidden }
     $until = [DateTime]::UtcNow.AddSeconds(45)
     do {
         Start-Sleep -Milliseconds 500
         $script:appProcess.Refresh()
         if ($script:appProcess.HasExited) { throw 'Native release failed to start' }
-    } while (!$script:appProcess.MainWindowHandle -and [DateTime]::UtcNow -lt $until)
-    if (!$script:appProcess.MainWindowHandle) { throw 'No native window' }
-    $script:root = [Windows.Automation.AutomationElement]::FromHandle($script:appProcess.MainWindowHandle)
+        $script:mainWindowHandle = [FarSailApplicationChecks]::FindMainWindow($script:appProcess.Id)
+    } while ($script:mainWindowHandle -eq [IntPtr]::Zero -and [DateTime]::UtcNow -lt $until)
+    if ($script:mainWindowHandle -eq [IntPtr]::Zero) { throw 'No native window' }
+    Assert-ProcessElevated $script:appProcess
+    $script:root = [Windows.Automation.AutomationElement]::FromHandle($script:mainWindowHandle)
     if ($SignedOut) { $null = Find-UI '登录 FarSail'; $null = Find-UI '连接设置' }
     else { $null = Find-UI '总览'; Click-UI '*我的设备' }
 }
@@ -62,15 +101,41 @@ function Read-Preference {
     $plain=[Security.Cryptography.ProtectedData]::Unprotect($bytes,$null,[Security.Cryptography.DataProtectionScope]::CurrentUser)
     [Text.Encoding]::UTF8.GetString($plain) | ConvertFrom-Json
 }
+function Wait-Preference([bool]$Sharing, [bool]$Watch) {
+    $until = [DateTime]::UtcNow.AddSeconds(45)
+    do {
+        $preference = Read-Preference
+        if ($preference.sharing -eq $Sharing -and $preference.watch -eq $Watch) { return }
+        Start-Sleep -Milliseconds 250
+    } while ([DateTime]::UtcNow -lt $until)
+    throw 'Native remote preference did not persist before shutdown'
+}
+function Assert-BackgroundRestore {
+    $handle = $script:mainWindowHandle
+    $originalId = $script:appProcess.Id
+    Click-UI '关闭窗口'
+    $until = [DateTime]::UtcNow.AddSeconds(15)
+    while ([FarSailApplicationChecks]::IsWindowVisible($handle) -and [DateTime]::UtcNow -lt $until) { Start-Sleep -Milliseconds 100 }
+    if ($script:appProcess.HasExited -or [FarSailApplicationChecks]::IsWindowVisible($handle)) { throw 'Main close did not keep the application running in the background' }
+    $second = Start-Process -FilePath $exe -PassThru
+    if (!$second.WaitForExit(15000)) { Stop-Process -Id $second.Id -Force; throw 'Second launch did not exit after restoring the first instance' }
+    if ($second.ExitCode -ne 0) { throw 'Second launch failed' }
+    $until = [DateTime]::UtcNow.AddSeconds(15)
+    while (![FarSailApplicationChecks]::IsWindowVisible($handle) -and [DateTime]::UtcNow -lt $until) { Start-Sleep -Milliseconds 100 }
+    if ($script:appProcess.HasExited -or ![FarSailApplicationChecks]::IsWindowVisible($handle)) { throw 'Second launch did not restore the original main window' }
+    $running = @(Get-Process -Name 'farsail-desktop' -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe })
+    if ($running.Count -ne 1 -or $running[0].Id -ne $originalId) { throw 'Background restore created an extra application instance' }
+    $script:root = [Windows.Automation.AutomationElement]::FromHandle($handle)
+}
 function Wait-Restore {
     $until=[DateTime]::UtcNow.AddSeconds(45)
     do {
         $items=$script:root.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
         foreach ($item in $items) {
-            if ($item.Current.Name -eq '本机屏幕共享中') { return 'passed' }
-            if ($item.Current.Name -like '*本次未恢复共享*') {
+            if ($item.Current.Name -eq '远程连接已允许') { Assert-RemoteCapabilities $true; return 'passed' }
+            if ($item.Current.Name -like '*本次未恢复远程连接*') {
                 $status=Invoke-RestMethod ($fixture.server+'/fixture/status')
-                if ($status.sharing) { throw 'Failed restoration still advertised sharing' }
+                if ($status.sharing -or $status.files) { throw 'Failed restoration still advertised remote access' }
                 return 'unavailable_fail_closed'
             }
         }
@@ -80,7 +145,8 @@ function Wait-Restore {
 }
 function Close-App {
     if ($script:appProcess -and !$script:appProcess.HasExited) {
-        Click-UI '关闭窗口'
+        Click-UI '应用菜单'
+        Click-UI '退出'
         if (!$script:appProcess.WaitForExit(15000)) { throw 'Native close failed' }
     }
 }
@@ -88,6 +154,7 @@ try {
     Install
     $exe = Join-Path $installDir 'farsail-desktop.exe'
     if ((Get-FileHash $exe).Hash.ToLowerInvariant() -ne $meta.application_sha256) { throw 'Installed binary differs' }
+    Assert-ApplicationManifest $exe
     $entry = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\FarSail' -ErrorAction Stop
     if ($entry.DisplayVersion -ne $meta.version) { throw 'Installed version differs' }
     # No remote debugging port or production test command. Accessibility drives ordinary UI.
@@ -104,6 +171,7 @@ try {
     Start-Sleep -Milliseconds 800
     if ($windowPattern.Current.WindowVisualState -ne [Windows.Automation.WindowVisualState]::Minimized) { throw 'Custom minimize failed' }
     $windowPattern.SetWindowVisualState([Windows.Automation.WindowVisualState]::Normal)
+    Assert-BackgroundRestore
     Click-UI '*设置'
     $input = Find-UI '服务地址' 'Edit'
     $value = $input.GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern)
@@ -132,11 +200,11 @@ try {
     Click-UI '*我的设备'
     Set-UIValue '邮箱地址' 'fixture@example.invalid'; Set-UIValue '密码' 'synthetic-password'
     Click-UI '登录'
-    $null=Find-UI '*还没有设备*'
+    $null=Find-UI '暂无设备'
     Click-UI '*总览'
-    # Wait for the actual form; the device page has an identically named navigation button.
+    # Wait for the actual form after navigating to the overview.
     Set-UIValue '本机设备名称' 'Synthetic sharing fixture'
-    Click-UI '添加这台电脑'
+    Click-UI '添加'
     $null=Find-UI 'Synthetic sharing fixture'
     Close-App
     $preferencePath=Join-Path $profileDir 'sharing-preferences.bin'
@@ -147,18 +215,28 @@ try {
     Start-App $false
     $sharingPreflight=Wait-Restore
     if ((Get-FileHash $preferencePath).Hash -ne $optInHash) { throw 'Startup changed remembered intent' }
-    Click-UI '关闭远程值守'; Close-App
+    Assert-BackgroundRestore
+    Assert-RemoteCapabilities ($sharingPreflight -eq 'passed')
+    Set-UISwitch '同账号远程值守' $false
+    Wait-Preference $true $false
+    Close-App
     $preference=Read-Preference
     if (!$preference.sharing -or $preference.watch) { throw 'Native watch opt-out did not persist' }
     Start-App $false
     $null=Wait-Restore
-    $null=Find-UI '开启远程值守'
-    Click-UI '停止本机共享'; Close-App
+    $watchSwitch=Find-UI '同账号远程值守' @('Button', 'CheckBox')
+    if ($watchSwitch.GetCurrentPattern([Windows.Automation.TogglePattern]::Pattern).Current.ToggleState -ne [Windows.Automation.ToggleState]::Off) { throw 'Remote watch opt-out did not restore' }
+    Set-UISwitch '允许远程连接' $false
+    $null=Find-UI '远程连接已关闭'
+    Assert-RemoteCapabilities $false
+    Wait-Preference $false $false
+    Close-App
     $preference=Read-Preference
     if ($preference.sharing -or $preference.watch) { throw 'Native sharing opt-out did not persist' }
     $optOutHash=(Get-FileHash $preferencePath).Hash
     Start-App $false
-    $null=Find-UI '本机未共享'
+    $null=Find-UI '远程连接已关闭'
+    Assert-RemoteCapabilities $false
     if ((Get-FileHash $preferencePath).Hash -ne $optOutHash) { throw 'Restart changed explicit opt-out' }
     Click-UI '*账号安全'; Click-UI '退出登录'
     $null=Find-UI '登录 FarSail'
@@ -174,10 +252,21 @@ try {
     $sentinel = Join-Path $profileDir 'installer-retention-sentinel.txt'
     'synthetic retention marker' | Set-Content $sentinel
     $before = (Get-FileHash $sentinel).Hash
-    Install
+    # Exercise the same /UPDATE /R launch path used by the native updater.
+    Install $true
     if ((Get-FileHash $sentinel).Hash -ne $before) { throw 'Reinstall changed user data' }
     if ((Get-FileHash $preferencePath).Hash -ne $retainedPreferenceHash) { throw 'Reinstall changed sharing preferences' }
-    Start-App
+    if ((Get-FileHash $exe).Hash.ToLowerInvariant() -ne $meta.application_sha256) { throw 'Updated installed binary differs' }
+    $until = [DateTime]::UtcNow.AddSeconds(45)
+    $restarted = $null
+    do {
+        # This exact executable lives only in this disposable test's installation directory.
+        $restarted = Get-Process -Name 'farsail-desktop' -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe }
+        if ($restarted) { break }
+        Start-Sleep -Milliseconds 250
+    } while ([DateTime]::UtcNow -lt $until)
+    if (!$restarted -or @($restarted).Count -ne 1) { throw 'NSIS updater did not restart exactly one installed application' }
+    Start-App -ExistingProcess $restarted
     Click-UI '*设置'
     $input = Find-UI '服务地址' 'Edit'
     if ($input.GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern).Current.Value -notmatch '^https://example.invalid/?$') { throw 'Reinstall lost settings' }
@@ -191,7 +280,7 @@ try {
     if (Test-Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\FarSail') { throw 'Uninstall registration remains' }
     if ((Get-FileHash $sentinel).Hash -ne $before) { throw 'Uninstall deleted user data' }
     if ((Get-FileHash $preferencePath).Hash -ne $retainedPreferenceHash) { throw 'Uninstall changed sharing preferences' }
-    [ordered]@{ source_commit=$meta.source_commit; installer_sha256=$meta.installer_sha256; install='passed'; embedded_frontend='passed'; native_settings_ipc_restart='passed'; sharing_preferences_restart='passed'; sharing_desktop_preflight=$sharingPreflight; reinstall_retention='passed'; uninstall_retention='passed'; debug_probes_absent='passed'; capture_input_or_public_network='not tested' } |
+    [ordered]@{ source_commit=$meta.source_commit; installer_sha256=$meta.installer_sha256; install='passed'; embedded_frontend='passed'; administrator_manifest='passed'; elevated_process='passed'; updater_restart='passed'; updater_restarted_process_id=$restarted.Id; updater_restart_launcher='NSIS /S /UPDATE /R'; background_close_and_single_instance_restore='passed'; interactive_uac_consent_and_cancel='not tested'; native_settings_ipc_restart='passed'; sharing_preferences_restart='passed'; sharing_desktop_preflight=$sharingPreflight; reinstall_retention='passed'; uninstall_retention='passed'; debug_probes_absent='passed'; capture_input_or_public_network='not tested' } |
         ConvertTo-Json | Set-Content (Join-Path $artifacts 'installation-verification.json') -Encoding utf8
 } finally {
     if ($script:appProcess -and !$script:appProcess.HasExited) { Stop-Process -Id $script:appProcess.Id -Force }

@@ -17,6 +17,23 @@
       !state.computerName
     )
       throw Error("incorrect native platform metadata");
+    const files = await invoke("files_status");
+    if (
+      state.remoteAccessEnabled !== false ||
+      state.sharing ||
+      state.filesEnabled ||
+      files.enabled ||
+      files.sessions.length
+    )
+      throw Error("remote access must start disabled");
+    let pathBlocked = false;
+    try {
+      await invoke("plugin:fs|read_file", { path: "/etc/hostname" });
+    } catch (error) {
+      pathBlocked = String(error).includes("not allowed");
+    }
+    if (!pathBlocked)
+      throw Error("filesystem plugin must not grant webview path access");
     const settings = await waitFor(() =>
       Array.from(document.querySelectorAll("nav button")).find((b) =>
         b.textContent.includes("共享与设置"),
@@ -24,9 +41,20 @@
     );
     settings.click();
     await waitFor(() =>
-      document.body.textContent.includes("Ubuntu 客户端可连接 Windows 电脑"),
+      document.body.textContent.includes(
+        "Ubuntu 暂不支持共享本机屏幕或远程值守。",
+      ),
     );
+    const remoteAccess = document.querySelector(
+      '[aria-label="允许远程连接"][role="switch"]',
+    );
+    if (!remoteAccess || remoteAccess.checked || !remoteAccess.disabled)
+      throw Error(
+        "signed-out remote-access switch must be off and unavailable",
+      );
     if (
+      document.querySelector('[aria-label="允许接收文件"][role="switch"]') ||
+      document.querySelector('[aria-label="同账号远程值守"][role="switch"]') ||
       document.querySelector('[aria-label="本机屏幕共享"][role="switch"]') ||
       document.body.textContent.includes("Windows 运行权限")
     )
@@ -41,7 +69,8 @@
     if (
       !update.currentVersion ||
       !update.preferences.autoCheck ||
-      update.preferences.autoInstall
+      update.preferences.autoInstall ||
+      update.canPrompt !== true
     )
       throw Error("incorrect native update defaults");
     await invoke("update_preferences", {
@@ -57,7 +86,12 @@
       result: JSON.stringify({
         ok: true,
         platform: state.platform,
+        filesDefaultOff: true,
+        remoteAccessDefaultOff: true,
+        unifiedRemoteAccessControl: true,
+        webviewFilesystemDenied: true,
         hostControlsHidden: true,
+        updatePromptAvailable: true,
         workspaceFits: true,
         mediaBytes: media.length,
       }),

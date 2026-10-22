@@ -1,9 +1,17 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useId, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { Device, Me, Pending, Remote, User } from "@farsail/ui";
-import { useClientUpdates, UpdateNotice, UpdateSettings } from "./updates";
+import {
+  useClientUpdates,
+  useUpdatePrompt,
+  UpdateDialog,
+  UpdateNotice,
+  UpdateSettings,
+} from "./updates";
+import { FilesPanel } from "./files";
+import { PageActions } from "./page-actions";
 import "./style.css";
 import "./desktop-theme.css";
 import { RefreshFailureGate } from "./feedback-policy";
@@ -25,6 +33,8 @@ import { FailureDialog, failureMessage, type FailureAction } from "./feedback";
 import {
   Home20Regular,
   Desktop20Regular,
+  Eye20Regular,
+  Folder20Regular,
   ArrowSwap20Regular,
   Shield20Regular,
   Settings20Regular,
@@ -33,6 +43,7 @@ import {
   Subtract16Regular,
   Square16Regular,
   ChevronRight16Regular,
+  ChevronLeft16Regular,
   ArrowSync20Regular,
 } from "@fluentui/react-icons";
 
@@ -40,6 +51,7 @@ type Tab =
   | "overview"
   | "devices"
   | "requests"
+  | "files"
   | "viewer"
   | "security"
   | "admin"
@@ -52,6 +64,9 @@ type PublicState = {
   server: string;
   signedIn: boolean;
   deviceId: string | null;
+  deviceRestoreError?: string | null;
+  filesEnabled?: boolean;
+  remoteAccessEnabled?: boolean;
   sharing: boolean;
   remoteWatch?: boolean;
   transportRunning?: boolean;
@@ -65,29 +80,27 @@ type PublicState = {
 };
 const canShareLocalScreen = (state: PublicState) =>
   state.canShareLocalScreen ?? state.platform !== "linux";
-function LocalSharingUnsupported() {
-  return (
-    <p className="hint" role="status">
-      Ubuntu 客户端可连接 Windows 电脑，暂不支持共享本机屏幕或远程值守。
-    </p>
-  );
-}
+const remoteAccessEnabled = (state: PublicState) =>
+  state.remoteAccessEnabled ?? state.filesEnabled ?? state.sharing;
+const remoteAccessReady = (state: PublicState) =>
+  remoteAccessEnabled(state) && (!canShareLocalScreen(state) || state.sharing);
 const sharingChoice = (state: PublicState) =>
-  state.sharing || !!state.sharePreferences?.sharing;
+  remoteAccessEnabled(state) || !!state.sharePreferences?.sharing;
 const watchChoice = (state: PublicState) =>
   state.remoteWatch || !!state.sharePreferences?.watch;
 function SharingRecovery({ state }: { state: PublicState }) {
-  if (!canShareLocalScreen(state)) return null;
-  if (state.sharing || !state.sharePreferences?.sharing) return null;
+  if (remoteAccessReady(state) || !state.sharePreferences?.sharing) return null;
   return (
     <p className="hint" role="status">
-      {state.sharePreferences.restore === "pending"
-        ? "正在检查登录、设备、连接和本机桌面，尚未开启共享。你可以取消恢复。"
-        : "已记住开启偏好，但本次未恢复共享。请检查登录、网络和 Windows 桌面；可重试或关闭偏好。"}
+      {remoteAccessEnabled(state)
+        ? "文件传输仍可用，屏幕共享已停止。请检查 Windows 桌面后重试。"
+        : state.sharePreferences.restore === "pending"
+          ? "正在恢复远程连接…"
+          : `本次未恢复远程连接，请检查登录和网络${canShareLocalScreen(state) ? "、Windows 桌面" : ""}后重试。`}
     </p>
   );
 }
-function SettingsSharingControls({
+function RemoteAccessControls({
   state,
   busy,
   act,
@@ -98,18 +111,23 @@ function SettingsSharingControls({
   act: Action;
   prepareTransport: () => Promise<void>;
 }) {
-  if (!canShareLocalScreen(state)) return <LocalSharingUnsupported />;
+  const descriptionId = useId();
   return (
     <div className="preference-rows">
       <label className="preference-row">
         <span>
-          <strong>本机屏幕共享</strong>
-          <small>开启后，其他设备可申请查看或控制本机。</small>
+          <strong>允许远程连接</strong>
+          <small id={`${descriptionId}-access`}>
+            {canShareLocalScreen(state)
+              ? "屏幕控制与文件传输，默认每次连接需批准。"
+              : "文件传输，每次连接需批准。"}
+          </small>
         </span>
         <input
           type="checkbox"
           role="switch"
-          aria-label="本机屏幕共享"
+          aria-label="允许远程连接"
+          aria-describedby={`${descriptionId}-access`}
           checked={sharingChoice(state)}
           disabled={busy || !state.deviceId}
           onChange={() =>
@@ -120,33 +138,63 @@ function SettingsSharingControls({
                   sharingChoice(state) ? "share_disable" : "share_enable",
                 );
               },
-              sharingChoice(state) ? "已停止本机共享" : "本机共享已开启",
+              sharingChoice(state) ? "远程连接已关闭" : "远程连接已允许",
             )
           }
         />
       </label>
-      <label className="preference-row">
-        <span>
-          <strong>同账号远程值守</strong>
-          <small>开启后，同账号设备无需逐次批准。</small>
-        </span>
-        <input
-          type="checkbox"
-          role="switch"
-          aria-label="同账号远程值守"
-          checked={watchChoice(state)}
-          disabled={busy || (!state.sharing && !watchChoice(state))}
-          onChange={() =>
-            void act(
-              () => invoke("remote_watch", { enabled: !watchChoice(state) }),
-              watchChoice(state) ? "已关闭远程值守" : "已开启远程值守",
-            )
-          }
-        />
-      </label>
-      <p className="hint">
-        会记住你的选择；重启后重新检查登录、设备和桌面状态。
-      </p>
+      {canShareLocalScreen(state) ? (
+        <label className="preference-row">
+          <span>
+            <strong>同账号远程值守</strong>
+            <small id={`${descriptionId}-watch`}>
+              同账号设备可直接控制屏幕并传输文件。
+            </small>
+          </span>
+          <input
+            type="checkbox"
+            role="switch"
+            aria-label="同账号远程值守"
+            aria-describedby={`${descriptionId}-watch`}
+            checked={watchChoice(state)}
+            disabled={busy || (!state.sharing && !watchChoice(state))}
+            onChange={() =>
+              void act(
+                () => invoke("remote_watch", { enabled: !watchChoice(state) }),
+                watchChoice(state) ? "已关闭远程值守" : "已开启远程值守",
+              )
+            }
+          />
+        </label>
+      ) : (
+        <p className="hint" role="status">
+          Ubuntu 暂不支持共享本机屏幕或远程值守。
+        </p>
+      )}
+      <details className="sharing-guidance">
+        <summary>运行与恢复说明</summary>
+        <p className="hint">
+          重启后尝试恢复已开启的远程连接。
+          {canShareLocalScreen(state) && "屏幕共享需 Windows 已登录。"}
+        </p>
+      </details>
+      <SharingRecovery state={state} />
+      {!remoteAccessReady(state) &&
+        state.sharePreferences?.sharing &&
+        state.sharePreferences.restore !== "pending" && (
+          <button
+            disabled={busy || !state.deviceId}
+            className="secondary"
+            onClick={() =>
+              void act(async () => {
+                await prepareTransport();
+                await invoke("share_enable");
+              }, "远程连接已恢复")
+            }
+          >
+            重试远程连接
+          </button>
+        )}
     </div>
   );
 }
@@ -154,7 +202,7 @@ type ConnectionInvitation = {
   id: string;
   code: string;
   target: string;
-  permission: "view" | "control";
+  permission: "view" | "control" | "files";
   visible: boolean;
 };
 type SignupInvitation = {
@@ -208,8 +256,9 @@ const copyText = async (value: string) => {
 };
 const short = (id: string) => id.slice(0, 8);
 const permissionLabel = (value: string) =>
-  ({ view: "仅查看屏幕", control: "查看并控制", files: "文件传输" })[value] ??
-  "未知权限";
+  ({ view: "仅查看屏幕", control: "控制与文件传输", files: "文件传输" })[
+    value
+  ] ?? "未知权限";
 const requestLabel = (value: string) =>
   ({
     pending: "等待批准",
@@ -283,6 +332,11 @@ function App() {
   });
   const [me, setMe] = useState<Me | null>(null);
   const [tab, setTab] = useState<Tab>("overview");
+  const [fileSession, setFileSession] = useState<string | null>(null);
+  const openFiles = (id: string) => {
+    setFileSession(id);
+    setTab("files");
+  };
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<OperationNotice | null>(null);
   const actionVersion = useRef(0);
@@ -318,6 +372,14 @@ function App() {
   const [authMode, setAuthMode] = useState<
     "login" | "register" | "verify" | "recover" | "reset"
   >("login");
+  const updatePrompt = useUpdatePrompt(
+    updates,
+    busy ||
+      !!problem ||
+      !!connectionInvite ||
+      !!signupInvite ||
+      (!me && authMode !== "login"),
+  );
   const refreshVersion = useRef(0);
   const refreshFailures = useRef(new RefreshFailureGate());
   const nameMigrationAttempts = useRef(new Set<string>());
@@ -353,6 +415,7 @@ function App() {
     if (!p.signedIn) {
       refreshFailures.current.recovered();
       setConnectionInvite(null);
+      setFileSession(null);
       setSignupInvite(null);
       setTransportReady(false);
 
@@ -375,6 +438,15 @@ function App() {
       const q = await invoke<PublicState>("state");
       if (version !== refreshVersion.current) return;
       setPublicState(q);
+      if (
+        q.deviceRestoreError &&
+        refreshFailures.current.shouldReport(q.deviceRestoreError, foreground)
+      ) {
+        setFailureAction(undefined);
+        setProblem(
+          `已登录，但本机连接尚未恢复，请检查网络后刷新。技术详情：${q.deviceRestoreError}`,
+        );
+      }
       if (typeof q.transportRunning === "boolean")
         setTransportReady(q.transportRunning);
       const local = all.find((d) => d.id === q.deviceId);
@@ -405,7 +477,7 @@ function App() {
         const rows = await api<Pending[]>("pending");
         if (version === refreshVersion.current) setPending(rows);
       } else setPending([]);
-      if (version === refreshVersion.current)
+      if (version === refreshVersion.current && !q.deviceRestoreError)
         refreshFailures.current.recovered();
     } catch (e) {
       const error = errorText(e);
@@ -511,14 +583,24 @@ function App() {
     <div className="app">
       {native && (
         <header className="window-titlebar">
-          <div className="window-drag" data-tauri-drag-region>
-            <span data-tauri-drag-region>
-              FarSail{" "}
-              <span className="window-subtitle" data-tauri-drag-region>
-                遥舟
-              </span>
-            </span>
+          <button
+            className="window-menu-trigger"
+            aria-label="应用菜单"
+            popoverTarget="window-menu"
+          >
+            FarSail <span className="window-subtitle">遥舟</span>
+          </button>
+          <div id="window-menu" className="window-menu" popover="auto">
+            <button
+              onClick={() => {
+                document.getElementById("window-menu")?.hidePopover();
+                void act(() => invoke("app_exit"), "", false);
+              }}
+            >
+              退出
+            </button>
           </div>
+          <div className="window-drag" data-tauri-drag-region></div>
           <div className="window-controls">
             <button
               aria-label="最小化"
@@ -545,7 +627,7 @@ function App() {
             <button
               className="window-close"
               aria-label="关闭窗口"
-              title="关闭"
+              title="关闭窗口"
               onClick={() =>
                 void getCurrentWindow()
                   .close()
@@ -572,6 +654,7 @@ function App() {
               ["overview", "总览", Home20Regular],
               ["devices", "我的设备", Desktop20Regular],
               ["requests", "远程连接", ArrowSwap20Regular],
+              ["files", "文件传输", Folder20Regular],
               ["settings", "共享与设置", Settings20Regular],
               ["security", "账号安全", Shield20Regular],
               ...(me?.role === "admin"
@@ -583,6 +666,7 @@ function App() {
               key={id}
               className={tab === id ? "active" : ""}
               aria-label={label}
+              aria-current={tab === id ? "page" : undefined}
               title={label}
               onClick={() => setTab(id)}
             >
@@ -597,18 +681,14 @@ function App() {
           className="sidebar-foot"
           role="status"
           aria-label={
-            !canShareLocalScreen(publicState)
-              ? "Ubuntu 控制端"
-              : publicState.sharing
-                ? "本机屏幕共享中"
-                : "本机未共享"
+            remoteAccessEnabled(publicState)
+              ? "远程连接已允许"
+              : "远程连接已关闭"
           }
           title={
-            !canShareLocalScreen(publicState)
-              ? "Ubuntu 控制端"
-              : publicState.sharing
-                ? "本机屏幕共享中"
-                : "本机未共享"
+            remoteAccessEnabled(publicState)
+              ? "远程连接已允许"
+              : "远程连接已关闭"
           }
         >
           {me && (
@@ -622,17 +702,17 @@ function App() {
           )}
           <div className="sidebar-status">
             <span
-              className={`status-dot ${publicState.sharing ? "is-sharing" : ""}`}
+              className={`status-dot ${remoteAccessEnabled(publicState) ? "is-sharing" : ""}`}
               aria-hidden="true"
             />
             <span>
-              {!canShareLocalScreen(publicState)
-                ? "Ubuntu 控制端"
-                : publicState.sharing
-                  ? "本机屏幕共享中"
-                  : "本机未共享"}
+              {remoteAccessEnabled(publicState)
+                ? "远程连接已允许"
+                : "远程连接已关闭"}
             </span>
-            <small>远程桌面预览版</small>
+            {remoteAccessEnabled(publicState) && (
+              <small>{publicState.sharing ? "屏幕与文件" : "文件传输"}</small>
+            )}
           </div>
         </div>
       </aside>
@@ -647,6 +727,7 @@ function App() {
                     overview: "总览",
                     devices: "我的设备",
                     requests: "远程连接",
+                    files: "文件传输",
                     viewer: "远程画面",
                     security: "账号安全",
                     admin: "管理控制台",
@@ -669,8 +750,20 @@ function App() {
               <span>未登录</span>
             )}
           </div>
+          <div
+            id="page-actions"
+            className="page-actions"
+            aria-label="页面操作"
+          />
         </header>
-        <UpdateNotice updates={updates} onOpen={() => setTab("settings")} />
+        {tab !== "settings" && (
+          <UpdateNotice updates={updates} onOpen={updatePrompt.show} />
+        )}
+        <UpdateDialog
+          updates={updates}
+          open={updatePrompt.open}
+          onDismiss={updatePrompt.dismiss}
+        />
         <FailureDialog
           error={problem}
           message={readableError(problem)}
@@ -706,150 +799,145 @@ function App() {
               onSettings={() => setTab("settings")}
             />
           ) : tab === "settings" ? (
-            <section className="stack">
-              <UpdateSettings updates={updates} />
-              <div className="card">
-                <div className="section-heading">
-                  <div>
-                    <div className="eyebrow">CONNECTION</div>
-                    <h2>服务器连接</h2>
-                  </div>
-                </div>
-                <p className="muted">
-                  填写管理员提供的服务器地址。通过互联网连接时，请使用 HTTPS
-                  地址。
-                </p>
-                <form
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    void act(
-                      () => invoke("set_server", { server }),
-                      "服务地址已保存",
-                    );
-                  }}
-                  className="inline-form"
-                >
-                  <input
-                    aria-label="服务地址"
-                    value={server}
-                    onChange={(e) => setServer(e.target.value)}
-                  />
-                  <button className="primary" disabled={busy || !!me}>
-                    保存地址
-                  </button>
-                </form>
-                {me && <p className="hint">请先退出登录再修改服务地址。</p>}
-              </div>
-              <div className="card">
-                <h2>当前连接设置</h2>
-                <p className="muted">
-                  {!publicState.transportRunning
-                    ? "连接尚未启动"
-                    : publicState.transportConfiguration?.relay
-                      ? "中继已配置，可作为直连失败时的备用路径。"
-                      : "当前仅使用直连，未配置中继备用路径。"}
-                </p>
-                {publicState.transportConfiguration?.relay && (
-                  <p className="setting-value">
-                    {publicState.transportConfiguration.relay}
-                  </p>
-                )}
-                <p className="hint">
-                  这里显示当前端点使用的设置；具体连接路径会显示在远程窗口中。
-                </p>
-              </div>
-              <div className="card">
-                <h2>本机共享</h2>
-                <SettingsSharingControls
-                  state={publicState}
-                  busy={busy}
-                  act={act}
-                  prepareTransport={prepareTransport}
-                />
-                {canShareLocalScreen(publicState) && (
-                  <div className="input-permission-info">
-                    <strong>Windows 运行权限</strong>
-                    <p className="muted">
-                      {publicState.administratorMode === true
-                        ? "本机 FarSail 已以管理员权限运行。"
-                        : publicState.administratorMode === false
-                          ? "本机 FarSail 当前使用普通权限。"
-                          : "暂时无法读取本机运行权限。"}
-                    </p>
-                    <p className="hint">
-                      要操作以管理员权限运行的窗口，请在被控电脑手动以管理员身份启动
-                      FarSail；控制端不需要更改权限。系统授权确认与登录画面仍需在被控电脑上处理。
-                    </p>
-                  </div>
-                )}
-                <SharingRecovery state={publicState} />
-                {!publicState.deviceId && (
-                  <p className="hint">
-                    {me
-                      ? "请先添加这台电脑。"
-                      : "请先登录账号，再添加这台电脑。"}
-                    <button
-                      className="text-button"
-                      onClick={() => setTab("overview")}
-                    >
-                      {me ? "去添加本机" : "去登录"}
-                    </button>
-                  </p>
-                )}
-                <details className="advanced-settings connection-settings">
-                  <summary>高级连接设置（通常无需修改）</summary>
-                  <p className="muted">
-                    默认中继地址使用服务器的 8443
-                    端口。只有管理员提供了其他参数时才需修改。应用设置会断开本机当前连接并停止共享，之后可重新开启。
-                  </p>
+            <section className="settings-grid">
+              <div className="settings-column">
+                <UpdateSettings updates={updates} onOpen={updatePrompt.show} />
+                <div className="card">
+                  <h2>服务器连接</h2>
                   <form
-                    className="form"
                     onSubmit={(e) => {
                       e.preventDefault();
-                      void act(async () => {
-                        resetConnection();
-                        await invoke("transport_start", {
-                          relayUrl: relayUrl || null,
-                          forceRelay,
-                          bindAddr,
-                        });
-                        setTransportReady(true);
-                      }, "连接设置已应用。如需让他人连接本机，请重新开启共享");
+                      void act(
+                        () => invoke("set_server", { server }),
+                        "服务地址已保存",
+                      );
                     }}
+                    className="inline-form"
                   >
-                    <label>
-                      中继服务器地址
-                      <input
-                        aria-label="中继地址"
-                        placeholder="https://服务器IP:8443/"
-                        value={relayUrl}
-                        onChange={(e) => setRelayUrl(e.target.value)}
-                      />
-                    </label>
-                    <label>
-                      本机 UDP 监听地址
-                      <input
-                        aria-label="UDP 绑定地址"
-                        value={bindAddr}
-                        onChange={(e) => setBindAddr(e.target.value)}
-                      />
-                    </label>
-                    <label className="checkbox-row">
-                      <input
-                        type="checkbox"
-                        checked={forceRelay}
-                        onChange={(e) => setForceRelay(e.target.checked)}
-                      />
-                      <span>始终通过中继连接（排查直连问题时使用）</span>
-                    </label>
-                    <button
-                      className="primary"
-                      disabled={busy || !publicState.deviceId}
-                    >
-                      应用连接设置
+                    <input
+                      aria-label="服务地址"
+                      placeholder="https://服务器地址"
+                      value={server}
+                      disabled={busy || !!me}
+                      onChange={(e) => setServer(e.target.value)}
+                    />
+                    <button className="primary" disabled={busy || !!me}>
+                      保存地址
                     </button>
                   </form>
-                </details>
+                  <p className="hint">
+                    {me
+                      ? "退出登录后可修改地址。"
+                      : "使用管理员提供的地址，公网连接需使用 HTTPS。"}
+                  </p>
+                  <details className="advanced-settings connection-settings">
+                    <summary>高级连接设置</summary>
+                    <p className="hint" role="status">
+                      {!publicState.transportRunning
+                        ? "连接尚未启动"
+                        : publicState.transportConfiguration?.relay
+                          ? publicState.transportConfiguration.forceRelay
+                            ? "始终使用中继"
+                            : "直连优先，中继备用"
+                          : "仅直连 · 未配置中继"}
+                    </p>
+                    {publicState.transportConfiguration?.relay && (
+                      <p className="setting-value">
+                        {publicState.transportConfiguration.relay}
+                      </p>
+                    )}
+                    <p className="muted">
+                      默认使用服务器的 8443 端口，按管理员要求修改。
+                    </p>
+                    <form
+                      className="form"
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        void act(async () => {
+                          resetConnection();
+                          await invoke("transport_start", {
+                            relayUrl: relayUrl || null,
+                            forceRelay,
+                            bindAddr,
+                          });
+                          setTransportReady(true);
+                        }, "连接设置已应用");
+                      }}
+                    >
+                      <label>
+                        中继服务器地址
+                        <input
+                          placeholder="https://服务器IP:8443/"
+                          value={relayUrl}
+                          onChange={(e) => setRelayUrl(e.target.value)}
+                        />
+                      </label>
+                      <label>
+                        本机 UDP 监听地址
+                        <input
+                          value={bindAddr}
+                          onChange={(e) => setBindAddr(e.target.value)}
+                        />
+                      </label>
+                      <label className="checkbox-row">
+                        <input
+                          type="checkbox"
+                          checked={forceRelay}
+                          onChange={(e) => setForceRelay(e.target.checked)}
+                        />
+                        <span>始终通过中继连接</span>
+                      </label>
+                      <button
+                        className="primary"
+                        disabled={busy || !publicState.deviceId}
+                      >
+                        应用连接设置
+                      </button>
+                    </form>
+                  </details>
+                </div>
+              </div>
+              <div className="settings-column">
+                <div className="card">
+                  <h2>远程连接</h2>
+                  <RemoteAccessControls
+                    state={publicState}
+                    busy={busy}
+                    act={act}
+                    prepareTransport={prepareTransport}
+                  />
+                  {canShareLocalScreen(publicState) && (
+                    <details className="advanced-settings sharing-permissions">
+                      <summary>Windows 运行权限</summary>
+                      <p className="muted">
+                        {publicState.administratorMode === true
+                          ? "当前以管理员权限运行。"
+                          : publicState.administratorMode === false
+                            ? "当前使用普通权限。"
+                            : "暂时无法读取运行权限。"}
+                      </p>
+                      <p className="hint">
+                        {publicState.administratorMode === false
+                          ? "重新启动 FarSail 并同意系统授权后，可控制管理员窗口。"
+                          : "启动时会申请管理员权限。"}
+                        系统授权与登录画面需在被控电脑处理。
+                      </p>
+                    </details>
+                  )}
+                  {!publicState.deviceId && (
+                    <p className="hint">
+                      {me
+                        ? "添加本机后可允许远程连接。"
+                        : "登录并添加本机后可允许远程连接。"}
+                      <button
+                        className="text-button"
+                        onClick={() => setTab("overview")}
+                      >
+                        {me ? "去添加本机" : "去登录"}
+                      </button>
+                    </p>
+                  )}
+                </div>
               </div>
             </section>
           ) : tab === "overview" ? (
@@ -872,6 +960,7 @@ function App() {
               prepareTransport={prepareTransport}
               onConnectionReset={resetConnection}
               onView={openViewer}
+              onFiles={openFiles}
               onNavigate={setTab}
               devices={devices}
               state={publicState}
@@ -893,6 +982,21 @@ function App() {
               onRefresh={refresh}
               onNavigate={setTab}
               onView={openViewer}
+              onFiles={openFiles}
+            />
+          ) : tab === "files" ? (
+            <FilesPanel
+              requests={requests}
+              devices={devices}
+              state={publicState}
+              selectedId={fileSession}
+              onSelect={setFileSession}
+              busy={busy}
+              act={act}
+              prepareTransport={prepareTransport}
+              onRefresh={refresh}
+              onChooseDevice={() => setTab("devices")}
+              onReviewRequests={() => setTab("requests")}
             />
           ) : tab === "security" ? (
             <Security
@@ -938,9 +1042,47 @@ function Auth({
   onSettings: () => void;
 }) {
   const loginErrorDialog = useRef<HTMLDialogElement>(null);
+  const loginTab = useRef<HTMLButtonElement>(null);
+  const registerTab = useRef<HTMLButtonElement>(null);
+  const flowHeading = useRef<HTMLHeadingElement>(null);
+  const previousMode = useRef(mode);
+  const pendingFocus = useRef<"heading" | "login" | "register" | null>(null);
+  const isEntry = mode === "login" || mode === "register";
+  useEffect(() => {
+    const previous = previousMode.current;
+    previousMode.current = mode;
+    if (previous !== mode) {
+      pendingFocus.current = !isEntry
+        ? "heading"
+        : previous !== "login" && previous !== "register"
+          ? (mode as "login" | "register")
+          : null;
+    }
+    if (busy || !pendingFocus.current) return;
+    const target =
+      pendingFocus.current === "heading"
+        ? flowHeading.current
+        : (pendingFocus.current === "login" ? loginTab : registerTab).current;
+    target?.focus();
+    pendingFocus.current = null;
+  }, [mode, isEntry, busy]);
+  const moveAuthTab = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (busy) return;
+    let next: "login" | "register";
+    if (event.key === "Home") next = "login";
+    else if (event.key === "End") next = "register";
+    else if (event.key === "ArrowLeft" || event.key === "ArrowRight")
+      next = mode === "login" ? "register" : "login";
+    else return;
+    event.preventDefault();
+    setMode(next);
+    (next === "login" ? loginTab : registerTab).current?.focus();
+  };
   const [loginError, setLoginError] = useState("");
   const [loginErrorTitle, setLoginErrorTitle] = useState("登录未成功");
   const [loginTechnicalError, setLoginTechnicalError] = useState("");
+  const [verificationRequestedEmail, setVerificationRequestedEmail] =
+    useState("");
   const [email, setEmail] = useState(""),
     [password, setPassword] = useState(""),
     [newPassword, setNewPassword] = useState(""),
@@ -960,7 +1102,8 @@ function Auth({
           "重发所需的账号信息已失效，请在登录页填写邮箱和密码，再进入验证邮箱页重试。",
         );
       await api("resend", { email, password });
-    }, "重发请求已提交，请检查收件箱和垃圾邮件。");
+      setVerificationRequestedEmail(email.trim());
+    }, "验证码重发请求已提交");
   };
   const submit = async () => {
     if (mode === "login")
@@ -1007,9 +1150,10 @@ function Auth({
           password,
           invite_code: invite || undefined,
         });
+        setVerificationRequestedEmail(email.trim());
         setToken("");
         setMode("verify");
-      }, "账号已创建，请输入邮件中的验证码完成注册");
+      }, "账号已创建");
     if (mode === "verify")
       return act(async () => {
         await api("verify", {
@@ -1018,14 +1162,15 @@ function Auth({
         });
         setToken("");
         setPassword("");
+        setVerificationRequestedEmail("");
         setMode("login");
-      }, "邮箱验证成功，请登录");
+      }, "邮箱验证成功");
     if (mode === "recover")
       return act(async () => {
         await api("recover_request", { email });
         setToken("");
         setMode("reset");
-      }, "如果该邮箱可以找回密码，重置邮件将发送至邮箱，请输入邮件中的重置码");
+      }, "密码重置请求已提交");
     return act(async () => {
       await api("recover_complete", {
         token: token.trim(),
@@ -1035,7 +1180,7 @@ function Auth({
       setNewPassword("");
       setPassword("");
       setMode("login");
-    }, "密码已更新，请使用新密码登录");
+    }, "密码已重置");
   };
   return (
     <div className="auth-wrap">
@@ -1089,149 +1234,205 @@ function Auth({
         </details>
       </dialog>
       <section className="card auth-card">
-        <div className="auth-tabs" role="tablist" aria-label="账号入口">
+        {isEntry ? (
+          <div
+            className="auth-tabs"
+            role="tablist"
+            aria-label="账号入口"
+            onKeyDown={moveAuthTab}
+          >
+            <button
+              ref={loginTab}
+              id="auth-login-tab"
+              role="tab"
+              aria-controls="auth-panel"
+              tabIndex={mode === "login" ? 0 : -1}
+              aria-selected={mode === "login"}
+              className={mode === "login" ? "active" : ""}
+              disabled={busy}
+              onClick={() => setMode("login")}
+            >
+              登录
+            </button>
+            <button
+              ref={registerTab}
+              id="auth-register-tab"
+              role="tab"
+              aria-controls="auth-panel"
+              tabIndex={mode === "register" ? 0 : -1}
+              aria-selected={mode === "register"}
+              className={mode === "register" ? "active" : ""}
+              disabled={busy}
+              onClick={() => setMode("register")}
+            >
+              注册
+            </button>
+          </div>
+        ) : (
           <button
-            role="tab"
-            aria-selected={mode === "login"}
-            className={mode === "login" ? "active" : ""}
+            className="text-button auth-back"
             disabled={busy}
             onClick={() => setMode("login")}
           >
-            登录
+            <ChevronLeft16Regular aria-hidden="true" />
+            返回登录
           </button>
-          <button
-            role="tab"
-            aria-selected={mode === "register"}
-            className={mode === "register" ? "active" : ""}
-            disabled={busy}
-            onClick={() => setMode("register")}
-          >
-            注册
-          </button>
-        </div>
-        <div className="eyebrow">SECURE ACCESS</div>
-        <h2>{titles[mode]}</h2>
-        <p className="muted">
-          {mode === "verify"
-            ? `请输入${email ? `发送至 ${email} 的` : "邮件中的"}邮箱验证码。未收到时，请检查垃圾邮件或重新发送。`
-            : mode === "reset"
-              ? "输入重置邮件中的完整重置码，再设置至少 12 个字符的新密码。"
-              : mode === "recover"
-                ? "填写注册邮箱，我们会向符合条件的账号发送密码重置邮件。"
-                : mode === "register"
-                  ? "使用邮箱注册，密码至少需要 12 个字符。"
-                  : "登录后即可添加本机、连接电脑或开启共享。"}
-        </p>
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            void submit();
-          }}
-          className="form"
+        )}
+        <div
+          id="auth-panel"
+          role={isEntry ? "tabpanel" : undefined}
+          aria-labelledby={isEntry ? `auth-${mode}-tab` : "auth-flow-title"}
         >
-          {["login", "register", "recover"].includes(mode) && (
-            <label>
-              邮箱地址
-              <input
-                type="email"
-                required
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@example.com"
-                autoComplete="email"
-              />
-            </label>
-          )}
-          {["login", "register"].includes(mode) && (
-            <label>
-              密码
-              <input
-                type="password"
-                required
-                minLength={mode === "register" ? 12 : 1}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                autoComplete={
-                  mode === "register" ? "new-password" : "current-password"
-                }
-              />
-            </label>
-          )}
-          {["verify", "reset"].includes(mode) && (
-            <label>
-              {mode === "verify" ? "邮箱验证码" : "邮件中的重置码"}
-              <input
-                required
-                value={token}
-                onChange={(e) => setToken(e.target.value)}
-                autoComplete={mode === "verify" ? "one-time-code" : "off"}
-                inputMode={mode === "verify" ? "numeric" : "text"}
-                placeholder={
-                  mode === "verify" ? "请输入 6 位数字验证码" : undefined
-                }
-              />
-            </label>
-          )}
-          {mode === "reset" && (
-            <label>
-              新密码
-              <input
-                type="password"
-                required
-                minLength={12}
-                value={newPassword}
-                onChange={(e) => setNewPassword(e.target.value)}
-                autoComplete="new-password"
-              />
-            </label>
-          )}
-          {mode === "register" && (
-            <label>
-              注册邀请码（若服务要求）
-              <input
-                value={invite}
-                onChange={(e) => setInvite(e.target.value)}
-                autoComplete="off"
-              />
-            </label>
-          )}
-          <button className="primary wide" disabled={busy}>
-            {busy
-              ? "请稍候…"
-              : mode === "register"
-                ? "注册并验证邮箱"
-                : mode === "verify"
-                  ? "完成验证"
-                  : mode === "login"
-                    ? "登录"
-                    : mode === "recover"
-                      ? "发送密码重置邮件"
-                      : "保存新密码并返回登录"}
-          </button>
-        </form>
-        <div className="auth-links">
+          <h2
+            ref={flowHeading}
+            id="auth-flow-title"
+            tabIndex={isEntry ? undefined : -1}
+            className={isEntry ? "sr-only" : "auth-flow-title"}
+          >
+            {titles[mode]}
+          </h2>
           {mode === "verify" && (
-            <button disabled={busy} onClick={() => void resendVerification()}>
-              没收到验证码？重新发送
-            </button>
+            <p className="muted">
+              {verificationRequestedEmail
+                ? `验证码发送请求已提交，请查看 ${verificationRequestedEmail} 的收件箱。`
+                : "填写注册邮箱和收到的验证码。"}
+            </p>
           )}
-          {(
-            {
-              login: ["register", "recover", "verify"],
-              register: ["login"],
-              verify: ["login"],
-              recover: ["reset", "login"],
-              reset: ["recover", "login"],
-            }[mode] as (typeof mode)[]
-          ).map((x) => (
-            <button key={x} disabled={busy} onClick={() => setMode(x)}>
-              {x === "reset"
-                ? "已有重置码"
-                : x === "recover" && mode === "reset"
-                  ? "重新发送重置邮件"
-                  : titles[x]}
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              void submit();
+            }}
+            className="form"
+          >
+            {["login", "register", "recover", "verify"].includes(mode) && (
+              <label>
+                邮箱地址
+                <input
+                  type="email"
+                  required={mode !== "verify" || /^\d{6}$/.test(token.trim())}
+                  disabled={busy}
+                  value={email}
+                  onChange={(e) => {
+                    const next = e.target.value;
+                    if (
+                      next.trim().toLowerCase() !== email.trim().toLowerCase()
+                    ) {
+                      setVerificationRequestedEmail("");
+                      if (mode === "verify") setPassword("");
+                    }
+                    setEmail(next);
+                  }}
+                  placeholder="you@example.com"
+                  autoComplete="email"
+                />
+              </label>
+            )}
+            {["login", "register"].includes(mode) && (
+              <label>
+                密码
+                <input
+                  type="password"
+                  aria-label="密码"
+                  aria-describedby={
+                    mode === "register" ? "register-password-hint" : undefined
+                  }
+                  required
+                  minLength={mode === "register" ? 12 : 1}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  autoComplete={
+                    mode === "register" ? "new-password" : "current-password"
+                  }
+                />
+                {mode === "register" && (
+                  <small id="register-password-hint" className="muted">
+                    至少 12 个字符
+                  </small>
+                )}
+              </label>
+            )}
+            {["verify", "reset"].includes(mode) && (
+              <label>
+                {mode === "verify" ? "邮箱验证码" : "邮件中的重置码"}
+                <input
+                  required
+                  value={token}
+                  onChange={(e) => setToken(e.target.value)}
+                  autoComplete={mode === "verify" ? "one-time-code" : "off"}
+                  inputMode={mode === "verify" ? "numeric" : "text"}
+                  placeholder={
+                    mode === "verify" ? "请输入 6 位数字验证码" : undefined
+                  }
+                />
+              </label>
+            )}
+            {mode === "reset" && (
+              <label>
+                新密码
+                <input
+                  type="password"
+                  required
+                  minLength={12}
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  autoComplete="new-password"
+                  aria-label="新密码"
+                  aria-describedby="reset-password-hint"
+                />
+                <small id="reset-password-hint" className="muted">
+                  至少 12 个字符
+                </small>
+              </label>
+            )}
+            {mode === "register" && (
+              <label>
+                注册邀请码（若服务要求）
+                <input
+                  value={invite}
+                  onChange={(e) => setInvite(e.target.value)}
+                  autoComplete="off"
+                />
+              </label>
+            )}
+            <button className="primary wide" disabled={busy}>
+              {busy
+                ? "请稍候…"
+                : mode === "register"
+                  ? "注册"
+                  : mode === "verify"
+                    ? "完成验证"
+                    : mode === "login"
+                      ? "登录"
+                      : mode === "recover"
+                        ? "发送邮件"
+                        : "重置密码"}
             </button>
-          ))}
+          </form>
+          <div className="auth-links">
+            {mode === "verify" && (
+              <button disabled={busy} onClick={() => void resendVerification()}>
+                重新发送验证码
+              </button>
+            )}
+            {(
+              {
+                login: ["recover", "verify"],
+                register: [],
+                verify: [],
+                recover: ["reset"],
+                reset: ["recover"],
+              }[mode] as (typeof mode)[]
+            ).map((x) => (
+              <button key={x} disabled={busy} onClick={() => setMode(x)}>
+                {x === "reset"
+                  ? "已有重置码"
+                  : x === "recover" && mode === "reset"
+                    ? "重新发送邮件"
+                    : titles[x]}
+              </button>
+            ))}
+          </div>
         </div>
       </section>
     </div>
@@ -1266,23 +1467,19 @@ function Overview({
   }, [state.computerName]);
   return (
     <div className="stack">
-      <div className="overview-commandbar">
-        <p className="muted">管理你的电脑，或开始一次远程连接。</p>
+      <PageActions>
         <button className="text-button" onClick={() => void onRefresh()}>
           <ArrowSync20Regular />
           刷新状态
         </button>
-      </div>
+      </PageActions>
       {!state.deviceId ? (
         <div className="card attention">
           <div>
-            <div className="eyebrow">DEVICE IDENTITY</div>
             <h2>添加这台电脑</h2>
-            <p>
-              {canShareLocalScreen(state)
-                ? "添加后可连接你的其他电脑。如果希望他人连接本机，还需要开启本机共享。"
-                : "添加后可连接已开启共享的 Windows 电脑。Ubuntu 暂不支持共享本机屏幕。"}
-            </p>
+            {!canShareLocalScreen(state) && (
+              <p>Ubuntu 暂不支持共享本机屏幕。</p>
+            )}
           </div>
           <form
             className="inline-form"
@@ -1290,7 +1487,7 @@ function Overview({
               e.preventDefault();
               void act(
                 () => api("bind", { name: name.trim() }),
-                "这台电脑已添加，可前往“我的设备”开始连接",
+                "这台电脑已添加",
               );
             }}
           >
@@ -1306,14 +1503,12 @@ function Overview({
               required
             />
             <button className="primary" disabled={busy || !name.trim()}>
-              添加这台电脑
+              添加
             </button>
           </form>
-          <p className="muted">
-            {state.computerName
-              ? "已读取系统的计算机名称，你也可以自行修改。"
-              : "暂时无法读取计算机名称，请手动填写后添加。"}
-          </p>
+          {!state.computerName && (
+            <p className="muted">无法读取计算机名称，请手动填写。</p>
+          )}
         </div>
       ) : (
         <div className="card local-device">
@@ -1330,28 +1525,18 @@ function Overview({
             </p>
           </div>
           <div className="stack">
-            <span className={state.sharing ? "tag ready" : "tag"}>
-              {!canShareLocalScreen(state)
-                ? "Ubuntu 控制端"
-                : state.sharing
-                  ? "本机共享已开启"
-                  : "本机共享未开启"}
+            <span className={remoteAccessEnabled(state) ? "tag ready" : "tag"}>
+              {remoteAccessEnabled(state) ? "远程连接已允许" : "远程连接已关闭"}
             </span>
             <button
               className="secondary"
               onClick={() => onNavigate("settings")}
             >
-              {!canShareLocalScreen(state)
-                ? "连接与设置"
-                : state.sharing
-                  ? "管理本机共享"
-                  : "设置本机共享"}
+              管理远程连接
             </button>
-            <small className="muted">
-              {canShareLocalScreen(state)
-                ? "默认每次连接需批准；本机可单独开启同账号远程值守。"
-                : "可连接 Windows 电脑；暂不支持共享本机屏幕。"}
-            </small>
+            {!canShareLocalScreen(state) && (
+              <small className="muted">暂不支持共享本机屏幕。</small>
+            )}
           </div>
         </div>
       )}
@@ -1361,7 +1546,7 @@ function Overview({
           台在线{pending.length ? ` · ${pending.length} 条待批准` : ""}
         </span>
         <button className="primary" onClick={() => onNavigate("devices")}>
-          查看所有设备
+          查看设备
           <ChevronRight16Regular />
         </button>
       </div>
@@ -1369,7 +1554,7 @@ function Overview({
         <div className="section-heading">
           <div>
             <div className="eyebrow">ACTIVITY</div>
-            <h2>最近的远程连接</h2>
+            <h2>最近连接</h2>
           </div>
           <button
             className="text-button"
@@ -1401,19 +1586,107 @@ function Overview({
               </div>
             ))
           ) : (
-            <Empty text="还没有远程连接。前往“我的设备”，选择电脑开始连接。" />
+            <Empty text="暂无连接记录" />
           )}
         </div>
       </div>
     </div>
   );
 }
-function Empty({ text }: { text: string }) {
+function Empty({
+  text,
+  children,
+}: {
+  text: string;
+  children?: React.ReactNode;
+}) {
   return (
     <div className="empty">
       <Desktop20Regular aria-hidden="true" />
       <p>{text}</p>
+      {children}
     </div>
+  );
+}
+function IncomingApprovals({
+  pending,
+  state,
+  busy,
+  act,
+  prepareTransport,
+  onFiles,
+}: {
+  pending: Pending[];
+  state: PublicState;
+  busy: boolean;
+  act: Action;
+  prepareTransport: () => Promise<void>;
+  onFiles: (id: string) => void;
+}) {
+  if (!pending.length) return null;
+  return (
+    <>
+      <h3 className="heading-with-count">
+        等待批准的连接 <span className="count">{pending.length}</span>
+      </h3>
+      {pending.map((p) => (
+        <div className="approval-card" key={p.id}>
+          <strong>
+            {p.source_device_name} 请求
+            {p.permission === "files"
+              ? "传输文件"
+              : p.permission === "control"
+                ? "控制电脑"
+                : "查看屏幕"}
+          </strong>
+          <p className="muted">{p.requester_email}</p>
+          <p className="muted">
+            {p.permission === "files"
+              ? "仅传输文件，每个文件需选择保存位置。"
+              : p.permission === "control"
+                ? "查看屏幕、操作鼠标键盘和传输文件。"
+                : "仅查看屏幕。"}
+          </p>
+          <div className="row-actions">
+            <button
+              className="secondary"
+              disabled={busy}
+              onClick={() =>
+                void act(
+                  () => api("decide", { id: p.id, approve: false }),
+                  "已拒绝连接",
+                )
+              }
+            >
+              拒绝
+            </button>
+            <button
+              className="primary"
+              disabled={
+                busy ||
+                !(p.permission === "files" ? state.filesEnabled : state.sharing)
+              }
+              onClick={() =>
+                void act(async () => {
+                  if (p.permission === "files") await prepareTransport();
+                  await api("decide", { id: p.id, approve: true });
+                  if (p.permission === "files") onFiles(p.id);
+                }, "已允许连接")
+              }
+            >
+              {p.permission === "files"
+                ? "允许文件传输"
+                : p.permission === "control"
+                  ? "允许控制"
+                  : "允许查看"}
+            </button>
+          </div>
+          {p.permission === "files" && !state.filesEnabled && (
+            <p className="hint">请先开启“允许远程连接”。</p>
+          )}
+        </div>
+      ))}
+    </>
   );
 }
 function Devices({
@@ -1422,6 +1695,7 @@ function Devices({
   prepareTransport,
   onConnectionReset,
   onView,
+  onFiles,
   onRefresh,
   onNavigate,
   devices,
@@ -1434,6 +1708,7 @@ function Devices({
   prepareTransport: () => Promise<void>;
   onConnectionReset: () => void;
   onView: (id: string) => Promise<ViewerNoticeLease>;
+  onFiles: (id: string) => void;
   onRefresh: (foreground?: boolean) => Promise<void>;
   onNavigate: (tab: Tab) => void;
   devices: Device[];
@@ -1443,6 +1718,9 @@ function Devices({
 }) {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all");
+  const searchInput = useRef<HTMLInputElement>(null);
+  const query = search.trim().toLowerCase();
+  const filtered = !!query || filter !== "all";
   const [selected, setSelected] = useState<string | null>(null);
   const [waiting, setWaiting] = useState<{ id: string; target: string } | null>(
     null,
@@ -1470,8 +1748,8 @@ function Devices({
   const shown = devices
     .filter(
       (d) =>
-        (d.name.toLowerCase().includes(search.toLowerCase()) ||
-          d.id.includes(search)) &&
+        (d.name.toLowerCase().includes(query) ||
+          d.id.toLowerCase().includes(query)) &&
         (filter !== "online" || d.online),
     )
     .sort(
@@ -1509,6 +1787,11 @@ function Devices({
               id: request.id,
               permission: request.permission,
             });
+            if (request.permission === "files") {
+              onFiles(request.id);
+              setConnectionNote("");
+              return;
+            }
             const opened = await onView(request.id);
             setConnectionNote(
               opened.isPresent() ? "已在独立窗口打开，可继续管理设备。" : "",
@@ -1524,16 +1807,14 @@ function Devices({
             setConnecting(false);
           }
         },
-        "已打开独立远程窗口",
+        request.permission === "files"
+          ? "文件连接已建立"
+          : "已打开独立远程窗口",
         false,
         {
           retryLabel: "重新连接",
           retry: () =>
-            connect(
-              request.permission === "control" ? "control" : "view",
-              request.target_device_id,
-              true,
-            ),
+            connect(request.permission, request.target_device_id, true),
         },
       );
     } else if (request.state !== "pending") {
@@ -1546,7 +1827,7 @@ function Devices({
     }
   }, [requests, waiting, act, prepareTransport, onView]);
   const connect = (
-    permission: "control" | "view",
+    permission: "control" | "view" | "files",
     target = device?.id,
     fresh = false,
   ) => {
@@ -1577,7 +1858,9 @@ function Devices({
             }));
           setWaiting({ id: result.id, target });
           setConnectionNote(
-            "等待对方批准，批准后会在此页面打开画面；切换页面后可到“远程连接”查看进度。",
+            permission === "files"
+              ? "等待对方批准文件连接。"
+              : "等待对方批准连接。",
           );
         } catch (e) {
           setConnectionNote("");
@@ -1602,14 +1885,24 @@ function Devices({
       : !device?.online
         ? "设备离线，请在对方电脑上打开 FarSail 并登录。"
         : !device?.can_host
-          ? "对方尚未开启共享，请在对方电脑的本机面板中开启。"
-          : "对方批准后，即可进入远程画面。";
+          ? "对方尚未允许屏幕连接，请检查对方的远程连接设置。"
+          : "";
   return (
-    <section className="device-workspace">
+    <section
+      className={`device-workspace${device ? "" : " device-workspace-empty"}`}
+    >
       <div className="device-list-pane">
         <div className="section-heading">
           <h2 className="heading-with-count">
-            我的设备 <span className="count">{devices.length}</span>
+            设备列表{" "}
+            <span
+              className="count"
+              aria-label={`显示 ${shown.length} 台，共 ${devices.length} 台`}
+            >
+              {filtered
+                ? `${shown.length} / ${devices.length}`
+                : devices.length}
+            </span>
           </h2>
           <button
             className="text-button"
@@ -1621,6 +1914,7 @@ function Devices({
         </div>
         <div className="filters">
           <input
+            ref={searchInput}
             aria-label="搜索设备"
             placeholder="搜索电脑名称或设备 ID"
             value={search}
@@ -1660,13 +1954,20 @@ function Devices({
             </button>
           ))}
           {!shown.length && (
-            <Empty
-              text={
-                devices.length
-                  ? "没有匹配的设备"
-                  : "还没有设备，请先添加这台电脑。"
-              }
-            />
+            <Empty text={devices.length ? "没有匹配的设备" : "暂无设备"}>
+              {filtered && devices.length > 0 && (
+                <button
+                  className="secondary"
+                  onClick={() => {
+                    setSearch("");
+                    setFilter("all");
+                    searchInput.current?.focus();
+                  }}
+                >
+                  清除筛选
+                </button>
+              )}
+            </Empty>
           )}
         </div>
         {!state.deviceId && (
@@ -1701,141 +2002,29 @@ function Devices({
                 </p>
               </div>
             </div>
-            {isLocal && !canShareLocalScreen(state) ? (
-              <LocalSharingUnsupported />
-            ) : isLocal ? (
+            {isLocal ? (
               <>
-                <div className="sharing-panel">
-                  <div>
-                    <h3>允许其他设备连接本机</h3>
-                    <p className="muted">
-                      默认每次连接需要你批准；启用下方“远程值守”后，同账号设备可自动批准。停止共享会断开正在访问本机的连接。
-                    </p>
-                  </div>
-                  <button
-                    className={sharingChoice(state) ? "secondary" : "primary"}
-                    disabled={busy || !device.enabled}
-                    onClick={() =>
-                      void act(
-                        async () => {
-                          if (!sharingChoice(state)) await prepareTransport();
-                          await invoke(
-                            sharingChoice(state)
-                              ? "share_disable"
-                              : "share_enable",
-                          );
-                        },
-                        sharingChoice(state)
-                          ? "已停止本机共享"
-                          : "本机共享已开启，等待连接请求",
-                      )
-                    }
-                  >
-                    {sharingChoice(state) ? "停止本机共享" : "开启本机共享"}
-                  </button>
+                <div className="sharing-panel remote-access-panel">
+                  <RemoteAccessControls
+                    state={state}
+                    busy={busy || !device.enabled}
+                    act={act}
+                    prepareTransport={prepareTransport}
+                  />
                 </div>
-                <SharingRecovery state={state} />
-                {!state.sharing &&
-                  state.sharePreferences?.sharing &&
-                  state.sharePreferences.restore !== "pending" && (
-                    <button
-                      disabled={busy || !device.enabled}
-                      className="secondary"
-                      onClick={() =>
-                        void act(async () => {
-                          await prepareTransport();
-                          await invoke("share_enable");
-                        }, "本机共享已恢复")
-                      }
-                    >
-                      重试本机共享
-                    </button>
-                  )}
-                <p className="hint">
-                  {state.sharing
-                    ? "本机正在等待连接；你可以随时停止共享。"
-                    : "共享已关闭，其他设备不能查看或控制本机。"}
-                </p>
-                <div className="sharing-panel">
-                  <div>
-                    <h3>远程值守</h3>
-                    <p className="muted">
-                      开启后，同账号设备可直接连接，无需逐次批准。
-                    </p>
-                    <p className="hint">
-                      本机共享和远程值守会记住你的选择，重启后通过登录、设备和桌面检查才会恢复。关闭后会断开正在访问本机的连接，恢复逐次批准；需要
-                      Windows 已登录且应用保持运行。
-                    </p>
-                  </div>
-                  <button
-                    disabled={busy || (!state.sharing && !watchChoice(state))}
-                    className={watchChoice(state) ? "secondary" : "primary"}
-                    onClick={() =>
-                      void act(
-                        () =>
-                          invoke("remote_watch", {
-                            enabled: !watchChoice(state),
-                          }),
-                        watchChoice(state)
-                          ? "远程值守已关闭，恢复手动批准"
-                          : "远程值守已开启",
-                      )
-                    }
-                  >
-                    {watchChoice(state) ? "关闭远程值守" : "开启远程值守"}
-                  </button>
-                </div>
-                <h3 className="heading-with-count">
-                  等待批准的连接 <span className="count">{pending.length}</span>
-                </h3>
-                {pending.map((p) => (
-                  <div className="approval-card" key={p.id}>
-                    <strong>
-                      {p.source_device_name} 请求
-                      {p.permission === "control" ? "控制电脑" : "查看屏幕"}
-                    </strong>
-                    <p className="muted">{p.requester_email}</p>
-                    <p className="muted">
-                      {p.permission === "control"
-                        ? "允许后对方能看到屏幕并操作鼠标键盘。"
-                        : "允许后对方只能看到屏幕。"}
-                    </p>
-                    <div className="row-actions">
-                      <button
-                        className="secondary"
-                        disabled={busy}
-                        onClick={() =>
-                          void act(
-                            () => api("decide", { id: p.id, approve: false }),
-                            "已拒绝连接",
-                          )
-                        }
-                      >
-                        拒绝
-                      </button>
-                      <button
-                        className="primary"
-                        disabled={busy || !state.sharing}
-                        onClick={() =>
-                          void act(
-                            () => api("decide", { id: p.id, approve: true }),
-                            "已允许连接",
-                          )
-                        }
-                      >
-                        {p.permission === "control"
-                          ? "允许查看和控制"
-                          : "允许查看"}
-                      </button>
-                    </div>
-                  </div>
-                ))}
-                {!pending.length && <p className="muted">暂无连接请求。</p>}
+                <IncomingApprovals
+                  pending={pending}
+                  state={state}
+                  busy={busy}
+                  act={act}
+                  prepareTransport={prepareTransport}
+                  onFiles={onFiles}
+                />
                 <button
                   className="text-button"
                   onClick={() => onNavigate("settings")}
                 >
-                  服务器与高级连接设置 →
+                  连接设置 →
                 </button>
               </>
             ) : (
@@ -1856,7 +2045,7 @@ function Devices({
                     onClick={() => connect("control")}
                   >
                     <Desktop20Regular aria-hidden="true" />
-                    远程控制<small>查看屏幕并操作鼠标键盘</small>
+                    远程控制
                   </button>
                   <button
                     className="secondary"
@@ -1871,11 +2060,34 @@ function Devices({
                     }
                     onClick={() => connect("view")}
                   >
+                    <Eye20Regular aria-hidden="true" />
                     仅查看屏幕
                   </button>
                 </div>
-                <p className="muted">此版本暂不支持文件传输。</p>
-                <p className="muted">{blocked}</p>
+                {!device.can_host && (
+                  <>
+                    <button
+                      className="secondary file-device-action"
+                      disabled={
+                        busy ||
+                        connecting ||
+                        !!waiting ||
+                        !state.deviceId ||
+                        !device.enabled ||
+                        !device.online ||
+                        !device.can_files
+                      }
+                      onClick={() => connect("files")}
+                    >
+                      <Folder20Regular aria-hidden="true" />
+                      文件传输
+                    </button>
+                    {!device.can_files && (
+                      <p className="muted">对方尚未开放文件传输。</p>
+                    )}
+                  </>
+                )}
+                {blocked && <p className="muted">{blocked}</p>}
                 {(waiting ||
                   connecting ||
                   (connectionNote && openedWindowPresent)) && (
@@ -1954,7 +2166,7 @@ function Devices({
                     className="primary"
                     disabled={busy || !newName.trim()}
                   >
-                    保存名称
+                    保存
                   </button>
                   <button
                     className="secondary"
@@ -1962,7 +2174,7 @@ function Devices({
                     disabled={busy}
                     onClick={() => setEditing(false)}
                   >
-                    取消改名
+                    取消
                   </button>
                 </form>
               ) : (
@@ -1973,13 +2185,13 @@ function Devices({
                     setEditing(true);
                   }}
                 >
-                  修改设备名称
+                  重命名
                 </button>
               )}
               {confirmUnbind ? (
                 <FailureDialog
                   confirmation
-                  error={`移除“${confirmUnbind.name}”后，该设备的连接会结束。以后使用需要在该电脑重新添加。`}
+                  error={`确定从账号移除“${confirmUnbind.name}”？`}
                   onDismiss={() => setConfirmUnbind(null)}
                   action={{
                     title: "从账号移除设备？",
@@ -1988,7 +2200,7 @@ function Devices({
                       void act(async () => {
                         onConnectionReset();
                         await api("unbind_device", { id: confirmUnbind.id });
-                      }, "设备已从账号移除，需要使用时可在该电脑重新添加"),
+                      }, "设备已从账号移除"),
                   }}
                 />
               ) : (
@@ -2003,9 +2215,7 @@ function Devices({
               )}
             </details>
           </>
-        ) : (
-          <Empty text="选择一台设备，查看连接操作。" />
-        )}
+        ) : null}
       </div>
     </section>
   );
@@ -2024,6 +2234,7 @@ function Requests({
   setInvitation,
   onNavigate,
   onView,
+  onFiles,
 }: {
   devices: Device[];
   requests: Remote[];
@@ -2040,6 +2251,7 @@ function Requests({
   >;
   onNavigate: (tab: Tab) => void;
   onView: (id: string) => Promise<ViewerNoticeLease>;
+  onFiles: (id: string) => void;
 }) {
   const [paths, setPaths] = useState<
     Record<
@@ -2080,6 +2292,7 @@ function Requests({
     return () => window.clearInterval(timer);
   }, [requests, transportReady]);
   const [target, setTarget] = useState(""),
+    [targetChoice, setTargetChoice] = useState("custom"),
     [inviteTarget, setInviteTarget] = useState(invitation?.target ?? ""),
     [permission, setPermission] = useState<"view" | "control" | "files">(
       "view",
@@ -2088,9 +2301,9 @@ function Requests({
   const [section, setSection] = useState(
     pending.length ? "incoming" : "active",
   );
-  const [invitePermission, setInvitePermission] = useState<"view" | "control">(
-    invitation?.permission ?? "view",
-  );
+  const [invitePermission, setInvitePermission] = useState<
+    "view" | "control" | "files"
+  >(invitation?.permission ?? "view");
   const invite = invitation?.code ?? "";
   const inviteId = invitation?.id ?? "";
   const generatedInvite = invitation;
@@ -2118,25 +2331,31 @@ function Requests({
       x.online &&
       (permission === "files" ? x.can_files : x.can_host),
   );
+  const targetUnavailable =
+    targetChoice !== "custom" && !targets.some((d) => d.id === targetChoice);
+  const inviteTargets = devices.filter(
+    (d) =>
+      d.online &&
+      d.enabled &&
+      (invitePermission === "files" ? d.can_files : d.can_host),
+  );
+  const inviteTargetAvailable = inviteTargets.some(
+    (d) => d.id === inviteTarget,
+  );
   return (
     <div className="connections-workspace">
-      <div className="section-heading connection-intro">
-        <p className="muted">
-          管理远程电脑的连接。对方允许后，才能查看或控制屏幕。
-        </p>
-        <div className="row-actions">
-          <button
-            className="text-button"
-            disabled={busy}
-            onClick={() => void act(onRefresh, "连接状态已刷新", false)}
-          >
-            刷新连接状态
-          </button>
-          <button className="secondary" onClick={() => onNavigate("devices")}>
-            从我的设备连接
-          </button>
-        </div>
-      </div>
+      <PageActions>
+        <button
+          className="text-button"
+          disabled={busy}
+          onClick={() => void act(onRefresh, "连接状态已刷新", false)}
+        >
+          刷新连接状态
+        </button>
+        <button className="secondary" onClick={() => onNavigate("devices")}>
+          从我的设备连接
+        </button>
+      </PageActions>
       <div className="section-switcher" role="group" aria-label="连接分类">
         {[
           ["active", `当前连接 (${activeRequests.length})`],
@@ -2158,15 +2377,15 @@ function Requests({
       <div className="connection-content">
         <div className="card connection-form-pane" hidden={section !== "new"}>
           <div className="eyebrow">REQUEST ACCESS</div>
-          <h2>连接他人电脑</h2>
+          <h2 className="sr-only">连接他人电脑</h2>
           <p className="muted">
-            请对方开启共享，并把设备 ID
-            和一次性邀请码发给你。自己的电脑可直接从“我的设备”连接。
+            请对方允许远程连接，再提供设备 ID 和一次性邀请码。
           </p>
           <form
             className="form"
             onSubmit={(e) => {
               e.preventDefault();
+              if (targetUnavailable) return;
               void act(async () => {
                 await prepareTransport();
                 await api("request", {
@@ -2176,18 +2395,31 @@ function Requests({
                   invitation_code: code.trim() || undefined,
                 });
                 setSection("active");
-              }, "连接请求已发送，请等待对方批准；可在“当前连接”查看进度");
+              }, "连接请求已发送");
             }}
           >
             <label>
               目标设备
               <select
-                value={devices.some((x) => x.id === target) ? target : "custom"}
-                onChange={(e) =>
-                  setTarget(e.target.value === "custom" ? "" : e.target.value)
+                aria-label="目标设备"
+                value={targetChoice}
+                aria-invalid={targetUnavailable || undefined}
+                aria-describedby={
+                  targetUnavailable ? "request-target-unavailable" : undefined
                 }
+                onChange={(e) => {
+                  setTargetChoice(e.target.value);
+                  setTarget(e.target.value === "custom" ? "" : e.target.value);
+                }}
               >
                 <option value="custom">输入对方提供的设备 ID</option>
+                {targetUnavailable && (
+                  <option value={targetChoice} disabled>
+                    {devices.find((d) => d.id === targetChoice)?.name ??
+                      "已选设备"}
+                    （当前不可用）
+                  </option>
+                )}
                 {targets.map((d) => (
                   <option key={d.id} value={d.id}>
                     {d.name}
@@ -2199,9 +2431,21 @@ function Requests({
               aria-label="目标设备 ID"
               placeholder="粘贴对方的完整设备 ID"
               value={target}
-              onChange={(e) => setTarget(e.target.value)}
+              onChange={(e) => {
+                setTargetChoice("custom");
+                setTarget(e.target.value);
+              }}
               required
             />
+            {targetUnavailable && (
+              <p
+                id="request-target-unavailable"
+                className="hint field-notice"
+                role="status"
+              >
+                所选设备暂不支持此连接。请检查设备状态或重新选择。
+              </p>
+            )}
             <label>
               连接后可以做什么
               <select
@@ -2212,10 +2456,8 @@ function Requests({
                 }
               >
                 <option value="view">仅查看屏幕</option>
-                <option value="control">查看屏幕并操作鼠标键盘</option>
-                <option value="files" disabled>
-                  文件（待实现）
-                </option>
+                <option value="control">远程控制与文件传输</option>
+                <option value="files">仅传输文件</option>
               </select>
             </label>
             <label>
@@ -2226,7 +2468,10 @@ function Requests({
                 autoComplete="off"
               />
             </label>
-            <button className="primary" disabled={busy || !state.deviceId}>
+            <button
+              className="primary"
+              disabled={busy || !state.deviceId || targetUnavailable}
+            >
               发送连接请求
             </button>
           </form>
@@ -2247,14 +2492,13 @@ function Requests({
           hidden={section !== "invite"}
         >
           <div className="eyebrow">SHARE ACCESS</div>
-          <h2>邀请他人连接我的电脑</h2>
-          <p className="muted">
-            选择已开启共享的电脑，生成一次性邀请码。对方发起连接后，你仍需在那台电脑上批准。
-          </p>
+          <h2 className="sr-only">邀请他人连接我的电脑</h2>
+          <p className="muted">连接需在目标电脑批准。</p>
           <form
             className="form"
             onSubmit={(e) => {
               e.preventDefault();
+              if (!inviteTargetAvailable) return;
               void act(
                 async () => {
                   const v = await api<{ code: string; id: string }>("invite", {
@@ -2279,17 +2523,30 @@ function Requests({
               <select
                 aria-label="允许对方连接哪台电脑"
                 value={inviteTarget}
+                aria-invalid={
+                  (!!inviteTarget && !inviteTargetAvailable) || undefined
+                }
+                aria-describedby={
+                  inviteTarget && !inviteTargetAvailable
+                    ? "invite-target-unavailable"
+                    : undefined
+                }
                 onChange={(e) => setInviteTarget(e.target.value)}
                 required
               >
                 <option value="">选择设备</option>
-                {devices
-                  .filter((x) => x.can_host && x.enabled && x.online)
-                  .map((d) => (
-                    <option key={d.id} value={d.id}>
-                      {d.name}
-                    </option>
-                  ))}
+                {inviteTarget && !inviteTargetAvailable && (
+                  <option value={inviteTarget} disabled>
+                    {devices.find((d) => d.id === inviteTarget)?.name ??
+                      "已选设备"}
+                    （当前不可用）
+                  </option>
+                )}
+                {inviteTargets.map((d) => (
+                  <option key={d.id} value={d.id}>
+                    {d.name}
+                  </option>
+                ))}
               </select>
             </label>
             <label>
@@ -2298,40 +2555,40 @@ function Requests({
                 aria-label="允许对方做什么"
                 value={invitePermission}
                 onChange={(e) =>
-                  setInvitePermission(e.target.value as "view" | "control")
+                  setInvitePermission(
+                    e.target.value as "view" | "control" | "files",
+                  )
                 }
               >
                 <option value="view">仅查看屏幕</option>
-                <option value="control">查看屏幕并操作鼠标键盘</option>
+                <option value="control">远程控制与文件传输</option>
+                <option value="files">仅传输文件</option>
               </select>
             </label>
+            {inviteTarget && !inviteTargetAvailable && (
+              <p
+                id="invite-target-unavailable"
+                className="hint field-notice"
+                role="status"
+              >
+                所选设备暂不支持此连接。请检查设备状态或重新选择。
+              </p>
+            )}
             <button
-              disabled={
-                busy ||
-                !!invite ||
-                !devices.some(
-                  (d) =>
-                    d.id === inviteTarget &&
-                    d.online &&
-                    d.enabled &&
-                    d.can_host,
-                )
-              }
+              disabled={busy || !!invite || !inviteTargetAvailable}
               className="secondary"
             >
               生成邀请码
             </button>
           </form>
-          {!devices.some((d) => d.online && d.enabled && d.can_host) && (
+          {!inviteTargets.length && !inviteTarget && (
             <p className="hint">
-              还没有开启共享的在线电脑。请先在那台电脑开启本机共享。
+              {invitePermission === "files"
+                ? "暂无可传输文件的在线电脑。请在对方电脑允许远程连接。"
+                : "还没有开启共享的在线电脑。请先在那台电脑开启本机共享。"}
             </p>
           )}
-          {invite && (
-            <p className="muted">
-              如需更换设备或权限，请先取消当前邀请，再生成新的邀请码。
-            </p>
-          )}
+          {invite && <p className="muted">生成新邀请前，请先取消当前邀请。</p>}
           {invite && generatedInvite && (
             <div className="invite-code">
               <span>
@@ -2341,9 +2598,7 @@ function Requests({
               <code>{generatedInvite.target}</code>
               <span>允许：{permissionLabel(generatedInvite.permission)}</span>
               <span>一次性邀请码</span>
-              <code>
-                {inviteVisible ? invite : "邀请码已收起，收起不会取消邀请"}
-              </code>
+              <code>{inviteVisible ? invite : "邀请码已收起"}</code>
               <div className="row-actions">
                 <button
                   disabled={busy}
@@ -2353,7 +2608,7 @@ function Requests({
                         copyText(
                           `设备 ID：${generatedInvite.target}\n允许：${permissionLabel(generatedInvite.permission)}\n一次性邀请码：${invite}`,
                         ),
-                      "设备 ID 和邀请码已复制，请发给需要连接的人",
+                      "连接信息已复制",
                       false,
                     )
                   }
@@ -2378,13 +2633,12 @@ function Requests({
                     void act(async () => {
                       await api("revoke_invite", { id: inviteId });
                       setInvitation(null);
-                    }, "邀请已取消，此邀请码和由它建立的连接均不能继续使用")
+                    }, "邀请已取消")
                   }
                 >
                   取消邀请
                 </button>
               </div>
-              <span>取消邀请也会结束通过此邀请建立的连接。</span>
             </div>
           )}
         </div>
@@ -2395,21 +2649,21 @@ function Requests({
           <div className="section-heading">
             <div>
               <div className="eyebrow">INBOX</div>
-              <h2>谁想连接这台电脑</h2>
+              <h2>连接请求</h2>
             </div>
             <span className="count">{pending.length}</span>
           </div>
-          <p className="muted">
-            只批准你认识的连接。允许控制后，对方能看到屏幕并操作鼠标键盘。
-          </p>
-          {!state.sharing && pending.length > 0 && (
+          <p className="muted">只批准你认识的连接。</p>
+          {pending.some((p) =>
+            p.permission === "files" ? !state.filesEnabled : !state.sharing,
+          ) && (
             <p className="hint">
-              本机共享尚未开启。
+              请先开启“允许远程连接”。
               <button
                 className="text-button"
                 onClick={() => onNavigate("settings")}
               >
-                去开启共享
+                连接设置
               </button>
             </p>
           )}
@@ -2437,24 +2691,33 @@ function Requests({
                       拒绝
                     </button>
                     <button
-                      disabled={busy || !state.sharing}
+                      disabled={
+                        busy ||
+                        !(p.permission === "files"
+                          ? state.filesEnabled
+                          : state.sharing)
+                      }
                       className="primary"
                       onClick={() =>
-                        void act(
-                          () => api("decide", { id: p.id, approve: true }),
-                          "已允许连接，对方现在可以连接这台电脑",
-                        )
+                        void act(async () => {
+                          if (p.permission === "files")
+                            await prepareTransport();
+                          await api("decide", { id: p.id, approve: true });
+                          if (p.permission === "files") onFiles(p.id);
+                        }, "已允许连接")
                       }
                     >
-                      {p.permission === "control"
-                        ? "允许查看和控制"
-                        : "允许查看"}
+                      {p.permission === "files"
+                        ? "允许文件传输"
+                        : p.permission === "control"
+                          ? "允许控制"
+                          : "允许查看"}
                     </button>
                   </div>
                 </div>
               ))
             ) : (
-              <Empty text="目前没有等待本机处理的请求。" />
+              <Empty text="暂无待批准请求" />
             )}
           </div>
         </div>
@@ -2463,12 +2726,9 @@ function Requests({
           hidden={!["active", "history"].includes(section)}
         >
           <div className="eyebrow">HISTORY</div>
-          <h2>{section === "history" ? "过去的连接" : "当前连接"}</h2>
-          <p className="muted">
-            {section === "history"
-              ? "查看已取消、被拒绝或已过期的连接请求。"
-              : "已批准表示对方已允许访问；点击连接按钮后才会打开画面。结束本次连接后，需要重新申请并获得批准。"}
-          </p>
+          <h2 className="sr-only">
+            {section === "history" ? "连接记录" : "当前连接"}
+          </h2>
           <div
             className="connection-list"
             tabIndex={0}
@@ -2509,6 +2769,35 @@ function Requests({
                     </details>
                   </div>
                   <div className="row-actions">
+                    {r.state === "approved" && r.permission === "files" && (
+                      <button
+                        className="secondary"
+                        disabled={busy}
+                        onClick={() =>
+                          void act(
+                            async () => {
+                              if (
+                                r.source_device_id === state.deviceId &&
+                                !["connected", "direct", "relay"].includes(
+                                  paths[r.id]?.state,
+                                )
+                              ) {
+                                await prepareTransport();
+                                await invoke("transport_connect", {
+                                  id: r.id,
+                                  permission: "files",
+                                });
+                              }
+                              onFiles(r.id);
+                            },
+                            "",
+                            false,
+                          )
+                        }
+                      >
+                        打开文件传输
+                      </button>
+                    )}
                     {r.state === "approved" &&
                       r.source_device_id === state.deviceId &&
                       r.permission !== "files" &&
@@ -2553,8 +2842,8 @@ function Requests({
                           }
                         >
                           {r.permission === "control"
-                            ? "连接并控制"
-                            : "连接并查看"}
+                            ? "远程控制"
+                            : "仅查看屏幕"}
                         </button>
                       )}
                     {r.source_device_id === state.deviceId &&
@@ -2587,7 +2876,7 @@ function Requests({
                             },
                             r.state === "pending"
                               ? "连接请求已取消"
-                              : "本次连接已结束，再次连接需要重新申请并获得批准",
+                              : "本次连接已结束",
                           )
                         }
                       >
@@ -2599,11 +2888,7 @@ function Requests({
               ))
             ) : (
               <Empty
-                text={
-                  section === "history"
-                    ? "还没有过去的连接记录。"
-                    : "目前没有连接。点击“从我的设备连接”开始。"
-                }
+                text={section === "history" ? "暂无连接记录" : "暂无连接"}
               />
             )}
           </div>
@@ -2613,6 +2898,20 @@ function Requests({
   );
 }
 type RemoteStatus = {
+  files?: {
+    supported: boolean;
+    status?: {
+      transfers: {
+        id: string;
+        name: string;
+        size: number;
+        transferred: number;
+        direction: string;
+        state: string;
+      }[];
+    } | null;
+  };
+
   video?: {
     profile: number;
     generation: number;
@@ -2723,8 +3022,10 @@ function Viewer({
     buttons: number;
     point: { display: number; layout: number; x: number; y: number } | null;
   }>({ id: null, buttons: 0, point: null });
-  const clearPointer = () => {
+  const releasedPointerLeave = useRef<number | null>(null);
+  const clearPointer = (releasedOutside = false) => {
     const id = pointer.current.id;
+    releasedPointerLeave.current = releasedOutside ? id : null;
     pointer.current = { id: null, buttons: 0, point: null };
     if (id != null && image.current?.hasPointerCapture(id))
       image.current.releasePointerCapture(id);
@@ -2736,6 +3037,10 @@ function Viewer({
   const inputPending = useRef(0);
   const lastMove = useRef(0);
   const [ended, setEnded] = useState(false);
+  const [fileBusy, setFileBusy] = useState(false);
+  const fileInFlight = useRef(false);
+  const swallowPasteUp = useRef(false);
+  const [fileNote, setFileNote] = useState("");
   const [reconnecting, setReconnecting] = useState(false);
   const [reconnectFailed, setReconnectFailed] = useState(false);
   const [recoveryStatus, setRecoveryStatus] = useState<RecoveryStatus | null>(
@@ -2777,6 +3082,9 @@ function Viewer({
   const [toolsOpen, setToolsOpen] = useState(false);
   const [toolbarPinned, setToolbarPinned] = useState(false);
   const toolbarHovered = useRef(false);
+  const toolbarFocused = useRef(false);
+  const toolbar = useRef<HTMLElement>(null);
+  const focusToolbarOnReveal = useRef(false);
   const toolbarTimer = useRef<number | undefined>(undefined);
   const [profileWanted, setProfileWanted] = useState<number | null>(null);
   const [profilePending, setProfilePending] = useState<number | null>(null);
@@ -2822,17 +3130,36 @@ function Viewer({
     return () => window.removeEventListener("resize", refresh);
   }, []);
   const showToolbar =
-    toolbarVisible || toolsOpen || toolbarPinned || reconnecting || displayBusy;
+    toolbarVisible ||
+    toolsOpen ||
+    toolbarPinned ||
+    reconnecting ||
+    displayBusy ||
+    fileBusy;
   const scheduleHide = () => {
     window.clearTimeout(toolbarTimer.current);
-    if (!toolbarPinned && !toolsOpen && !toolbarHovered.current)
-      toolbarTimer.current = window.setTimeout(
-        () => setToolbarVisible(false),
-        2200,
-      );
+    if (
+      !toolbarPinned &&
+      !toolsOpen &&
+      !toolbarHovered.current &&
+      !toolbarFocused.current
+    )
+      toolbarTimer.current = window.setTimeout(() => {
+        if (!toolbarFocused.current) setToolbarVisible(false);
+      }, 2200);
   };
   useEffect(() => {
-    if (toolbarVisible) scheduleHide();
+    if (toolbarVisible) {
+      if (focusToolbarOnReveal.current) {
+        focusToolbarOnReveal.current = false;
+        toolbar.current
+          ?.querySelector<HTMLElement>(
+            "select:not(:disabled), button:not(:disabled), summary",
+          )
+          ?.focus({ preventScroll: true });
+      }
+      scheduleHide();
+    }
     return () => window.clearTimeout(toolbarTimer.current);
   }, [toolbarVisible, toolbarPinned, toolsOpen]);
   useEffect(() => {
@@ -2914,6 +3241,7 @@ function Viewer({
   const control =
     !ended &&
     !inputBlocked &&
+    !fileBusy &&
     !displayBusy &&
     !!picture &&
     status?.state !== "closed" &&
@@ -2968,6 +3296,76 @@ function Viewer({
         inputPending.current--;
       });
   };
+  const pasteFiles = async (choose = false) => {
+    if (
+      !controlRef.current ||
+      fileInFlight.current ||
+      !status?.files?.supported
+    )
+      return;
+    fileInFlight.current = true;
+    const lease = viewerLease.current;
+    generation.current++;
+    clearPointer();
+    setFileBusy(true);
+    setFileNote(
+      choose
+        ? "请选择文件；文件将粘贴到远程当前文件夹。"
+        : "正在准备剪贴板文件…",
+    );
+    try {
+      await inputQueue.current;
+      if (!lease.active) return;
+      await invoke("remote_input", { id, input: null });
+      if (!lease.active) return;
+      const pasted = await invoke<boolean | undefined>(
+        choose ? "remote_send_files" : "remote_paste_files",
+        { id },
+      );
+      if (!lease.active) return;
+      if (choose && !pasted) {
+        setFileNote("");
+        return;
+      }
+      if (!choose && !pasted) {
+        // No local file list: preserve ordinary paste in the remote app.
+        for (const [vk, down] of [
+          [0xa2, true],
+          [0x56, true],
+          [0x56, false],
+          [0xa2, false],
+        ] as const) {
+          if (!lease.active) return;
+          await invoke("remote_input", {
+            id,
+            input: { kind: "key", vk, down },
+            generation: inputGeneration.current,
+          });
+        }
+        setFileNote("");
+      } else setFileNote("已发送文件粘贴请求。");
+    } catch (e) {
+      if (lease.active) {
+        setFileNote("");
+        setProblem(errorText(e));
+      }
+    } finally {
+      fileInFlight.current = false;
+      if (lease.active) {
+        setFileBusy(false);
+        screen.current?.focus({ preventScroll: true });
+      }
+    }
+  };
+  const activeFile = status?.files?.status?.transfers.find(
+    (t) =>
+      t.direction === "send" && ["offered", "transferring"].includes(t.state),
+  );
+  useEffect(() => {
+    if (!fileNote || fileBusy) return;
+    const timer = window.setTimeout(() => setFileNote(""), 6000);
+    return () => window.clearTimeout(timer);
+  }, [fileNote, fileBusy]);
   const keyVk = (e: React.KeyboardEvent) => {
     if (e.location === KeyboardEvent.DOM_KEY_LOCATION_RIGHT) {
       if (e.key === "Control") return 0xa3;
@@ -2993,6 +3391,15 @@ function Viewer({
     generation.current++;
     clearPointer();
     send({ kind: "resume_mouse" });
+  };
+  const switchRemoteWindow = () => {
+    if (!controlRef.current || !displayGate.current.canControl()) return;
+    releaseInputs();
+    send({ kind: "key", vk: 0xa4, down: true, repeat: false });
+    send({ kind: "key", vk: 0x09, down: true, repeat: false });
+    send({ kind: "key", vk: 0x09, down: false });
+    send({ kind: "key", vk: 0xa4, down: false });
+    screen.current?.focus({ preventScroll: true });
   };
   const resumeControl = () => {
     setRetryingInput(true);
@@ -3151,9 +3558,7 @@ function Viewer({
         URL.revokeObjectURL(url.current);
         url.current = null;
       }
-      setProblem(
-        s?.error || (error ? errorText(error) : "会话已结束，画面与输入已停止"),
-      );
+      setProblem(s?.error || (error ? errorText(error) : "连接已结束"));
       if (s?.retryable) {
         beginReconnect(false);
       }
@@ -3319,6 +3724,7 @@ function Viewer({
       e.preventDefault();
       screen.current?.focus({ preventScroll: true });
       if (held.id == null) {
+        releasedPointerLeave.current = null;
         held.id = e.pointerId;
         e.currentTarget.setPointerCapture(e.pointerId);
       }
@@ -3334,7 +3740,15 @@ function Viewer({
     held.buttons = next;
     if (e.type === "pointermove" && p) send({ kind: "move", ...held.point });
     // Clear our bookkeeping before implicit lost-capture, so a normal UP stays queued.
-    if (held.id != null && next === 0) clearPointer();
+    if (held.id != null && next === 0) {
+      const rect = e.currentTarget.getBoundingClientRect();
+      clearPointer(
+        e.clientX < rect.left ||
+          e.clientX >= rect.right ||
+          e.clientY < rect.top ||
+          e.clientY >= rect.bottom,
+      );
+    }
   };
   return (
     <section
@@ -3375,7 +3789,7 @@ function Viewer({
             <button
               className="window-close"
               aria-label="关闭窗口"
-              title="结束并关闭"
+              title="关闭窗口"
               onClick={onStop}
             >
               <Dismiss16Regular />
@@ -3387,14 +3801,32 @@ function Viewer({
         <button
           className="viewer-reveal"
           onMouseEnter={() => setToolbarVisible(true)}
-          onClick={() => setToolbarVisible(true)}
+          onClick={(e) => {
+            focusToolbarOnReveal.current = e.detail === 0;
+            setToolbarVisible(true);
+          }}
         >
           显示工具栏
         </button>
       )}
       <div className="viewer-body">
         <header
+          ref={toolbar}
           className="viewer-toolbar"
+          onFocusCapture={() => {
+            toolbarFocused.current = true;
+            window.clearTimeout(toolbarTimer.current);
+            setToolbarVisible(true);
+          }}
+          onBlurCapture={(e) => {
+            if (
+              e.relatedTarget instanceof Node &&
+              e.currentTarget.contains(e.relatedTarget)
+            )
+              return;
+            toolbarFocused.current = false;
+            scheduleHide();
+          }}
           onMouseEnter={() => {
             toolbarHovered.current = true;
             window.clearTimeout(toolbarTimer.current);
@@ -3472,9 +3904,7 @@ function Viewer({
                   : -1
               }
               title={
-                !status?.video?.supported
-                  ? "被控端需更新后才能切换"
-                  : "自动按窗口大小适配；高分辨率取决于对方显示器，当前尺寸见更多操作"
+                !status?.video?.supported ? "被控端需更新后才能切换" : undefined
               }
               onChange={(e) => {
                 const profile = Number(e.target.value);
@@ -3504,6 +3934,20 @@ function Viewer({
           </label>
 
           <div className="viewer-toolbar-actions">
+            {status?.permission === "control" && (
+              <button
+                disabled={!control || !status.files?.supported}
+                title={
+                  status.files?.supported
+                    ? undefined
+                    : "需两端更新至支持远控文件传输的版本"
+                }
+                onClick={() => void pasteFiles(true)}
+              >
+                <Folder20Regular aria-hidden="true" />
+                {fileBusy ? "正在传输…" : "传输文件"}
+              </button>
+            )}
             <details
               className="viewer-more"
               onToggle={(e) => setToolsOpen(e.currentTarget.open)}
@@ -3545,11 +3989,6 @@ function Viewer({
                       </button>
                     ))}
                   </div>
-                  <p className="hint">
-                    {fitMode === "fill"
-                      ? "完整画面铺满窗口；两端比例不同时会拉伸。"
-                      : "保持远端原始比例；两端比例不同时会留边。"}
-                  </p>
                 </div>
                 <div className="viewer-connection-info">
                   <strong>连接信息</strong>
@@ -3568,20 +4007,29 @@ function Viewer({
                     连接核对码：{status?.verification_code ?? "正在获取"}
                     。请与对方确认两端显示一致。
                   </p>
-                </div>{" "}
-                {control && (
-                  <button type="button" onClick={recoverMouse}>
-                    恢复鼠标控制
-                  </button>
-                )}
-                {inputBlocked && !ended && (
-                  <button
-                    type="button"
-                    disabled={retryingInput}
-                    onClick={resumeControl}
-                  >
-                    重试控制
-                  </button>
+                </div>
+                {(control || (inputBlocked && !ended)) && (
+                  <div className="viewer-input-actions">
+                    {control && (
+                      <button type="button" onClick={recoverMouse}>
+                        恢复鼠标控制
+                      </button>
+                    )}
+                    {control && (
+                      <button type="button" onClick={switchRemoteWindow}>
+                        切换远端窗口（Alt+Tab）
+                      </button>
+                    )}
+                    {inputBlocked && !ended && (
+                      <button
+                        type="button"
+                        disabled={retryingInput}
+                        onClick={resumeControl}
+                      >
+                        重试控制
+                      </button>
+                    )}
+                  </div>
                 )}
                 {control && (
                   <form
@@ -3609,14 +4057,12 @@ function Viewer({
                     </button>
                   </form>
                 )}
-                <p className="hint">
-                  高清模式优先保留文字细节；复杂画面会在数据大小上限内调整压缩。系统权限确认和未登录桌面暂不支持控制。
-                </p>
+                <p className="hint">系统授权与登录画面需在被控电脑上处理。</p>
               </div>
             </details>
             <button onClick={() => windowAction("fullscreen")}>全屏切换</button>
             <button className="danger-text" onClick={onStop}>
-              {reconnecting ? "取消重连并关闭" : "结束并关闭"}
+              {reconnecting ? "取消重连" : "结束连接"}
             </button>
           </div>
         </header>
@@ -3625,7 +4071,10 @@ function Viewer({
             正在切换画面分辨率…
           </div>
         )}
-        {(reconnecting || (displayBusy && !ended) || recoveryNotice) && (
+        {(reconnecting ||
+          (displayBusy && !ended) ||
+          recoveryNotice ||
+          (!ended && (fileBusy || fileNote))) && (
           <div
             className="viewer-session-notice"
             role="status"
@@ -3639,7 +4088,11 @@ function Viewer({
                     ? "暂未收到所选屏幕的画面，请重新选择屏幕。"
                     : "原选中屏幕暂不可用或布局已变化，请选择要显示的屏幕。"
                   : "连接已建立，正在恢复所选屏幕…"
-                : recoveryNotice}
+                : fileBusy || fileNote
+                  ? activeFile
+                    ? `正在传输 ${activeFile.name} · ${activeFile.size ? Math.round((activeFile.transferred / activeFile.size) * 100) : 0}%`
+                    : fileNote
+                  : recoveryNotice}
           </div>
         )}
         <FailureDialog
@@ -3706,9 +4159,25 @@ function Viewer({
           onKeyDown={(e) => {
             if (!control) return;
             e.preventDefault();
+            if (
+              (e.ctrlKey || e.metaKey) &&
+              !e.altKey &&
+              !e.shiftKey &&
+              e.code === "KeyV" &&
+              status?.files?.supported
+            ) {
+              swallowPasteUp.current = true;
+              if (!e.repeat) void pasteFiles();
+              return;
+            }
             send({ kind: "key", vk: keyVk(e), down: true, repeat: e.repeat });
           }}
           onKeyUp={(e) => {
+            if (e.code === "KeyV" && swallowPasteUp.current) {
+              swallowPasteUp.current = false;
+              e.preventDefault();
+              return;
+            }
             if (!control) return;
             e.preventDefault();
             send({ kind: "key", vk: keyVk(e), down: false });
@@ -3720,13 +4189,6 @@ function Viewer({
               src={picture.url}
               alt="远端桌面"
               style={{ cursor: inputBlocked ? "not-allowed" : "default" }}
-              title={
-                control
-                  ? "远程控制：点击画面后可使用鼠标键盘"
-                  : inputBlocked
-                    ? "控制已暂停，请点击重试控制"
-                    : "仅查看画面"
-              }
               draggable={false}
               onPointerDown={pointerInput}
               onPointerMove={pointerInput}
@@ -3735,7 +4197,14 @@ function Viewer({
               onLostPointerCapture={() => {
                 if (pointer.current.buttons) releaseInputs();
               }}
-              onPointerLeave={() => {
+              onPointerLeave={(e) => {
+                // Capture release outside causes a leave after normal UP. Release
+                // keys in order without invalidating that final positioned UP.
+                if (releasedPointerLeave.current === e.pointerId) {
+                  releasedPointerLeave.current = null;
+                  send(null);
+                  return;
+                }
                 if (!pointer.current.buttons) releaseInputs();
               }}
               onContextMenu={(e) => e.preventDefault()}
@@ -3765,9 +4234,9 @@ function Viewer({
                 {reconnecting
                   ? recoveryStageText(recoveryStatus)
                   : ended
-                    ? "会话已结束，远端画面已清除"
+                    ? "连接已结束"
                     : displaySnapshot.stage === "unavailable"
-                      ? "请在上方选择要显示的屏幕，画面恢复前不会发送鼠标键盘操作。"
+                      ? "请选择要显示的屏幕。"
                       : restoringConnection
                         ? "正在恢复原选中的屏幕…"
                         : displayBusy
@@ -3776,7 +4245,7 @@ function Viewer({
               </p>
               {reconnecting && (
                 <button className="secondary" onClick={onStop}>
-                  取消重连并关闭
+                  取消重连
                 </button>
               )}
               {reconnectFailed && !reconnecting && (
@@ -3808,6 +4277,9 @@ function Security({
   const [oldPassword, setOld] = useState(""),
     [newPassword, setNew] = useState(""),
     [loadError, setLoadError] = useState(""),
+    [sessionsLoading, setSessionsLoading] = useState(true),
+    [sessionsLoaded, setSessionsLoaded] = useState(false),
+    [sessionsFailed, setSessionsFailed] = useState(false),
     [sessions, setSessions] = useState<
       {
         id: string;
@@ -3816,25 +4288,65 @@ function Security({
         current: boolean;
       }[]
     >([]);
+  const sessionsRequest = useRef({
+    active: false,
+    context: 0,
+    revision: 0,
+    pending: false,
+  });
+  const loadSessions = useCallback(async (replace = false) => {
+    const request = sessionsRequest.current;
+    if (!request.active || (request.pending && !replace)) return;
+    const revision = ++request.revision;
+    request.pending = true;
+    const current = () => request.active && request.revision === revision;
+    setSessionsLoading(true);
+    setSessionsFailed(false);
+    setLoadError("");
+    try {
+      const rows = await api<typeof sessions>("sessions");
+      if (!current()) return;
+      setSessions(rows);
+      setSessionsLoaded(true);
+    } catch (e) {
+      if (!current()) return;
+      setSessionsFailed(true);
+      setLoadError(errorText(e));
+    } finally {
+      if (current()) {
+        request.pending = false;
+        setSessionsLoading(false);
+      }
+    }
+  }, []);
   useEffect(() => {
-    void api<typeof sessions>("sessions")
-      .then(setSessions)
-      .catch((e) => setLoadError(errorText(e)));
-  }, [me.id]);
+    const request = sessionsRequest.current;
+    request.active = true;
+    request.context++;
+    setSessions([]);
+    setSessionsLoaded(false);
+    void loadSessions();
+    return () => {
+      request.active = false;
+      request.context++;
+      request.revision++;
+      request.pending = false;
+    };
+  }, [me.id, loadSessions]);
   return (
     <div className="stack">
       <FailureDialog
         error={loadError}
         onDismiss={() => setLoadError("")}
-        action={{ title: "无法加载登录记录" }}
+        action={{
+          title: "无法加载登录记录",
+          retry: () => void loadSessions(),
+        }}
       />
       <div className="two-col">
         <div className="card">
           <div className="eyebrow">PASSWORD</div>
           <h2>修改密码</h2>
-          <p className="muted">
-            修改后，所有客户端都会退出登录，当前连接和共享也会停止。请使用新密码登录，并重新添加本机。
-          </p>
           <form
             className="form"
             onSubmit={(e) => {
@@ -3847,7 +4359,7 @@ function Security({
                 });
                 setOld("");
                 setNew("");
-              }, "密码已更改，请重新登录");
+              }, "密码修改成功");
             }}
           >
             <label>
@@ -3865,13 +4377,17 @@ function Security({
                 type="password"
                 required
                 minLength={12}
+                aria-label="新密码"
+                aria-describedby="security-password-hint"
                 value={newPassword}
                 onChange={(e) => setNew(e.target.value)}
               />
-              <small className="muted">至少 12 个字符</small>
+              <small id="security-password-hint" className="muted">
+                至少 12 个字符
+              </small>
             </label>
             <button className="primary" disabled={busy}>
-              修改密码并退出所有登录
+              修改密码
             </button>
           </form>
         </div>
@@ -3879,9 +4395,6 @@ function Security({
           <div className="eyebrow">ACCOUNT</div>
           <h2>登录状态</h2>
           <p className="muted">{me.email}</p>
-          <p className="muted">
-            退出会停止本机共享和当前连接。下次使用时需要重新登录。
-          </p>
           <button
             className="secondary"
             disabled={busy}
@@ -3899,34 +4412,34 @@ function Security({
           </div>
           <button
             className="text-button"
-            onClick={() =>
-              void api<typeof sessions>("sessions")
-                .then((rows) => {
-                  setSessions(rows);
-                  setLoadError("");
-                })
-                .catch((e) => setLoadError(errorText(e)))
-            }
+            aria-label="刷新登录记录"
+            disabled={busy || sessionsLoading}
+            onClick={() => void loadSessions()}
           >
-            刷新
+            {sessionsLoading
+              ? sessionsLoaded
+                ? "刷新中…"
+                : "加载中…"
+              : "刷新"}
           </button>
         </div>
-        <p className="muted">
-          这里显示仍可使用此账号的客户端。发现不认识的登录时，可以将其退出；对方需要重新登录才能继续使用。
-        </p>
+        {sessionsFailed && sessions.length > 0 && (
+          <p className="hint" role="status">
+            刷新失败，显示上次记录。
+          </p>
+        )}
         <div
           className="login-records"
           tabIndex={0}
           aria-label="账号登录记录列表"
+          aria-busy={sessionsLoading}
         >
           {sessions.length ? (
             sessions.map((x) => (
               <div className="list-row" key={x.id}>
                 <div>
                   <strong>
-                    {x.id === me.session_id
-                      ? "当前客户端（正在使用）"
-                      : "其他客户端登录"}
+                    {x.id === me.session_id ? "当前客户端" : "其他客户端"}
                   </strong>
                   <small>
                     登录时间：{dateLabel(x.created_at)}
@@ -3944,8 +4457,17 @@ function Security({
                     disabled={busy}
                     onClick={() =>
                       void act(async () => {
+                        const context = sessionsRequest.current.context;
                         await api("revoke_session", { id: x.id });
-                        setSessions(await api("sessions"));
+                        if (
+                          !sessionsRequest.current.active ||
+                          sessionsRequest.current.context !== context
+                        )
+                          return;
+                        setSessions((rows) =>
+                          rows.filter((row) => row.id !== x.id),
+                        );
+                        await loadSessions(true);
                       }, "已退出该客户端的登录")
                     }
                   >
@@ -3954,8 +4476,14 @@ function Security({
                 )}
               </div>
             ))
+          ) : sessionsLoading && !sessionsLoaded ? (
+            <div role="status">
+              <Empty text="正在加载登录记录…" />
+            </div>
+          ) : sessionsFailed ? (
+            <Empty text="登录记录暂时不可用，请刷新重试。" />
           ) : (
-            <Empty text="没有可显示的登录记录。" />
+            <Empty text="暂无登录记录" />
           )}
         </div>
       </div>
@@ -3975,7 +4503,7 @@ function Admin({
 }) {
   const [users, setUsers] = useState<User[]>([]),
     [after, setAfter] = useState(""),
-    [registration, setRegistration] = useState("open"),
+    [registration, setRegistration] = useState(""),
     [email, setEmail] = useState(invitation?.email ?? ""),
     [loadError, setLoadError] = useState(""),
     [deviceId, setDeviceId] = useState(""),
@@ -3993,6 +4521,10 @@ function Admin({
       }[]
     >([]);
   const [hasMore, setHasMore] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loaded, setLoaded] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const loadRequest = useRef({ active: false, revision: 0, pending: false });
   const invite = invitation?.code ?? "";
   const inviteId = invitation?.id ?? "";
   const inviteVisible = invitation?.visible ?? true;
@@ -4029,27 +4561,64 @@ function Admin({
       invite_only: "仅限邀请",
       closed: "关闭注册",
     })[value] ?? "详见记录详情";
-  const load = async () => {
-    const [u, r, s, a] = await Promise.all([
-      api<User[]>("admin_users"),
-      api<{ value: string }>("admin_registration"),
-      api<typeof sessions>("admin_sessions"),
-      api<typeof audit>("admin_audit"),
-    ]);
-    setUsers(u);
-    setHasMore(u.length === 100);
-    setAfter(u.at(-1)?.id ?? "");
-    setRegistration(r.value);
-    setSessions(s);
-    setAudit(a);
-  };
-  useEffect(() => {
-    void load().catch((e) => setLoadError(errorText(e)));
+  const load = useCallback(async () => {
+    const request = loadRequest.current;
+    if (!request.active || request.pending) return false;
+    const revision = ++request.revision;
+    const current = () => request.active && request.revision === revision;
+    request.pending = true;
+    setLoading(true);
+    setFailed(false);
+    setLoadError("");
+    try {
+      const [u, r, s, a] = await Promise.all([
+        api<User[]>("admin_users"),
+        api<{ value: string }>("admin_registration"),
+        api<typeof sessions>("admin_sessions"),
+        api<typeof audit>("admin_audit"),
+      ]);
+      if (!current()) return false;
+      setUsers(u);
+      setHasMore(u.length === 100);
+      setAfter(u.at(-1)?.id ?? "");
+      setRegistration(r.value);
+      setSessions(s);
+      setAudit(a);
+      setLoaded(true);
+      return true;
+    } catch (e) {
+      if (current()) {
+        setFailed(true);
+        setLoadError(errorText(e));
+      }
+      return false;
+    } finally {
+      if (current()) {
+        request.pending = false;
+        setLoading(false);
+      }
+    }
   }, []);
+  useEffect(() => {
+    const request = loadRequest.current;
+    request.active = true;
+    void load();
+    return () => {
+      request.active = false;
+      request.revision++;
+      request.pending = false;
+    };
+  }, [load]);
   const loadMore = () =>
     void act(
       async () => {
+        const revision = loadRequest.current.revision;
         const u = await api<User[]>("admin_users", { after });
+        if (
+          !loadRequest.current.active ||
+          loadRequest.current.revision !== revision
+        )
+          return HANDLED_FAILURE;
         setUsers((x) => [...x, ...u]);
         setAfter(u.at(-1)?.id ?? "");
         setHasMore(u.length === 100);
@@ -4059,41 +4628,76 @@ function Admin({
     );
   return (
     <div className="stack">
+      <PageActions>
+        <button
+          className="text-button"
+          aria-label="刷新管理数据"
+          disabled={busy || loading}
+          onClick={() =>
+            void act(
+              async () => ((await load()) ? undefined : HANDLED_FAILURE),
+              "管理数据已刷新",
+              false,
+            )
+          }
+        >
+          <ArrowSync20Regular aria-hidden="true" />
+          {loading ? (loaded ? "刷新中…" : "加载中…") : "刷新"}
+        </button>
+      </PageActions>
       {loadError && (
         <FailureDialog
           error={loadError}
           onDismiss={() => setLoadError("")}
-          action={{ title: "无法加载管理数据" }}
+          action={{ title: "无法加载管理数据", retry: () => void load() }}
         />
       )}
-      <div className="notice-strip">
-        管理账号、设备和注册方式。即使是管理员，连接他人电脑也需要对方批准。
-      </div>
+      {loading && !loaded && (
+        <p className="hint" role="status">
+          正在加载管理数据…
+        </p>
+      )}
+      {failed && (
+        <p className="hint" role="status">
+          {loaded
+            ? "刷新失败，当前显示上次获取的管理数据。"
+            : "管理数据暂时不可用，请刷新重试。"}
+        </p>
+      )}
       <div className="two-col">
         <div className="card">
           <div className="eyebrow">REGISTRATION</div>
-          <h2>允许谁注册账号</h2>
+          <h2>注册方式</h2>
           <form
             className="inline-form"
             onSubmit={(e) => {
               e.preventDefault();
+              if (busy || !loaded || failed || loadRequest.current.pending)
+                return;
               void act(
                 () => api("admin_set_registration", { value: registration }),
-                "注册策略已更新",
+                "注册方式已更新",
               );
             }}
           >
             <select
               aria-label="账号注册方式"
               value={registration}
+              disabled={busy || loading || !loaded || failed}
               onChange={(e) => setRegistration(e.target.value)}
             >
+              {!loaded && (
+                <option value="">{loading ? "加载中…" : "暂不可用"}</option>
+              )}
               <option value="open">开放注册</option>
-              <option value="invite_only">仅邀请</option>
+              <option value="invite_only">仅限邀请</option>
               <option value="closed">关闭注册</option>
             </select>
-            <button className="primary" disabled={busy}>
-              保存注册方式
+            <button
+              className="primary"
+              disabled={busy || loading || !loaded || failed}
+            >
+              保存
             </button>
           </form>
         </div>
@@ -4119,7 +4723,7 @@ function Admin({
                     visible: true,
                   });
                 },
-                "注册邀请码已生成，请复制后发给受邀人；不会自动发送邮件",
+                "注册邀请码已生成",
                 false,
               );
             }}
@@ -4133,18 +4737,13 @@ function Admin({
               onChange={(e) => setEmail(e.target.value)}
             />
             <button className="primary" disabled={busy || !!invite}>
-              生成注册邀请码
+              生成邀请码
             </button>
           </form>
           {invite && (
             <div className="invite-code">
-              <span>
-                受邀邮箱：{invitedEmail} ·
-                邀请信息仅保留到退出登录或关闭应用，请先复制。
-              </span>
-              <code>
-                {inviteVisible ? invite : "邀请码已收起，收起不会取消邀请"}
-              </code>
+              <span>受邀邮箱：{invitedEmail}</span>
+              <code>{inviteVisible ? invite : "邀请码已收起"}</code>
               <button
                 disabled={busy}
                 onClick={() =>
@@ -4189,10 +4788,7 @@ function Admin({
       </div>
       <div className="card">
         <div className="eyebrow">DEVICE POLICY</div>
-        <h2>停用或恢复设备</h2>
-        <p className="muted">
-          停用会结束此设备的连接并阻止再次连接；恢复后，设备所有者需要在该电脑重新添加设备。
-        </p>
+        <h2>设备管理</h2>
         <div className="inline-form">
           <input
             placeholder="粘贴要管理的完整设备 ID"
@@ -4206,7 +4802,7 @@ function Admin({
             onClick={() =>
               void act(
                 () => api("admin_device_revoke", { id: deviceId }),
-                "设备已禁用",
+                "设备已停用",
               )
             }
           >
@@ -4227,31 +4823,8 @@ function Admin({
         </div>
       </div>
       <div className="card">
-        <div className="section-heading">
-          <div>
-            <div className="eyebrow">USERS</div>
-            <h2>用户管理</h2>
-          </div>
-          <button
-            className="text-button"
-            disabled={busy}
-            onClick={() =>
-              void act(
-                async () => {
-                  await load();
-                  setLoadError("");
-                },
-                "管理数据已刷新",
-                false,
-              )
-            }
-          >
-            刷新管理数据
-          </button>
-        </div>
-        <p className="muted">
-          停用账号会结束其登录和远程连接，恢复账号后用户可重新登录。
-        </p>
+        <div className="eyebrow">USERS</div>
+        <h2>用户管理</h2>
         {users.map((u) => (
           <div className="list-row" key={u.id}>
             <div>
@@ -4264,7 +4837,7 @@ function Admin({
             </div>
             <button
               className={u.enabled ? "danger-text" : "secondary"}
-              disabled={busy}
+              disabled={busy || loading}
               onClick={() =>
                 void act(
                   async () => {
@@ -4282,8 +4855,13 @@ function Admin({
             </button>
           </div>
         ))}
+        {loaded && !users.length && <Empty text="暂无用户" />}
         {hasMore && (
-          <button className="text-button" disabled={busy} onClick={loadMore}>
+          <button
+            className="text-button"
+            disabled={busy || loading}
+            onClick={loadMore}
+          >
             加载更多
           </button>
         )}
@@ -4312,13 +4890,13 @@ function Admin({
                 </div>
               </div>
             ))
-          ) : (
+          ) : loaded ? (
             <Empty text="暂无登录记录" />
-          )}
+          ) : null}
         </div>
         <div className="card">
           <div className="eyebrow">AUDIT</div>
-          <h2>管理与安全操作记录</h2>
+          <h2>操作记录</h2>
           {audit.length ? (
             audit.map((a) => (
               <div className="list-row" key={a.id}>
@@ -4339,9 +4917,9 @@ function Admin({
                 </div>
               </div>
             ))
-          ) : (
-            <Empty text="暂无审计记录" />
-          )}
+          ) : loaded ? (
+            <Empty text="暂无操作记录" />
+          ) : null}
         </div>
       </div>
     </div>

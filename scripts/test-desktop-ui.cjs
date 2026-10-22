@@ -50,6 +50,7 @@ const fs = require("node:fs");
       loginFailure: "",
       bindFailure: "",
       sharing: false,
+      filesEnabled: false,
       remoteWatch: false,
       sharePreferences: { sharing: false, watch: false, restore: "idle" },
       bound: true,
@@ -133,7 +134,7 @@ const fs = require("node:fs");
               phase: f.updateConnected ? "waiting" : "installing",
               message: f.updateConnected
                 ? "更新已就绪，等待远程连接结束。请关闭远程窗口后安装。"
-                : "正在安装更新，完成后将重新启动。",
+                : "正在安装更新。",
             });
           return { ...f.update, preferences: { ...f.update.preferences } };
         }
@@ -146,6 +147,8 @@ const fs = require("node:fs");
             platform: f.platform,
             canShareLocalScreen: f.canShareLocalScreen,
             sharing: f.sharing,
+            filesEnabled: f.filesEnabled,
+            remoteAccessEnabled: f.filesEnabled,
             remoteWatch: f.remoteWatch,
             sharePreferences: f.sharePreferences,
             transportRunning: f.transportRunning,
@@ -153,7 +156,9 @@ const fs = require("node:fs");
         if (cmd === "transport_start") {
           if (f.failTransport) throw "relay did not become reachable";
           f.sharing = false;
+          f.filesEnabled = false;
           local.can_host = false;
+          local.can_files = false;
           f.connected = {};
           f.transportRunning = true;
           return {};
@@ -174,17 +179,20 @@ const fs = require("node:fs");
         if (cmd === "viewer_window_active")
           return f.viewerInstances[args.instance] === true;
         if (cmd === "share_enable") {
-          f.sharing = true;
+          f.sharing = f.canShareLocalScreen;
+          f.filesEnabled = true;
           f.sharePreferences = {
             sharing: true,
             watch: f.sharePreferences.watch,
             restore: "ready",
           };
-          local.can_host = true;
+          local.can_host = f.canShareLocalScreen;
+          local.can_files = true;
           return {};
         }
         if (cmd === "share_disable") {
           f.sharing = false;
+          f.filesEnabled = false;
           f.remoteWatch = false;
           f.sharePreferences = {
             sharing: false,
@@ -192,6 +200,13 @@ const fs = require("node:fs");
             restore: "idle",
           };
           local.can_host = false;
+          local.can_files = false;
+          for (const request of f.requests) {
+            if (request.target_device_id === local.id) {
+              request.state = "revoked";
+              delete f.connected[request.id];
+            }
+          }
           return {};
         }
         if (cmd === "remote_watch") {
@@ -234,8 +249,10 @@ const fs = require("node:fs");
             session_id: "session-1",
           };
         if (op === "verify") {
-          if (a.token !== "012345" || a.email !== "tester@example.invalid")
-            throw "HTTP 400";
+          const numericCode =
+            a.token === "012345" && a.email === "tester@example.invalid";
+          const legacyToken = a.token === "L".repeat(43) && !a.email;
+          if (!numericCode && !legacyToken) throw "HTTP 400";
           f.verified = true;
           return {};
         }
@@ -260,7 +277,23 @@ const fs = require("node:fs");
               role: "admin",
             },
           ];
-        if (op === "admin_registration") return { value: "open" };
+        if (op === "admin_registration") {
+          if (f.failAdminLoad) throw "HTTP 503";
+          const value = f.adminRegistration ?? "open";
+          if (f.deferAdminLoad) {
+            return new Promise((resolve, reject) => {
+              (f.adminWaiters ??= []).push({
+                resolve: () => resolve({ value }),
+                reject: () => reject("HTTP 503"),
+              });
+            });
+          }
+          return { value };
+        }
+        if (op === "admin_set_registration") {
+          f.adminRegistration = a.value;
+          return {};
+        }
         if (op === "admin_sessions")
           return [
             {
@@ -285,7 +318,19 @@ const fs = require("node:fs");
           return { id: "signup-1", code: "synthetic-signup" };
         if (op === "remote_sessions") return f.requests;
         if (op === "pending") return f.pending;
-        if (op === "sessions") return f.sessions;
+        if (op === "sessions") {
+          if (f.failSessions) throw "HTTP 503";
+          const snapshot = f.sessions.map((session) => ({ ...session }));
+          if (f.deferSessions) {
+            return new Promise((resolve, reject) => {
+              (f.sessionWaiters ??= []).push({
+                resolve: () => resolve(snapshot),
+                reject: () => reject("HTTP 503"),
+              });
+            });
+          }
+          return snapshot;
+        }
         if (op === "revoke_session") {
           f.sessions = f.sessions.filter((s) => s.id !== a.id);
           return {};
@@ -321,6 +366,9 @@ const fs = require("node:fs");
           };
           f.signedIn = false;
           f.sharing = false;
+          f.filesEnabled = false;
+          local.can_host = false;
+          local.can_files = false;
           f.connected = {};
           return {};
         }
@@ -328,30 +376,195 @@ const fs = require("node:fs");
       },
     };
   });
-  await page.goto("http://127.0.0.1:1420/");
-  await page.getByRole("button", { name: "创建账号", exact: true }).click();
+  await page.goto(process.env.UI_URL || "http://127.0.0.1:1420/");
+  assert.equal(
+    await page.locator(".sidebar button").filter({ hasText: /退出/ }).count(),
+    0,
+  );
+  const appMenu = page.getByRole("button", { name: "应用菜单", exact: true });
+  await appMenu.click();
+  await page.getByRole("button", { name: "退出", exact: true }).waitFor();
+  await appMenu.press("Escape");
+  assert.equal(
+    await page.getByRole("button", { name: "退出", exact: true }).isVisible(),
+    false,
+  );
+  // Keyboard tab changes keep focus on the selected entry and expose its panel.
+  const loginTab = page.getByRole("tab", { name: "登录", exact: true });
+  const registerTab = page.getByRole("tab", { name: "注册", exact: true });
+  const assertAuthTab = async (name) => {
+    const selectedTab = page.getByRole("tab", {
+      name,
+      exact: true,
+      selected: true,
+    });
+    await selectedTab.waitFor();
+    await page.waitForFunction(
+      (id) => document.activeElement === document.getElementById(id),
+      await selectedTab.getAttribute("id"),
+    );
+    assert(await selectedTab.evaluate((el) => document.activeElement === el));
+    assert.equal(await page.locator('[role="tab"][tabindex="0"]').count(), 1);
+    const panel = page.getByRole("tabpanel", { name, exact: true });
+    assert(await panel.isVisible());
+    assert.equal(
+      await selectedTab.getAttribute("aria-controls"),
+      await panel.getAttribute("id"),
+    );
+    assert.equal(
+      await panel.getAttribute("aria-labelledby"),
+      await selectedTab.getAttribute("id"),
+    );
+  };
+  await loginTab.press("ArrowRight");
+  await assertAuthTab("注册");
+  await registerTab.press("Tab");
+  assert(
+    await page
+      .getByLabel("邮箱地址", { exact: true })
+      .evaluate((el) => document.activeElement === el),
+    "Tab from the selected entry should enter its form, skipping the inactive tab",
+  );
+  await page.getByLabel("邮箱地址", { exact: true }).press("Shift+Tab");
+  await assertAuthTab("注册");
+  await registerTab.press("ArrowRight");
+  await assertAuthTab("登录");
+  await loginTab.press("ArrowLeft");
+  await assertAuthTab("注册");
+  await registerTab.press("Home");
+  await assertAuthTab("登录");
+  await loginTab.press("End");
+  await assertAuthTab("注册");
+  await registerTab.press("Home");
+  await assertAuthTab("登录");
+
+  // Removed flow-entry buttons transfer focus to the new heading, and return restores it.
+  await page
+    .getByRole("button", { name: "找回密码", exact: true })
+    .press("Enter");
+  const assertAuthFlow = async (title) => {
+    const heading = page.getByRole("heading", { name: title, exact: true });
+    await heading.waitFor();
+    await page.waitForFunction(
+      (id) => document.activeElement === document.getElementById(id),
+      await heading.getAttribute("id"),
+    );
+    assert(await heading.evaluate((el) => document.activeElement === el));
+    assert.equal(
+      await page.getByRole("tablist", { name: "账号入口" }).count(),
+      0,
+    );
+    assert(
+      await page
+        .getByRole("button", { name: "返回登录", exact: true })
+        .isVisible(),
+    );
+  };
+  await assertAuthFlow("找回密码");
+  await page
+    .getByRole("button", { name: "已有重置码", exact: true })
+    .press("Enter");
+  await assertAuthFlow("设置新密码");
+  await page
+    .getByRole("button", { name: "返回登录", exact: true })
+    .press("Enter");
+  await assertAuthTab("登录");
+  await page
+    .getByRole("button", { name: "验证邮箱", exact: true })
+    .press("Enter");
+  await assertAuthFlow("验证邮箱");
+  await page
+    .getByRole("button", { name: "返回登录", exact: true })
+    .press("Enter");
+  await assertAuthTab("登录");
+  // Existing codes remain usable after reopening the client, without registering again.
+  await page.getByRole("button", { name: "验证邮箱", exact: true }).click();
+  await page.getByLabel("邮箱地址", { exact: true }).waitFor();
+  await page
+    .getByText("填写注册邮箱和收到的验证码。", { exact: true })
+    .waitFor();
+  await page.getByLabel("邮箱验证码", { exact: true }).fill("012345");
+  await page.getByRole("button", { name: "完成验证", exact: true }).click();
+  assert(
+    await page
+      .getByLabel("邮箱地址", { exact: true })
+      .evaluate((input) => input.validity.valueMissing),
+  );
+  assert.equal(
+    await page.evaluate(
+      () =>
+        window.fixture.calls.filter(
+          (c) => c.cmd === "call" && c.args.op === "verify",
+        ).length,
+    ),
+    0,
+  );
+  await page
+    .getByLabel("邮箱地址", { exact: true })
+    .fill("tester@example.invalid");
+  await page
+    .getByText("填写注册邮箱和收到的验证码。", { exact: true })
+    .waitFor();
+  await page.getByRole("button", { name: "完成验证", exact: true }).click();
+  await page
+    .getByRole("heading", { name: "登录 FarSail", exact: true })
+    .waitFor();
+  await page.waitForFunction(
+    () => document.activeElement?.id === "auth-login-tab",
+  );
+  assert.deepEqual(
+    await page.evaluate(
+      () =>
+        window.fixture.calls.findLast(
+          (c) => c.cmd === "call" && c.args.op === "verify",
+        ).args.args,
+    ),
+    { email: "tester@example.invalid", token: "012345" },
+  );
+  // Previously issued long codes retain their email-free verification path.
+  await page.getByLabel("邮箱地址", { exact: true }).fill("");
+  await page.getByRole("button", { name: "验证邮箱", exact: true }).click();
+  await page.getByLabel("邮箱验证码", { exact: true }).fill("L".repeat(43));
+  await page.getByRole("button", { name: "完成验证", exact: true }).click();
+  await page
+    .getByRole("heading", { name: "登录 FarSail", exact: true })
+    .waitFor();
+  assert.deepEqual(
+    await page.evaluate(
+      () =>
+        window.fixture.calls.findLast(
+          (c) => c.cmd === "call" && c.args.op === "verify",
+        ).args.args,
+    ),
+    { token: "L".repeat(43) },
+  );
+  await page.evaluate(() => (window.fixture.verified = false));
+  await page.getByRole("tab", { name: "注册", exact: true }).click();
   await page
     .getByLabel("邮箱地址", { exact: true })
     .fill("tester@example.invalid");
   await page.getByLabel("密码", { exact: true }).fill("synthetic-password-123");
-  await page
-    .getByRole("button", { name: "注册并验证邮箱", exact: true })
-    .click();
+  await page.getByRole("button", { name: "注册", exact: true }).click();
   await page.getByLabel("邮箱验证码", { exact: true }).waitFor();
+  await page
+    .getByText(
+      "验证码发送请求已提交，请查看 tester@example.invalid 的收件箱。",
+      { exact: true },
+    )
+    .waitFor();
   await page.getByLabel("邮箱验证码", { exact: true }).fill("012345");
   await page
-    .getByRole("button", { name: "没收到验证码？重新发送", exact: true })
+    .getByRole("button", { name: "重新发送验证码", exact: true })
     .click();
-  await page
-    .getByText("重发请求已提交，请检查收件箱和垃圾邮件。", { exact: true })
-    .waitFor();
+  await page.getByText("验证码重发请求已提交", { exact: true }).waitFor();
   assert.equal(
     await page.getByLabel("邮箱验证码", { exact: true }).inputValue(),
     "012345",
   );
+  assert.equal(await page.locator('input[type="password"]').count(), 0);
   assert.equal(
-    await page.locator('input[type="email"], input[type="password"]').count(),
-    0,
+    await page.getByLabel("邮箱地址", { exact: true }).inputValue(),
+    "tester@example.invalid",
   );
   const resend = await page.evaluate(() =>
     window.fixture.calls.findLast(
@@ -364,7 +577,7 @@ const fs = require("node:fs");
   });
   await page.evaluate(() => (window.fixture.failNextOp = "resend"));
   await page
-    .getByRole("button", { name: "没收到验证码？重新发送", exact: true })
+    .getByRole("button", { name: "重新发送验证码", exact: true })
     .click();
   await page.getByRole("alertdialog").filter({ hasText: "HTTP 503" }).waitFor();
   await page
@@ -375,10 +588,42 @@ const fs = require("node:fs");
     await page.getByLabel("邮箱验证码", { exact: true }).inputValue(),
     "012345",
   );
-  assert.equal(
-    await page.locator('input[type="email"], input[type="password"]').count(),
-    0,
+  assert.equal(await page.locator('input[type="password"]').count(), 0);
+  const resendCountBeforeEmailChange = await page.evaluate(
+    () =>
+      window.fixture.calls.filter(
+        (c) => c.cmd === "call" && c.args.op === "resend",
+      ).length,
   );
+  await page
+    .getByLabel("邮箱地址", { exact: true })
+    .fill("corrected@example.invalid");
+  await page
+    .getByText("填写注册邮箱和收到的验证码。", { exact: true })
+    .waitFor();
+  await page
+    .getByRole("button", { name: "重新发送验证码", exact: true })
+    .click();
+  await page
+    .getByRole("alertdialog")
+    .filter({ hasText: "重发所需的账号信息已失效" })
+    .waitFor();
+  assert.equal(
+    await page.evaluate(
+      () =>
+        window.fixture.calls.filter(
+          (c) => c.cmd === "call" && c.args.op === "resend",
+        ).length,
+    ),
+    resendCountBeforeEmailChange,
+  );
+  await page
+    .getByRole("alertdialog")
+    .getByLabel("关闭错误", { exact: true })
+    .click();
+  await page
+    .getByLabel("邮箱地址", { exact: true })
+    .fill("tester@example.invalid");
   await page.getByLabel("邮箱验证码", { exact: true }).fill("bad-code");
   await page.getByRole("button", { name: "完成验证", exact: true }).click();
   await page.getByRole("alertdialog").filter({ hasText: "HTTP 400" }).waitFor();
@@ -422,15 +667,75 @@ const fs = require("node:fs");
     await page.getByRole("button", { name: "远程控制", exact: true }).count(),
     0,
   );
-  await page.getByRole("button", { name: "开启本机共享", exact: true }).click();
-  await page
-    .getByRole("button", { name: "停止本机共享", exact: true })
-    .waitFor();
+  await page.getByRole("switch", { name: "允许远程连接", exact: true }).check();
+  await page.waitForFunction(() => window.fixture.filesEnabled);
   assert.equal(await page.evaluate(() => window.fixture.sharing), true);
   assert.equal(await page.evaluate(() => window.fixture.remoteWatch), false);
-  // Startup intent must never be rendered as effective sharing. Opt-outs remain usable.
+  assert.equal(await page.evaluate(() => window.fixture.filesEnabled), true);
+  assert.equal(
+    await page
+      .getByRole("switch", { name: "允许接收文件", exact: true })
+      .count(),
+    0,
+  );
+  // A screen-only runtime failure keeps Files available and offers an explicit recovery.
   await page.evaluate(() => {
     window.fixture.sharing = false;
+    window.fixture.devices[0].can_host = false;
+  });
+  await page.getByRole("button", { name: "刷新", exact: true }).click();
+  await page
+    .getByText("文件传输仍可用，屏幕共享已停止。请检查 Windows 桌面后重试。", {
+      exact: true,
+    })
+    .waitFor();
+  assert(
+    await page
+      .getByRole("switch", { name: "允许远程连接", exact: true })
+      .isChecked(),
+  );
+  await page
+    .locator(".sidebar-status")
+    .getByText("文件传输", { exact: true })
+    .waitFor();
+  assert.equal(
+    await page
+      .locator(".sidebar-status")
+      .getByText("屏幕与文件", { exact: true })
+      .count(),
+    0,
+  );
+  assert.equal(
+    await page.evaluate(
+      () => window.fixture.filesEnabled && window.fixture.devices[0].can_files,
+    ),
+    true,
+  );
+  const beforeScreenRetry = await page.evaluate(
+    () => window.fixture.calls.length,
+  );
+  await page.getByRole("button", { name: "重试远程连接", exact: true }).click();
+  await page.waitForFunction(
+    () => window.fixture.sharing && window.fixture.filesEnabled,
+  );
+  await page
+    .locator(".sidebar-status")
+    .getByText("屏幕与文件", { exact: true })
+    .waitFor();
+  const screenRetry = await page.evaluate(
+    (from) => window.fixture.calls.slice(from).map((c) => c.cmd),
+    beforeScreenRetry,
+  );
+  assert.equal(
+    screenRetry.includes("transport_start"),
+    false,
+    "screen recovery must preserve the existing file transport",
+  );
+  assert.equal(screenRetry.includes("share_enable"), true);
+  // Startup intent must never be rendered as effective remote access. Opt-outs remain usable.
+  await page.evaluate(() => {
+    window.fixture.sharing = false;
+    window.fixture.filesEnabled = false;
     window.fixture.remoteWatch = false;
     window.fixture.sharePreferences = {
       sharing: true,
@@ -439,13 +744,15 @@ const fs = require("node:fs");
     };
   });
   await page.getByRole("button", { name: "刷新", exact: true }).click();
-  await page.getByText(/尚未开启共享/).waitFor();
+  await page.getByText(/正在恢复远程连接/).waitFor();
   assert(
     await page
-      .getByRole("button", { name: "关闭远程值守", exact: true })
+      .getByRole("switch", { name: "同账号远程值守", exact: true })
       .isEnabled(),
   );
-  await page.getByRole("button", { name: "关闭远程值守", exact: true }).click();
+  await page
+    .getByRole("switch", { name: "同账号远程值守", exact: true })
+    .uncheck();
   assert.equal(
     await page.evaluate(() => window.fixture.sharePreferences.watch),
     false,
@@ -454,10 +761,10 @@ const fs = require("node:fs");
     window.fixture.sharePreferences.restore = "failed";
   });
   await page.getByRole("button", { name: "刷新", exact: true }).click();
-  await page.getByText(/本次未恢复共享/).waitFor();
+  await page.getByText(/本次未恢复远程连接/).waitFor();
   const beforeRetry = await page.evaluate(() => window.fixture.calls.length);
-  await page.getByRole("button", { name: "重试本机共享", exact: true }).click();
-  await page.getByText("本机共享已恢复", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "重试远程连接", exact: true }).click();
+  await page.getByText("远程连接已恢复", { exact: true }).waitFor();
   const retry = await page.evaluate(
     (n) => window.fixture.calls.slice(n),
     beforeRetry,
@@ -469,23 +776,30 @@ const fs = require("node:fs");
   assert(retry.some((x) => x.cmd === "share_enable"));
   await page.evaluate(() => {
     window.fixture.sharing = false;
+    window.fixture.filesEnabled = false;
     window.fixture.sharePreferences.restore = "pending";
   });
   await page.getByRole("button", { name: "刷新", exact: true }).click();
-  await page.getByRole("button", { name: "停止本机共享", exact: true }).click();
+  await page
+    .getByRole("switch", { name: "允许远程连接", exact: true })
+    .uncheck();
   assert.equal(
     await page.evaluate(() => window.fixture.sharePreferences.sharing),
     false,
   );
-  await page.getByRole("button", { name: "开启本机共享", exact: true }).click();
-  await page.getByRole("button", { name: "开启远程值守", exact: true }).click();
+  await page.getByRole("switch", { name: "允许远程连接", exact: true }).check();
   await page
-    .getByRole("button", { name: "关闭远程值守", exact: true })
+    .getByRole("switch", { name: "同账号远程值守", exact: true })
+    .check();
+  await page
+    .getByRole("switch", { name: "同账号远程值守", exact: true })
     .waitFor();
   assert.equal(await page.evaluate(() => window.fixture.remoteWatch), true);
-  await page.getByRole("button", { name: "关闭远程值守", exact: true }).click();
   await page
-    .getByRole("button", { name: "开启远程值守", exact: true })
+    .getByRole("switch", { name: "同账号远程值守", exact: true })
+    .uncheck();
+  await page
+    .getByRole("switch", { name: "同账号远程值守", exact: true })
     .waitFor();
   fs.mkdirSync(".local/ui-verification", { recursive: true });
   await page.screenshot({
@@ -594,13 +908,9 @@ const fs = require("node:fs");
   await page.screenshot({ path: ".local/ui-verification/many-devices.png" });
 
   await page.getByRole("button", { name: "远程连接", exact: true }).click();
-  await page
-    .getByRole("heading", { name: "谁想连接这台电脑", exact: true })
-    .waitFor();
+  await page.getByRole("heading", { name: "连接请求", exact: true }).waitFor();
   await page.getByRole("button", { name: "拒绝", exact: true }).click();
-  await page
-    .getByText("目前没有等待本机处理的请求。", { exact: true })
-    .waitFor();
+  await page.getByText("暂无待批准请求", { exact: true }).waitFor();
   await page.getByRole("button", { name: /^当前连接/ }).click();
   assert(
     (await page.locator(".connection-list-pane:visible").innerText()).includes(
@@ -637,7 +947,44 @@ const fs = require("node:fs");
   );
 
   await page.getByRole("button", { name: "连接他人电脑", exact: true }).click();
-  await page.getByLabel("目标设备 ID", { exact: true }).fill("remote-0002");
+  const targetSelect = page.getByLabel("目标设备", { exact: true });
+  const requestPermission = page.getByLabel("连接后可以做什么", {
+    exact: true,
+  });
+  const sendRequest = page.getByRole("button", {
+    name: "发送连接请求",
+    exact: true,
+  });
+  await targetSelect.selectOption("remote-0002");
+  const requestsBeforePermissionChange = await page.evaluate(
+    () => window.fixture.calls.filter((c) => c.args.op === "request").length,
+  );
+  await requestPermission.selectOption("files");
+  assert.equal(await targetSelect.inputValue(), "remote-0002");
+  assert.match(
+    await targetSelect.locator("option:checked").innerText(),
+    /家里的电脑.*当前不可用/,
+  );
+  assert(await sendRequest.isDisabled());
+  await page.getByLabel("目标设备 ID", { exact: true }).press("Enter");
+  assert.equal(
+    await page.evaluate(
+      () => window.fixture.calls.filter((c) => c.args.op === "request").length,
+    ),
+    requestsBeforePermissionChange,
+    "changing permissions must not send a request to an unavailable selection",
+  );
+  await requestPermission.selectOption("view");
+  assert.equal(await targetSelect.inputValue(), "remote-0002");
+  assert(await sendRequest.isEnabled());
+  // A deliberately entered cross-account ID stays separate from device choices.
+  await page
+    .getByLabel("目标设备 ID", { exact: true })
+    .fill("external-device-regression");
+  assert.equal(await targetSelect.inputValue(), "custom");
+  await page
+    .getByLabel("邀请码（跨账号时填写）", { exact: true })
+    .fill("synthetic-external-invite");
   await page
     .getByLabel("连接后可以做什么", { exact: true })
     .selectOption("control");
@@ -650,15 +997,37 @@ const fs = require("node:fs");
     await page.evaluate(() => window.fixture.requests[0].permission),
     "control",
   );
+  assert.equal(
+    await page.evaluate(() => window.fixture.requests[0].target_device_id),
+    "external-device-regression",
+  );
   await page.getByRole("button", { name: "邀请他人连接", exact: true }).click();
-  await page
-    .getByLabel("允许对方连接哪台电脑", { exact: true })
-    .selectOption("local-0001");
   // Invitation permissions must be explicit and independent from the other form.
   assert.equal(
     await page.getByLabel("允许对方做什么", { exact: true }).inputValue(),
     "view",
   );
+  const inviteTargetSelect = page.getByLabel("允许对方连接哪台电脑", {
+    exact: true,
+  });
+  await inviteTargetSelect.selectOption("remote-0002");
+  await page
+    .getByLabel("允许对方做什么", { exact: true })
+    .selectOption("files");
+  assert.equal(await inviteTargetSelect.inputValue(), "remote-0002");
+  assert.match(
+    await inviteTargetSelect.locator("option:checked").innerText(),
+    /家里的电脑.*当前不可用/,
+  );
+  assert(
+    await page
+      .getByRole("button", { name: "生成邀请码", exact: true })
+      .isDisabled(),
+  );
+  await page.getByLabel("允许对方做什么", { exact: true }).selectOption("view");
+  await page
+    .getByLabel("允许对方连接哪台电脑", { exact: true })
+    .selectOption("local-0001");
   await page.getByRole("button", { name: "生成邀请码", exact: true }).click();
   await page.getByText("synthetic-invitation", { exact: true }).waitFor();
   assert.equal(
@@ -688,15 +1057,11 @@ const fs = require("node:fs");
       .getByRole("button", { name: "取消邀请", exact: true })
       .isVisible(),
   );
-  await page
-    .getByText("邀请码已收起，收起不会取消邀请", { exact: true })
-    .waitFor();
+  await page.getByText("邀请码已收起", { exact: true }).waitFor();
   await page.getByRole("button", { name: "我的设备", exact: true }).click();
   await page.getByRole("button", { name: "远程连接", exact: true }).click();
   await page.getByRole("button", { name: "邀请他人连接", exact: true }).click();
-  await page
-    .getByText("邀请码已收起，收起不会取消邀请", { exact: true })
-    .waitFor();
+  await page.getByText("邀请码已收起", { exact: true }).waitFor();
   assert.equal(
     await page.getByLabel("允许对方连接哪台电脑", { exact: true }).inputValue(),
     "local-0001",
@@ -707,15 +1072,87 @@ const fs = require("node:fs");
     .getByText("synthetic-invitation", { exact: true })
     .waitFor({ state: "hidden" });
 
+  await page.evaluate(() => {
+    window.fixture.deferSessions = true;
+    window.fixture.sessionWaiters = [];
+  });
   await page.getByRole("button", { name: "账号安全", exact: true }).click();
-  await page.getByText("当前客户端（正在使用）", { exact: true }).waitFor();
+  await page.getByText("正在加载登录记录…", { exact: true }).waitFor();
+  const refreshSessions = page.getByRole("button", {
+    name: "刷新登录记录",
+    exact: true,
+  });
+  assert(await refreshSessions.isDisabled());
+  assert.equal(
+    await page.getByText("暂无登录记录", { exact: true }).count(),
+    0,
+  );
+  await page.evaluate(() => {
+    window.fixture.deferSessions = false;
+    for (const pending of window.fixture.sessionWaiters.splice(0))
+      pending.resolve();
+  });
+  await page.getByText("当前客户端", { exact: true }).waitFor();
   await assertShell();
   await page.screenshot({ path: ".local/ui-verification/login-records.png" });
+  // A delayed refresh must not restore a login that a newer revoke removed.
+  await page.evaluate(() => (window.fixture.deferSessions = true));
+  await refreshSessions.click();
+  assert(await refreshSessions.isDisabled());
+  assert(await page.getByText("当前客户端", { exact: true }).isVisible());
   await page.getByRole("button", { name: "退出此登录", exact: true }).click();
   await page
-    .getByText("其他客户端登录", { exact: true })
+    .getByText("其他客户端", { exact: true })
     .waitFor({ state: "hidden" });
+  await page.waitForFunction(() => window.fixture.sessionWaiters.length === 2);
+  await page.evaluate(() => window.fixture.sessionWaiters.shift().resolve());
+  assert(
+    await refreshSessions.isDisabled(),
+    "old finally must not end the newer refresh",
+  );
+  assert.equal(await page.getByText("其他客户端", { exact: true }).count(), 0);
+  await page.evaluate(() => {
+    window.fixture.deferSessions = false;
+    window.fixture.sessionWaiters.shift().resolve();
+  });
+  await page.getByText("已退出该客户端的登录", { exact: true }).waitFor();
   assert.equal(await page.evaluate(() => window.fixture.sessions.length), 1);
+  assert(await refreshSessions.isEnabled());
+  await page.evaluate(() => (window.fixture.failNextOp = "sessions"));
+  await refreshSessions.click();
+  await page.getByRole("alertdialog", { name: "无法加载登录记录" }).waitFor();
+  await page.getByRole("button", { name: "关闭错误", exact: true }).click();
+  assert(await page.getByText("当前客户端", { exact: true }).isVisible());
+  await page.getByText("刷新失败，显示上次记录。", { exact: true }).waitFor();
+  await refreshSessions.click();
+  await page
+    .getByText("刷新失败，显示上次记录。", { exact: true })
+    .waitFor({ state: "hidden" });
+  // First-load failure stays distinct from a successful empty result after dismissal.
+  await page.getByRole("button", { name: "我的设备", exact: true }).click();
+  await page.evaluate(() => (window.fixture.failSessions = true));
+  await page.getByRole("button", { name: "账号安全", exact: true }).click();
+  await page.getByRole("alertdialog", { name: "无法加载登录记录" }).waitFor();
+  await page.getByRole("button", { name: "关闭错误", exact: true }).click();
+  await page
+    .getByText("登录记录暂时不可用，请刷新重试。", { exact: true })
+    .waitFor();
+  assert.equal(
+    await page.getByText("暂无登录记录", { exact: true }).count(),
+    0,
+  );
+  await page.evaluate(() => (window.fixture.failSessions = false));
+  await refreshSessions.click();
+  await page.getByText("当前客户端", { exact: true }).waitFor();
+  // Responses to a page that has been left must not reopen its error dialog.
+  await page.evaluate(() => (window.fixture.deferSessions = true));
+  await refreshSessions.click();
+  await page.getByRole("button", { name: "我的设备", exact: true }).click();
+  await page.evaluate(() => {
+    window.fixture.deferSessions = false;
+    window.fixture.sessionWaiters.shift().reject();
+  });
+  assert.equal(await page.getByRole("alertdialog").count(), 0);
 
   for (const size of [
     { width: 1120, height: 760 },
@@ -725,7 +1162,7 @@ const fs = require("node:fs");
     await page.setViewportSize(size);
     assert(
       await page
-        .getByRole("status", { name: "本机屏幕共享中", exact: true })
+        .getByRole("status", { name: "远程连接已允许", exact: true })
         .isVisible(),
       "compact desktop sidebar must retain sharing status",
     );
@@ -770,6 +1207,20 @@ const fs = require("node:fs");
     false,
   );
   await page.setViewportSize({ width: 360, height: 580 });
+  assert(
+    await page.locator(".device-list").evaluate((el) => el.clientHeight >= 120),
+    "compact devices must retain enough space for two rows",
+  );
+  const deviceSearch = page.getByLabel("搜索设备", { exact: true });
+  await deviceSearch.fill("  REMOTE-0002  ");
+  assert.equal(await page.locator(".device-list-item").count(), 1);
+  await deviceSearch.fill("no-such-device-for-regression");
+  assert.equal(await page.locator(".device-list-item").count(), 0);
+  assert.equal(await page.locator(".device-detail-pane").isVisible(), false);
+  await page.getByRole("button", { name: "清除筛选", exact: true }).click();
+  assert.equal(await deviceSearch.inputValue(), "");
+  assert(await deviceSearch.evaluate((el) => document.activeElement === el));
+  assert((await page.locator(".device-list-item").count()) > 1);
   await page.getByRole("button", { name: "远程连接", exact: true }).click();
   await assertShell();
   assert(
@@ -805,9 +1256,7 @@ const fs = require("node:fs");
   await page.evaluate(() => {
     window.fixture.failNextOp = "recover_request";
   });
-  await page
-    .getByRole("button", { name: "发送密码重置邮件", exact: true })
-    .click();
+  await page.getByRole("button", { name: "发送邮件", exact: true }).click();
   await page
     .getByRole("alertdialog")
     .filter({ hasText: "操作未完成" })
@@ -821,9 +1270,7 @@ const fs = require("node:fs");
       .getByRole("heading", { name: "找回密码", exact: true })
       .isVisible(),
   );
-  await page
-    .getByRole("button", { name: "发送密码重置邮件", exact: true })
-    .click();
+  await page.getByRole("button", { name: "发送邮件", exact: true }).click();
   await page
     .getByLabel("邮件中的重置码", { exact: true })
     .fill("synthetic-reset");
@@ -833,9 +1280,7 @@ const fs = require("node:fs");
   await page.evaluate(() => {
     window.fixture.failNextOp = "recover_complete";
   });
-  await page
-    .getByRole("button", { name: "保存新密码并返回登录", exact: true })
-    .click();
+  await page.getByRole("button", { name: "重置密码", exact: true }).click();
   await page
     .getByRole("alertdialog")
     .filter({ hasText: "操作未完成" })
@@ -845,9 +1290,7 @@ const fs = require("node:fs");
     .getByLabel("关闭错误", { exact: true })
     .click();
   assert(await page.getByLabel("邮件中的重置码", { exact: true }).isVisible());
-  await page
-    .getByRole("button", { name: "保存新密码并返回登录", exact: true })
-    .click();
+  await page.getByRole("button", { name: "重置密码", exact: true }).click();
   await page
     .getByRole("heading", { name: "登录 FarSail", exact: true })
     .waitFor();
@@ -866,8 +1309,10 @@ const fs = require("node:fs");
   await loginAgain();
   await page.getByRole("button", { name: "共享与设置", exact: true }).click();
   const beforeSharing = await page.evaluate(() => window.fixture.calls.length);
-  await page.getByRole("switch", { name: "本机屏幕共享", exact: true }).check();
-  await page.waitForFunction(() => window.fixture.sharing);
+  await page.getByRole("switch", { name: "允许远程连接", exact: true }).check();
+  await page.waitForFunction(
+    () => window.fixture.sharing && window.fixture.filesEnabled,
+  );
   const sharingCommands = await page.evaluate(
     (from) => window.fixture.calls.slice(from).map((x) => x.cmd),
     beforeSharing,
@@ -878,15 +1323,77 @@ const fs = require("node:fs");
         sharingCommands.indexOf("share_enable"),
   );
   assert.equal(
-    await page.getByLabel("中继地址", { exact: true }).isVisible(),
+    await page.getByLabel("中继服务器地址", { exact: true }).isVisible(),
     false,
   );
+  assert.equal(
+    await page
+      .getByRole("switch", { name: "允许接收文件", exact: true })
+      .count(),
+    0,
+  );
+  assert.equal(
+    await page.getByRole("heading", { name: "文件接收", exact: true }).count(),
+    0,
+  );
+  assert.equal(sharingCommands.includes("files_enable"), false);
+  assert.deepEqual(
+    await page.evaluate(() => ({
+      host: window.fixture.devices[0].can_host,
+      files: window.fixture.devices[0].can_files,
+    })),
+    { host: true, files: true },
+  );
   await page.screenshot({ path: ".local/ui-verification/sharing-actions.png" });
+  await page.evaluate(() => {
+    for (const permission of ["view", "files"]) {
+      const id = `incoming-${permission}`;
+      window.fixture.requests.push({
+        id,
+        source_device_id: "remote-0002",
+        target_device_id: "local-0001",
+        permission,
+        state: "approved",
+      });
+      window.fixture.connected[id] = permission;
+    }
+    window.fixture.requests.push({
+      id: "outgoing-files",
+      source_device_id: "local-0001",
+      target_device_id: "remote-0002",
+      permission: "files",
+      state: "approved",
+    });
+    window.fixture.connected["outgoing-files"] = "files";
+  });
   await page
-    .getByRole("switch", { name: "本机屏幕共享", exact: true })
+    .getByRole("switch", { name: "允许远程连接", exact: true })
     .uncheck();
   await page.waitForFunction(() => !window.fixture.sharing);
   assert.equal(await page.evaluate(() => window.fixture.sharing), false);
+  assert.equal(await page.evaluate(() => window.fixture.filesEnabled), false);
+  assert.deepEqual(
+    await page.evaluate(() => ({
+      host: window.fixture.devices[0].can_host,
+      files: window.fixture.devices[0].can_files,
+    })),
+    { host: false, files: false },
+  );
+  assert.deepEqual(
+    await page.evaluate(() =>
+      window.fixture.requests
+        .filter((r) => r.id.startsWith("incoming-"))
+        .map((r) => [r.state, window.fixture.connected[r.id] || null]),
+    ),
+    [
+      ["revoked", null],
+      ["revoked", null],
+    ],
+  );
+  assert.equal(
+    await page.evaluate(() => window.fixture.connected["outgoing-files"]),
+    "files",
+  );
   await page.evaluate(() => {
     window.fixture.requests = [
       {
@@ -906,7 +1413,7 @@ const fs = require("node:fs");
   await loginAgain();
   await page.getByRole("button", { name: "远程连接", exact: true }).click();
   const approvedConnect = page.getByRole("button", {
-    name: "连接并查看",
+    name: "仅查看屏幕",
     exact: true,
   });
   assert(await approvedConnect.isEnabled());
@@ -962,9 +1469,9 @@ const fs = require("node:fs");
 
   await page.getByRole("button", { name: "我的设备", exact: true }).click();
   await page.getByText("设备信息与管理", { exact: true }).click();
-  await page.getByRole("button", { name: "修改设备名称", exact: true }).click();
+  await page.getByRole("button", { name: "重命名", exact: true }).click();
   await page.getByLabel("新的设备名称", { exact: true }).fill("不应保存的名称");
-  await page.getByRole("button", { name: "取消改名", exact: true }).click();
+  await page.getByRole("button", { name: "取消", exact: true }).click();
   assert.equal(
     await page.evaluate(() => window.fixture.devices[0].name),
     "工作电脑",
@@ -1011,17 +1518,135 @@ const fs = require("node:fs");
 
   await page.evaluate(() => {
     window.fixture.role = "admin";
+    window.fixture.adminRegistration = "invite_only";
+    window.fixture.deferAdminLoad = true;
+    window.fixture.adminWaiters = [];
   });
   await page.getByRole("button", { name: "刷新", exact: true }).click();
   await page.getByRole("button", { name: "管理控制台", exact: true }).click();
+  const adminPolicy = page.getByLabel("账号注册方式", { exact: true });
+  const saveAdminPolicy = page
+    .locator(".page-admin")
+    .getByRole("button", { name: "保存", exact: true });
+  const refreshAdmin = page
+    .locator("#page-actions")
+    .getByRole("button", { name: "刷新管理数据", exact: true });
+  const adminLoadError = page.getByRole("alertdialog", {
+    name: "无法加载管理数据",
+    exact: true,
+  });
+  await page.getByText("正在加载管理数据…", { exact: true }).waitFor();
+  assert(await adminPolicy.isDisabled());
+  assert(await saveAdminPolicy.isDisabled());
+  assert(await refreshAdmin.isDisabled());
+  assert.equal(await adminPolicy.inputValue(), "");
+  assert.equal(
+    await page.getByText("暂无登录记录", { exact: true }).count(),
+    0,
+  );
+  assert.equal(
+    await page.getByText("暂无操作记录", { exact: true }).count(),
+    0,
+  );
+  // Even a submitted form cannot save an unread default policy.
+  await adminPolicy.evaluate((el) => el.form.requestSubmit());
+  assert.equal(
+    await page.evaluate(
+      () =>
+        window.fixture.calls.filter(
+          (call) => call.args?.op === "admin_set_registration",
+        ).length,
+    ),
+    0,
+  );
+  await page.evaluate(() => {
+    window.fixture.deferAdminLoad = false;
+    for (const pending of window.fixture.adminWaiters.splice(0))
+      pending.resolve();
+  });
+  await page.waitForFunction(
+    () =>
+      document.querySelector('[aria-label="账号注册方式"]')?.value ===
+      "invite_only",
+  );
+  assert(await saveAdminPolicy.isEnabled());
+  await adminPolicy.selectOption("closed");
+  await saveAdminPolicy.click();
+  await page.waitForFunction(
+    () => window.fixture.adminRegistration === "closed",
+  );
+
+  // A failed refresh keeps the last records and offers a working retry.
+  await page.evaluate(() => (window.fixture.failAdminLoad = true));
+  await refreshAdmin.click();
+  await adminLoadError.waitFor();
+  assert(await saveAdminPolicy.isDisabled());
+  assert.equal(await adminPolicy.inputValue(), "closed");
+  assert(
+    await page
+      .getByText("修改注册方式 · 开放注册", { exact: true })
+      .isVisible(),
+  );
+  await page.evaluate(() => (window.fixture.failAdminLoad = false));
+  await adminLoadError
+    .getByRole("button", { name: "重试", exact: true })
+    .click();
+  await page.waitForFunction(
+    () =>
+      document.querySelector('[aria-label="账号注册方式"]')?.disabled === false,
+  );
+  assert(await saveAdminPolicy.isEnabled());
+
+  // Initial failure remains unavailable after dismissal, until a fresh read succeeds.
+  await page.getByRole("button", { name: "我的设备", exact: true }).click();
+  await page.evaluate(() => (window.fixture.failAdminLoad = true));
+  await page.getByRole("button", { name: "管理控制台", exact: true }).click();
+  await adminLoadError.waitFor();
+  await adminLoadError
+    .getByRole("button", { name: "关闭错误", exact: true })
+    .click();
+  await page
+    .getByText("管理数据暂时不可用，请刷新重试。", { exact: true })
+    .waitFor();
+  assert(await adminPolicy.isDisabled());
+  assert(await saveAdminPolicy.isDisabled());
+  assert.equal(
+    await page.getByText("暂无登录记录", { exact: true }).count(),
+    0,
+  );
+  assert.equal(
+    await page.getByText("暂无操作记录", { exact: true }).count(),
+    0,
+  );
+  const savedPolicyCalls = await page.evaluate(
+    () =>
+      window.fixture.calls.filter(
+        (call) => call.args?.op === "admin_set_registration",
+      ).length,
+  );
+  await adminPolicy.evaluate((el) => el.form.requestSubmit());
+  assert.equal(
+    await page.evaluate(
+      () =>
+        window.fixture.calls.filter(
+          (call) => call.args?.op === "admin_set_registration",
+        ).length,
+    ),
+    savedPolicyCalls,
+  );
+  await page.evaluate(() => (window.fixture.failAdminLoad = false));
+  await refreshAdmin.click();
+  await page.waitForFunction(() => {
+    const policy = document.querySelector('[aria-label="账号注册方式"]');
+    return policy?.value === "closed" && policy.disabled === false;
+  });
+  assert(await saveAdminPolicy.isEnabled());
   await page.getByText("修改注册方式 · 开放注册", { exact: true }).waitFor();
   assert.equal(await page.locator("pre.meta-row").count(), 0);
   await page
     .getByLabel("受邀邮箱", { exact: true })
     .fill("invited@example.invalid");
-  await page
-    .getByRole("button", { name: "生成注册邀请码", exact: true })
-    .click();
+  await page.getByRole("button", { name: "生成邀请码", exact: true }).click();
   await page.getByRole("button", { name: "收起邀请码", exact: true }).click();
   assert(
     await page
@@ -1036,9 +1661,7 @@ const fs = require("node:fs");
   );
   await page.getByRole("button", { name: "我的设备", exact: true }).click();
   await page.getByRole("button", { name: "管理控制台", exact: true }).click();
-  await page
-    .getByText("邀请码已收起，收起不会取消邀请", { exact: true })
-    .waitFor();
+  await page.getByText("邀请码已收起", { exact: true }).waitFor();
   assert.equal(
     await page.getByLabel("受邀邮箱", { exact: true }).inputValue(),
     "invited@example.invalid",
@@ -1049,18 +1672,14 @@ const fs = require("node:fs");
     el.scrollTop = el.scrollHeight;
   });
   await page.screenshot({ path: ".local/ui-verification/admin-records.png" });
-  await page
-    .getByRole("button", { name: "生成注册邀请码", exact: true })
-    .click();
+  await page.getByRole("button", { name: "生成邀请码", exact: true }).click();
   await page.getByText("synthetic-signup", { exact: true }).waitFor();
   await page.getByRole("button", { name: "账号安全", exact: true }).click();
   await page
     .getByLabel("当前密码", { exact: true })
     .fill("synthetic-password-new");
   await page.getByLabel("新密码").fill("synthetic-password-next");
-  await page
-    .getByRole("button", { name: "修改密码并退出所有登录", exact: true })
-    .click();
+  await page.getByRole("button", { name: "修改密码", exact: true }).click();
   await page
     .getByRole("heading", { name: "登录 FarSail", exact: true })
     .waitFor();
@@ -1092,7 +1711,7 @@ const fs = require("node:fs");
     await page.getByLabel("本机设备名称", { exact: true }).inputValue(),
     "DESKTOP-测试",
   );
-  await page.getByRole("button", { name: "添加这台电脑", exact: true }).click();
+  await page.getByRole("button", { name: "添加", exact: true }).click();
   await page
     .getByRole("status")
     .filter({ hasText: "这台电脑已添加" })
@@ -1155,9 +1774,9 @@ const fs = require("node:fs");
     "这台 Windows 电脑",
   );
   await page.getByText("设备信息与管理", { exact: true }).click();
-  await page.getByRole("button", { name: "修改设备名称", exact: true }).click();
+  await page.getByRole("button", { name: "重命名", exact: true }).click();
   await page.getByLabel("新的设备名称", { exact: true }).fill("自定义工作站");
-  await page.getByRole("button", { name: "保存名称", exact: true }).click();
+  await page.getByRole("button", { name: "保存", exact: true }).click();
   await page
     .getByRole("heading", { name: "自定义工作站", exact: true })
     .waitFor();
@@ -1178,12 +1797,10 @@ const fs = require("node:fs");
     "",
   );
   assert(
-    await page
-      .getByRole("button", { name: "添加这台电脑", exact: true })
-      .isDisabled(),
+    await page.getByRole("button", { name: "添加", exact: true }).isDisabled(),
   );
   await page.getByLabel("本机设备名称", { exact: true }).fill("手动名称");
-  await page.getByRole("button", { name: "添加这台电脑", exact: true }).click();
+  await page.getByRole("button", { name: "添加", exact: true }).click();
   await page
     .getByRole("status")
     .filter({ hasText: "这台电脑已添加" })
@@ -1202,6 +1819,7 @@ const fs = require("node:fs");
     window.fixture.devices[1].enabled = true;
     window.fixture.devices[1].can_host = true;
     window.fixture.sharing = false;
+    window.fixture.filesEnabled = false;
     window.fixture.sharePreferences = {
       sharing: false,
       watch: false,
@@ -1212,13 +1830,24 @@ const fs = require("node:fs");
   await page.getByRole("button", { name: "刷新", exact: true }).click();
   await page.getByRole("button", { name: "共享与设置", exact: true }).click();
   await page
-    .getByText(
-      "Ubuntu 客户端可连接 Windows 电脑，暂不支持共享本机屏幕或远程值守。",
-      { exact: true },
-    )
+    .getByText("Ubuntu 暂不支持共享本机屏幕或远程值守。", { exact: true })
     .waitFor();
   assert.equal(
-    await page.getByRole("switch", { name: "本机屏幕共享" }).count(),
+    await page
+      .getByRole("switch", { name: "允许远程连接", exact: true })
+      .count(),
+    1,
+  );
+  assert.equal(
+    await page
+      .getByRole("switch", { name: "同账号远程值守", exact: true })
+      .count(),
+    0,
+  );
+  assert.equal(
+    await page
+      .getByRole("switch", { name: "允许接收文件", exact: true })
+      .count(),
     0,
   );
   assert.equal(
@@ -1226,19 +1855,32 @@ const fs = require("node:fs");
     0,
   );
   await page.getByRole("button", { name: "总览", exact: true }).click();
-  await page.getByText("Ubuntu 控制端", { exact: true }).first().waitFor();
+  await page
+    .getByRole("status", { name: "远程连接已关闭", exact: true })
+    .waitFor();
   await page.screenshot({ path: ".local/ui-verification/ubuntu-overview.png" });
   await page.getByRole("button", { name: "我的设备", exact: true }).click();
   await page
     .locator(".device-list")
     .getByRole("button", { name: /^手动名称/ })
     .click();
+  const linuxRemote = page.getByRole("switch", {
+    name: "允许远程连接",
+    exact: true,
+  });
+  await linuxRemote.check();
+  await page.waitForFunction(() => window.fixture.filesEnabled);
+  assert.equal(await page.evaluate(() => window.fixture.sharing), false);
   assert.equal(
-    await page
-      .getByRole("button", { name: "开启本机共享", exact: true })
-      .count(),
-    0,
+    await page.evaluate(() => window.fixture.devices[0].can_host),
+    false,
   );
+  assert.equal(
+    await page.evaluate(() => window.fixture.devices[0].can_files),
+    true,
+  );
+  await linuxRemote.uncheck();
+  await page.waitForFunction(() => !window.fixture.filesEnabled);
   await page
     .locator(".device-list")
     .getByRole("button", { name: /^家里的电脑/ })
@@ -1257,7 +1899,7 @@ const fs = require("node:fs");
   await page.getByRole("button", { name: "总览", exact: true }).click();
   await page.getByRole("button", { name: "刷新状态", exact: true }).click();
   await page.getByLabel("本机设备名称", { exact: true }).fill("Ubuntu-测试");
-  await page.getByRole("button", { name: "添加这台电脑", exact: true }).click();
+  await page.getByRole("button", { name: "添加", exact: true }).click();
   const upgradeDialog = page.getByRole("alertdialog");
   await upgradeDialog.waitFor();
   assert((await upgradeDialog.innerText()).includes("请先升级协调服务"));
@@ -1265,12 +1907,12 @@ const fs = require("node:fs");
   await upgradeDialog
     .getByRole("button", { name: "知道了", exact: true })
     .click();
-  // Updates stay in settings; a rejected download cannot enable installation.
+  // Settings open the update dialog; a rejected download cannot enable installation.
   await page.getByRole("button", { name: "共享与设置", exact: true }).click();
   const updates = page.locator(".client-updates");
   await updates.getByRole("heading", { name: "软件更新" }).waitFor();
   await updates
-    .getByRole("checkbox", { name: "自动下载，并在远程连接结束后安装更新" })
+    .getByRole("checkbox", { name: "自动安装更新", exact: true })
     .check();
   await page.waitForFunction(
     () => window.fixture.update.preferences.autoInstall,
@@ -1278,29 +1920,36 @@ const fs = require("node:fs");
   await updates.getByRole("button", { name: "检查更新", exact: true }).click();
   await updates.getByText("发现新版本 0.1.21。", { exact: true }).waitFor();
   await page.evaluate(
-    () => (window.fixture.updateFailure = "更新签名校验失败"),
+    () => (window.fixture.updateFailure = "更新包校验失败，请重新下载。"),
   );
-  await updates.getByRole("button", { name: "下载更新", exact: true }).click();
-  await updates.getByText("更新签名校验失败", { exact: true }).waitFor();
+  await updates.getByRole("button", { name: "查看更新", exact: true }).click();
+  const updateDialog = page.getByRole("dialog", { name: "软件更新" });
+  await updateDialog.waitFor();
+  await updateDialog
+    .getByRole("button", { name: "立即更新", exact: true })
+    .click();
+  await updateDialog
+    .getByText("更新包校验失败，请重新下载。", { exact: true })
+    .waitFor();
   assert.equal(
-    await updates.getByRole("button", { name: "安装并重启" }).count(),
+    await updateDialog.getByRole("button", { name: "安装更新" }).count(),
     0,
   );
-  await updates.getByRole("button", { name: "下载更新", exact: true }).click();
-  await updates.getByRole("button", { name: "安装并重启" }).waitFor();
+  await updateDialog
+    .getByRole("button", { name: "重试更新", exact: true })
+    .click();
+  await updateDialog.getByRole("button", { name: "安装更新" }).waitFor();
   await page.evaluate(() => (window.fixture.updateConnected = true));
-  await updates.getByRole("button", { name: "安装并重启" }).click();
-  await updates
+  await updateDialog.getByRole("button", { name: "安装更新" }).click();
+  await updateDialog
     .getByText("更新已就绪，等待远程连接结束。请关闭远程窗口后安装。", {
       exact: true,
     })
     .waitFor();
   await page.screenshot({ path: ".local/ui-verification/client-updates.png" });
   await page.evaluate(() => (window.fixture.updateConnected = false));
-  await updates.getByRole("button", { name: "安装并重启" }).click();
-  await updates
-    .getByText("正在安装更新，完成后将重新启动。", { exact: true })
-    .waitFor();
+  await updateDialog.getByRole("button", { name: "安装更新" }).click();
+  await updateDialog.getByText("正在安装更新。", { exact: true }).waitFor();
   assert(await updates.getByRole("button", { name: "检查更新" }).isDisabled());
   assert.deepEqual(errors, []);
   console.log(

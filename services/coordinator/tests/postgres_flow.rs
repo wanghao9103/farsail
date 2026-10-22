@@ -232,7 +232,7 @@ async fn postgres_identity_device_and_grant_lifecycle() {
     assert_eq!(me["email"], "alice@example.test");
     let alice_key = signing_key();
     let bob_key = signing_key();
-    // Linux is a controller platform, even if a caller bypasses the desktop UI.
+    // Linux cannot host screens, even if a caller bypasses the desktop UI.
     let (status, challenge) = post(
         &app,
         "/v1/devices/challenge",
@@ -242,7 +242,7 @@ async fn postgres_identity_device_and_grant_lifecycle() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    for (can_host, can_files) in [(true, false), (false, true)] {
+    for (can_host, can_files) in [(true, false), (true, true)] {
         let (status, _) = post(&app, "/v1/devices/bind", json!({"challenge_id":challenge["challenge_id"], "signature":hex::encode(alice_key.sign(challenge["message"].as_str().unwrap().as_bytes()).to_bytes()), "name":"Ubuntu", "platform":"linux", "can_host":can_host, "can_files":can_files}), Some(&alice), None).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
     }

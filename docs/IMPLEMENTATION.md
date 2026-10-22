@@ -4,6 +4,50 @@
 
 # FarSail implementation and handoff record
 
+## Client 0.1.30 interface and state handling published (2026-10-22)
+
+The immutable `client-v0.1.30` tag points to `cce49b2a1c1afeedf2d13eea6db6c96529e54258`. The [release workflow](https://github.com/wanghao9103/farsail/actions/runs/39719518066) and [public release](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.30) passed three-platform signed-package and native-installation checks. All 12 public attachments match the reconstructed publication; signatures and checksums passed, and the ordinary fixed feed matches the versioned manifest byte for byte. The same source passed all desktop, update, file and viewer UI suites on [Windows](https://github.com/wanghao9103/farsail/actions/runs/39717675586) and [Ubuntu x64 / ARM64](https://github.com/wanghao9103/farsail/actions/runs/39717675562), including 13 update-dialog cases per platform, native IPC boundaries and platform lifecycle checks.
+
+Authentication tabs support keyboard navigation and restore focus after subflows; verification retains the registered email. Refreshes preserve existing security and administration records, and unread or failed registration settings cannot be saved. File pages distinguish incoming approval, outgoing waiting and approved-but-unconnected states, restore narrow-window guidance, and link the empty state to device selection. Viewer controls remain visible while keyboard focus is inside them. Repeated copy and button labels are shorter, and closing an update dialog returns focus without starting a download or installation. Actual installed-client cross-version updates, physical two-machine behavior and interactive UAC remain unverified; see [client updates](CLIENT_UPDATES.md).
+
+## Client 0.1.29 copy and layout cleanup published (2026-10-21)
+
+The immutable `client-v0.1.29` tag points to `167a3dc387fb3355844bff69aed798c115d20204`. The [release workflow](https://github.com/wanghao9103/farsail/actions/runs/39566630437) and [public release](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.29) passed three-platform signed-package, native-installation and public-download reconstruction checks. Desktop, 13-case update-dialog, file and viewer UI regressions passed on Windows and Ubuntu x64 / ARM64. Labels name the operation, page actions sit beside the main heading, spacing is consistent, and narrow navigation and file headings are aligned. Quit moves into the window menu while retaining normal shutdown cleanup. Actual installed-client cross-version updates, physical two-machine behavior and interactive UAC remain unverified; see [client updates](CLIENT_UPDATES.md).
+
+## Client 0.1.28 remote-control file paste published (2026-10-20)
+
+The immutable `client-v0.1.28` tag points to `11a75bbfe5a49fd2665c98b34bb3d7c817cd255c`. The [release workflow](https://github.com/wanghao9103/farsail/actions/runs/39365699777) and [public release](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.28) passed three-platform signed-package/native-installation checks and public-download reconstruction. Control authorization now includes file transfer over the same connection and lease; View remains read-only. Native Windows/Linux file clipboard sources support up to 32 regular files pasted into a remote Windows window. The fixed feed matches the signed versioned artifacts. Physical two-machine clipboard/Explorer acceptance is still pending; see [file transfer](FILES.md).
+
+## Client 0.1.27 update feedback and authorization published (2026-10-19)
+
+The immutable `client-v0.1.27` tag points to `bca87a13e4ea246e0a5e5eed5ade4221d4c781ba`. The [release workflow](https://github.com/wanghao9103/farsail/actions/runs/39233924894) and [public release](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.27) passed three-platform checks, signatures and public-download verification. Repeated update explanations were removed and native/IPC diagnostics map to brief user messages. Ubuntu adds a fixed root helper, independent signature/version verification, account-scoped authorization and uninstall revocation. Both Linux architectures passed the production-signed package sandbox; this does not establish live desktop authentication or a full system reboot.
+
+## Client 0.1.24 frame-flow update published (2026-10-19)
+
+The immutable `client-v0.1.24` tag points to `c3ffb8aab093f2c3db4deeb98c7efcff97d9aa56`. The [release workflow](https://github.com/wanghao9103/farsail/actions/runs/39213734063) and [public release](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.24) passed three-platform native/package, signature and public-download verification. New authenticated local QUIC regressions cover two-frame backpressure, latest-frame coalescing, single-frame expiry without further capture, and rejection of unsent ACKs. Changes include elapsed-time capture pacing, DXGI staging-texture reuse, runtime encoder acceleration and image-title removal. The 30 FPS cadence and synthetic JPEG benchmark do not establish actual user-game or two-computer frame rates; those remain unmeasured.
+
+## Client 0.1.23 published (2026-10-19)
+
+The immutable `client-v0.1.23` tag points to `c217f20823e864ccd2d76bf19f29ad9ccd377309`. The [release workflow](https://github.com/wanghao9103/farsail/actions/runs/39208981511) built and signed Windows x64, Ubuntu x64 and Ubuntu ARM64 installers; all three native/package checks and public-download verification passed, and the update channel matches the [versioned release](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.23). Windows CI covers the administrator manifest, elevated process, tray close/restore and NSIS `/UPDATE /R` restart. Linux native checks cover tray-host and no-host behavior. Interactive UAC, physical games/two-computer use, Wayland and actual installed-client cross-version updates remain pending. The source-stage and older-version records below retain their original evidence; 0.1.22 artifacts were not modified.
+
+## Unified remote setting in current source (2026-10-19)
+
+The current source replaces the separate file-receiving switch with **Allow remote connections**. Windows enables incoming screen and file requests together; Ubuntu enables files only. The setting is initially off, saves the user's choice and restores it after an ordinary restart only after login/device and native-runtime validation. Turning it off ends incoming screen and file sessions. Files retain exact independent grants, approval for every connection and native destination selection for each file; remote standby does not automatically approve files. Published 0.1.22 packages do not include this change. Current usage is in [file transfer](FILES.md).
+
+The dated records and WI-005 plan below retain their original scope and evidence. Their independent screen/file switch design describes the earlier baseline; it does not override the current unified setting or establish that this change has passed the historical checks.
+
+The current source also hides the main window to an available system tray when closed, or minimizes it if no tray host is available, preserving enabled remote access and active file transfers. The tray or a second launch can reopen the existing window; the tray/window menu Quit action performs normal local shutdown, while viewer closure remains scoped to its session. Published 0.1.22 retains its previous close behavior. See [client usage](CLIENT.md).
+
+## Windows startup permission in current source (2026-10-19)
+
+The Windows application manifest now requests `requireAdministrator` with `uiAccess=false` for debug and release builds, retaining the Tauri Common Controls dependency. Windows handles authorization; cancellation cancels launch. The NSIS installer remains per-user, and Ubuntu does not request root at runtime. This is not secure-desktop or unattended-login support and does not bypass game input filtering. Published 0.1.22 packages are unchanged. Installation/profile behavior and outstanding physical UAC/upgrade checks are recorded in [Windows installation](WINDOWS_INSTALL.md); historical “no automatic elevation” records below describe their original versions.
+
+## File-transfer source candidate (2026-10-10)
+
+This candidate added independent Files sessions, explicit receiver enablement, per-connection approval and per-file native Open/Save As selection for Ubuntu and Windows. It streams bounded chunks with full SHA-256 verification, a shared file bandwidth budget and non-overwriting publication. The usage, storage/authorization boundaries and known limits are in [file transfer](FILES.md).
+
+The frontend build and synthetic file/account/device regressions have passed locally. Native/service/transport tests and Windows CI are recorded separately as they finish; this paragraph does not claim a new installer was released or physical Windows transfer was accepted. The historical WI-005 plan below also requires resume, compression and broader performance validation; those requirements remain unimplemented or unverified and the full work item is not complete.
+
 <a id="input-021--0111-鼠标释放与持续控制2026-10-08"></a>
 
 ## INPUT-021 — 0.1.11 mouse release and continuous control (2026-10-08)
@@ -73,19 +117,19 @@ This file is the authoritative entry point for development status. `PROJECT_DESI
 
 ## Work items and order
 
-| Work Item | Verifiable result                                                                                               | Status                                                                                                               |
-| --------- | --------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| WI-001    | Rust workspace, PostgreSQL account/device/authorization service, isolated local execution and permission tests  | Complete: local acceptance passed, code pushed                                                                       |
-| WI-002    | Tauri client login, device registration/list, secure credential storage, user/administrator interface           | Complete: local and Windows CI passed, code pushed                                                                   |
-| WI-003    | iroh end-to-end connection, application authorization, direct/relay configuration and revocation                | Complete: focused local verification and remote CI passed                                                            |
-| WI-004    | Windows screen capture, user confirmation, mouse/keyboard input and usable remote-control baseline              | Local and three remote CI workflows passed                                                                           |
-| WI-008A   | Public-IP deployment bundle, prebuilt Linux artifacts and integration preparation                               | Complete: pinned six-image artifact, anonymous downloads, cross-Docker-storage import and two Linux CI rounds passed |
-| WI-008B   | Windows x64 preview installer, production build and public-artifact acceptance                                  | Complete: NSIS, native installation lifecycle, CI and complete anonymous downloads passed                            |
-| WI-008C   | Deployment download HTTP/1.1, reliable resume and cache reuse                                                   | ready: prioritize the actual deployment blocker                                                                      |
-| WI-005    | Chunked bidirectional file transfer, lossless compression, verification/resume, authorization and rate limiting | In progress: temporarily yielded write access to WI-008C; unverified WIP retained                                    |
-| WI-006    | Actual hardware encoding/decoding, multiple monitors and adaptive rates, capability negotiation and 4:4:4 path  | planned                                                                                                              |
-| WI-007    | Android/iOS mobile control and file interfaces, executable platform builds and validation                       | planned                                                                                                              |
-| WI-008    | Full-chain regression, deployment/packaging, public repository and real-environment validation                  | planned                                                                                                              |
+| Work Item | Verifiable result                                                                                               | Status                                                                                                                  |
+| --------- | --------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| WI-001    | Rust workspace, PostgreSQL account/device/authorization service, isolated local execution and permission tests  | Complete: local acceptance passed, code pushed                                                                          |
+| WI-002    | Tauri client login, device registration/list, secure credential storage, user/administrator interface           | Complete: local and Windows CI passed, code pushed                                                                      |
+| WI-003    | iroh end-to-end connection, application authorization, direct/relay configuration and revocation                | Complete: focused local verification and remote CI passed                                                               |
+| WI-004    | Windows screen capture, user confirmation, mouse/keyboard input and usable remote-control baseline              | Local and three remote CI workflows passed                                                                              |
+| WI-008A   | Public-IP deployment bundle, prebuilt Linux artifacts and integration preparation                               | Complete: pinned six-image artifact, anonymous downloads, cross-Docker-storage import and two Linux CI rounds passed    |
+| WI-008B   | Windows x64 preview installer, production build and public-artifact acceptance                                  | Complete: NSIS, native installation lifecycle, CI and complete anonymous downloads passed                               |
+| WI-008C   | Deployment download HTTP/1.1, reliable resume and cache reuse                                                   | ready: prioritize the actual deployment blocker                                                                         |
+| WI-005    | Chunked bidirectional file transfer, lossless compression, verification/resume, authorization and rate limiting | Partial source candidate: safe single files and independent approval; resume/compression and Windows acceptance pending |
+| WI-006    | Actual hardware encoding/decoding, multiple monitors and adaptive rates, capability negotiation and 4:4:4 path  | planned                                                                                                                 |
+| WI-007    | Android/iOS mobile control and file interfaces, executable platform builds and validation                       | planned                                                                                                                 |
+| WI-008    | Full-chain regression, deployment/packaging, public repository and real-environment validation                  | planned                                                                                                                 |
 
 Any work item may be split into smaller consecutive items based on measured dependencies, but unimplemented scope must not be marked complete. Mobile hosting, unattended access and other later extensions remain future routes under the original design.
 

@@ -2,6 +2,7 @@
 use farsail_media::{FrameMeta, JpegFrame};
 use serde::{Deserialize, Serialize};
 
+pub mod clipboard;
 mod input_context;
 pub use input_context::{
     ForegroundWindow, administrator_mode, foreground_window, input_context_ready,

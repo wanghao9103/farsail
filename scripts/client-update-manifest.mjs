@@ -7,7 +7,7 @@ import {
   copyFileSync,
   writeFileSync,
 } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 // Verify the artifact and the signed version, including minisign's trusted-comment signature.
@@ -82,21 +82,46 @@ export function buildManifest(
     throw new Error("Client updates require a stable semver version");
   if (!/^[a-f0-9]{40}$/.test(sourceCommit))
     throw new Error("Missing exact source commit");
+  const [major, minor, patch] = version.split(".").map(Number);
+  const requiresUpdateHelper =
+    major > 0 || minor > 1 || (minor === 1 && patch >= 25);
   const files = [];
   const platforms = {};
-  for (const [platform, directory, extension] of [
-    ["linux-x86_64-deb", "linux", ".deb"],
-    ["windows-x86_64-nsis", "windows", "-setup.exe"],
+  for (const [platform, directory, suffix, target, debArchitecture] of [
+    [
+      "linux-x86_64-deb",
+      "linux",
+      "amd64.deb",
+      "x86_64-unknown-linux-gnu",
+      "amd64",
+    ],
+    [
+      "linux-aarch64-deb",
+      "linux-arm64",
+      "arm64.deb",
+      "aarch64-unknown-linux-gnu",
+      "arm64",
+    ],
+    [
+      "windows-x86_64-nsis",
+      "windows",
+      "x64-setup.exe",
+      "x86_64-pc-windows-msvc",
+      null,
+    ],
   ]) {
     const root = join(input, directory);
+    const extension = debArchitecture ? ".deb" : "-setup.exe";
     const matches = readdirSync(root).filter((file) =>
       file.endsWith(extension),
     );
     if (matches.length !== 1)
       throw new Error(`Expected exactly one ${platform} installer`);
     const name = matches[0];
-    if (!name.startsWith(`FarSail_${version}_`))
-      throw new Error("Installer filename version mismatch");
+    if (name !== `FarSail_${version}_${suffix}`)
+      throw new Error(
+        `Installer filename version or architecture mismatch: ${platform}`,
+      );
     const bytes = readFileSync(join(root, name));
     if (
       extension === ".deb"
@@ -113,6 +138,30 @@ export function buildManifest(
       ),
     );
     const digest = createHash("sha256").update(bytes).digest("hex");
+    if (
+      metadata.target !== target ||
+      (debArchitecture && metadata.deb_architecture !== debArchitecture)
+    )
+      throw new Error(`Build metadata architecture mismatch: ${platform}`);
+    if (
+      debArchitecture &&
+      (metadata.elf_machine !== (debArchitecture === "arm64" ? 183 : 62) ||
+        ["native_debug_ipc", "linux_store", "package_dependencies"].some(
+          (field) => metadata[field] !== "passed",
+        ))
+    )
+      throw new Error(
+        `Linux installer verification has not passed for ${platform}`,
+      );
+    if (
+      debArchitecture &&
+      requiresUpdateHelper &&
+      (metadata.update_helper_package !== "passed" ||
+        metadata.update_helper_signed_sandbox !== "passed")
+    )
+      throw new Error(
+        `Signed update helper verification has not passed for ${platform}`,
+      );
     if (
       metadata.version !== version ||
       metadata.source_commit !== sourceCommit ||

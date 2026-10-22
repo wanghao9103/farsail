@@ -27,6 +27,11 @@ const fs = require("node:fs");
       retryable: false,
       permission: "control",
       inputBlocked: false,
+      fileSupport: false,
+      pasteFilesResult: true,
+      pasteFilesError: null,
+      holdPaste: false,
+      releasePaste: null,
       inputGeneration: 0,
       staleInput: null,
       mouse: { generation: 0, rejected: false },
@@ -85,6 +90,14 @@ const fs = require("node:fs");
       metadata: { currentWindow: { label: "viewer-test" } },
       invoke: async (cmd, args = {}) => {
         f.calls.push({ cmd, args });
+        if (["remote_paste_files", "remote_send_files"].includes(cmd)) {
+          if (f.holdPaste)
+            await new Promise((resolve) => {
+              f.releasePaste = resolve;
+            });
+          if (f.pasteFilesError) throw f.pasteFilesError;
+          return f.pasteFilesResult;
+        }
         if (cmd === "remote_status") {
           const reportedInput = f.staleInput ?? {
             generation: f.inputGeneration,
@@ -98,6 +111,7 @@ const fs = require("node:fs");
             state: f.closed ? "closed" : f.path,
             discovery: f.discovery,
             permission: f.permission,
+            files: { supported: f.fileSupport, status: { transfers: [] } },
             video: f.video,
             input: reportedInput,
             mouse: f.mouse,
@@ -189,10 +203,49 @@ const fs = require("node:fs");
     };
   });
   const load = async () => {
-    await page.goto("http://127.0.0.1:1420/?viewer=test");
+    await page.goto(process.env.UI_URL || "http://127.0.0.1:1420/?viewer=test");
     await page.getByAltText("远端桌面").waitFor();
   };
+  const switchWindow = () =>
+    page.getByRole("button", {
+      name: "切换远端窗口（Alt+Tab）",
+      exact: true,
+    });
+  const revealToolbar = async () => {
+    // A visibility check can race the auto-hide timer. Start from the hidden
+    // state, then keep the pointer over the toolbar while interacting with it.
+    const screen = await page.locator(".remote-screen").boundingBox();
+    assert(screen);
+    await page.mouse.move(
+      screen.x + screen.width / 2,
+      screen.y + screen.height / 2,
+    );
+    await page.locator(".remote-screen").focus();
+    await page.locator(".viewer-toolbar").waitFor({ state: "hidden" });
+    await page.getByRole("button", { name: "显示工具栏", exact: true }).hover();
+    await page.locator(".viewer-toolbar").hover();
+  };
   await load();
+  // Keyboard users can reveal the toolbar and keep it open while choosing controls.
+  await page.mouse.move(500, 600);
+  await page.locator(".viewer-toolbar").waitFor({ state: "hidden" });
+  await page
+    .getByRole("button", { name: "显示工具栏", exact: true })
+    .press("Enter");
+  await page.waitForFunction(
+    () => document.activeElement?.getAttribute("aria-label") === "对方的显示器",
+  );
+  await page.getByLabel("对方的显示器", { exact: true }).press("Tab");
+  await page.waitForTimeout(2500);
+  assert(await page.locator(".viewer-toolbar").isVisible());
+  assert(
+    await page
+      .locator(".viewer-toolbar")
+      .evaluate((element) => element.contains(document.activeElement)),
+    "auto-hide must not remove a focused toolbar control",
+  );
+  await page.locator(".remote-screen").focus();
+  await page.locator(".viewer-toolbar").waitFor({ state: "hidden" });
   for (const [discovery, label] of [
     ["trying_direct", "正在尝试直连"],
     ["relay_fallback", "定时重试直连"],
@@ -220,10 +273,127 @@ const fs = require("node:fs");
   await page.waitForFunction(() =>
     document.querySelector(".viewer-status").textContent.includes("已直连"),
   );
-  if (!(await page.locator(".viewer-toolbar").isVisible())) {
-    await page.getByRole("button", { name: "显示工具栏", exact: true }).hover();
-  }
+  await revealToolbar();
   assert(await page.locator(".viewer-titlebar").isVisible());
+  assert(
+    await page
+      .getByRole("button", { name: "传输文件", exact: true })
+      .isDisabled(),
+    "old peers do not silently receive file data",
+  );
+  await page.evaluate(() => {
+    window.fixture.fileSupport = true;
+    window.fixture.holdPaste = true;
+  });
+  await page.waitForFunction(
+    () =>
+      !Array.from(document.querySelectorAll("button")).find(
+        (b) => b.textContent === "传输文件",
+      )?.disabled,
+  );
+  await page.locator(".remote-screen").focus();
+  const pasteStart = await page.evaluate(() => window.fixture.calls.length);
+  await page.keyboard.press("Control+v");
+  await page.waitForFunction(() => window.fixture.releasePaste !== null);
+  await page.keyboard.press("Control+v");
+  assert.equal(
+    await page.evaluate(
+      (start) =>
+        window.fixture.calls
+          .slice(start)
+          .filter((c) => c.cmd === "remote_paste_files").length,
+      pasteStart,
+    ),
+    1,
+    "repeated paste cannot start another transfer",
+  );
+  assert.equal(
+    await page.evaluate(
+      (start) =>
+        window.fixture.calls
+          .slice(start)
+          .filter((c) => c.cmd === "remote_input" && c.args.input?.vk === 0x56)
+          .length,
+      pasteStart,
+    ),
+    0,
+    "file paste never sends an early V into the remote app",
+  );
+  assert(await page.getByAltText("远端桌面").isVisible());
+  await page.screenshot({
+    path: ".local/ui-verification/clipboard-paste-progress.png",
+  });
+  await page.evaluate(() => {
+    window.fixture.holdPaste = false;
+    window.fixture.releasePaste();
+    window.fixture.releasePaste = null;
+  });
+  await page
+    .getByText("已发送文件粘贴请求。", {
+      exact: true,
+    })
+    .waitFor();
+  await revealToolbar();
+  await page.getByRole("button", { name: "传输文件", exact: true }).click();
+  await page.waitForFunction(() =>
+    window.fixture.calls.some((c) => c.cmd === "remote_send_files"),
+  );
+  await page.evaluate(() => {
+    window.fixture.pasteFilesResult = false;
+  });
+  const fallbackStart = await page.evaluate(() => window.fixture.calls.length);
+  await page.locator(".remote-screen").focus();
+  await page.keyboard.press("Control+v");
+  await page.waitForFunction(
+    (start) =>
+      window.fixture.calls
+        .slice(start)
+        .some(
+          (c) =>
+            c.cmd === "remote_input" &&
+            c.args.input?.vk === 0xa2 &&
+            c.args.input?.down === false,
+        ),
+    fallbackStart,
+  );
+  assert.equal(
+    await page.evaluate(
+      (start) =>
+        window.fixture.calls
+          .slice(start)
+          .filter((c) => c.cmd === "remote_input" && c.args.input?.vk === 0x56)
+          .length,
+      fallbackStart,
+    ),
+    2,
+    "no local files preserves ordinary remote clipboard paste",
+  );
+  await page.evaluate(() => {
+    window.fixture.pasteFilesResult = true;
+  });
+  await page.evaluate(() => {
+    window.fixture.pasteFilesError = "剪贴板读取失败测试";
+  });
+  await page.locator(".remote-screen").focus();
+  await page.keyboard.press("Control+v");
+  await page.getByText("剪贴板读取失败测试", { exact: true }).first().waitFor();
+  assert(
+    await page.getByAltText("远端桌面").isVisible(),
+    "clipboard failure preserves screen connection",
+  );
+  await page.getByRole("button", { name: "知道了", exact: true }).click();
+  await page.evaluate(() => {
+    window.fixture.pasteFilesError = null;
+    window.fixture.fileSupport = false;
+  });
+  await page.waitForFunction(
+    () =>
+      Array.from(document.querySelectorAll("button")).find(
+        (b) => b.textContent === "传输文件",
+      )?.disabled,
+  );
+  await load();
+  await revealToolbar();
   assert.equal(await page.getByLabel("画面分辨率").inputValue(), "-2");
   for (const [width, profile] of [
     [2560, 2],
@@ -277,6 +447,7 @@ const fs = require("node:fs");
   await page.getByLabel("保持工具栏显示").uncheck();
   await page.getByText("更多操作", { exact: true }).click();
   await page.mouse.move(900, 600);
+  await page.locator(".remote-screen").focus();
   await page.locator(".viewer-toolbar").waitFor({ state: "hidden" });
   assert((await page.locator(".remote-screen").boundingBox()).height >= 763);
   await page.getByRole("button", { name: "显示工具栏", exact: true }).hover();
@@ -300,7 +471,10 @@ const fs = require("node:fs");
   assert(await page.getByAltText("远端桌面").isVisible());
   await page.evaluate(() => (window.fixture.heartbeat = true));
   const verifyFillPixels = async () => {
+    // This assertion measures a static frame. Avoid revoking its blob URL while img.decode() is pending.
+    await page.evaluate(() => (window.fixture.heartbeat = false));
     await page.mouse.move(400, 300);
+    await page.locator(".remote-screen").focus();
     await page.locator(".viewer-toolbar").waitFor({ state: "hidden" });
     await page.getByAltText("远端桌面").evaluate((img) => img.decode());
     const area = await page.locator(".remote-screen").boundingBox();
@@ -345,6 +519,7 @@ const fs = require("node:fs");
         "all source corners must reach viewport corners without blank bands or cropping",
       ),
     );
+    await page.evaluate(() => (window.fixture.heartbeat = true));
   };
   for (const size of [
     { width: 640, height: 420 },
@@ -425,6 +600,7 @@ const fs = require("node:fs");
   await page.getByRole("button", { name: "保持比例", exact: true }).click();
   await page.getByText("更多操作", { exact: true }).click();
   await page.mouse.move(400, 300);
+  await page.locator(".remote-screen").focus();
   await page.locator(".viewer-toolbar").waitFor({ state: "hidden" });
   const buttonCount = await page.evaluate(
     () =>
@@ -541,6 +717,225 @@ const fs = require("node:fs");
   await page.mouse.move(inside.x + inside.width + 40, cy, { steps: 4 });
   await page.mouse.up();
   await released(start);
+  // A normal release outside must keep its final position even while DOWN is
+  // still awaiting IPC. Lost capture / pointerleave must not cancel that UP.
+  await page.mouse.move(cx, cy);
+  await page.waitForTimeout(50);
+  await page.keyboard.down("Shift");
+  start = await page.evaluate(() => {
+    window.fixture.delay = true;
+    return window.fixture.calls.length;
+  });
+  await page.mouse.down();
+  await page.waitForFunction(() => !!window.fixture.release);
+  await page.mouse.move(inside.x + inside.width + 40, cy, { steps: 4 });
+  await page.mouse.up();
+  await page.evaluate(() => {
+    window.fixture.release();
+    window.fixture.release = null;
+  });
+  await page.waitForFunction(
+    (start) =>
+      window.fixture.calls
+        .slice(start)
+        .some(
+          (c) =>
+            c.cmd === "remote_input" &&
+            c.args.input?.kind === "button" &&
+            !c.args.input.down &&
+            c.args.input.x === 1,
+        ),
+    start,
+    { timeout: 3000 },
+  );
+  await page.waitForFunction(
+    (start) =>
+      window.fixture.calls
+        .slice(start)
+        .some((c) => c.cmd === "remote_input" && c.args.input === null),
+    start,
+  );
+  const outsideInputs = await page.evaluate(
+    (start) =>
+      window.fixture.calls
+        .slice(start)
+        .filter((c) => c.cmd === "remote_input")
+        .map((c) => c.args.input),
+    start,
+  );
+  assert.equal(
+    outsideInputs.at(-1),
+    null,
+    "normal leave must release held keyboard state after UP",
+  );
+  assert.equal(outsideInputs.filter((i) => i === null).length, 1);
+  assert(outsideInputs.at(-2)?.kind === "button" && !outsideInputs.at(-2).down);
+  assert.equal(outsideInputs.filter((i) => i?.kind === "button").length, 2);
+  await page.keyboard.up("Shift");
+  // Holding a button that began outside cannot start a remote gesture by
+  // re-entering. A subsequent fresh click must still be accepted.
+  start = await page.evaluate(() => window.fixture.calls.length);
+  await page.mouse.down();
+  await page.mouse.move(cx, cy, { steps: 3 });
+  await page.mouse.up();
+  await page.waitForTimeout(100);
+  assert.equal(
+    await page.evaluate(
+      (start) =>
+        window.fixture.calls
+          .slice(start)
+          .filter(
+            (c) => c.cmd === "remote_input" && c.args.input?.kind === "button",
+          ).length,
+      start,
+    ),
+    0,
+    "a held button from outside is not an owned remote gesture",
+  );
+  await page.mouse.click(cx, cy);
+  await released(start);
+  // Suppressing the leave caused by normal UP is one-shot; ordinary hover
+  // leaving still releases remote keyboard state.
+  start = await page.evaluate(() => window.fixture.calls.length);
+  await page.keyboard.down("H");
+  await page.mouse.move(inside.x + inside.width + 40, cy);
+  await page.waitForFunction(
+    (start) =>
+      window.fixture.calls
+        .slice(start)
+        .some((c) => c.cmd === "remote_input" && c.args.input === null),
+    start,
+  );
+  await page.keyboard.up("H");
+  // Abnormal focus/capture loss keeps cancellation: queued work is discarded,
+  // a held-button re-entry cannot resurrect it, and a fresh click still works.
+  for (const loss of ["blur", "capture"]) {
+    await page.mouse.move(cx, cy);
+    await page.waitForTimeout(50);
+    start = await page.evaluate(() => {
+      window.fixture.delay = true;
+      return window.fixture.calls.length;
+    });
+    if (loss === "capture")
+      await page.getByAltText("远端桌面").evaluate((img) => {
+        window.fixture.captureLost = false;
+        img.addEventListener(
+          "pointerdown",
+          (e) => (window.fixture.pointerId = e.pointerId),
+          { once: true },
+        );
+      });
+    await page.mouse.down();
+    await page.waitForFunction(() => !!window.fixture.release);
+    if (loss === "blur")
+      await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+    else {
+      // Capture becomes active at the next pointer event. Cancelling a pending
+      // capture immediately after DOWN does not emit lostpointercapture.
+      await page.mouse.move(cx + 10, cy);
+      await page.getByAltText("远端桌面").evaluate((img) => {
+        const id = window.fixture.pointerId;
+        if (!img.hasPointerCapture(id))
+          throw Error("pointer capture not active");
+        img.addEventListener(
+          "lostpointercapture",
+          () => (window.fixture.captureLost = true),
+          { once: true },
+        );
+        img.releasePointerCapture(id);
+      });
+    }
+    await page.mouse.move(cx + 40, cy);
+    await page.mouse.up();
+    await page.evaluate(() => {
+      window.fixture.release();
+      window.fixture.release = null;
+    });
+    await page.waitForFunction(
+      (start) =>
+        window.fixture.calls
+          .slice(start)
+          .some((c) => c.cmd === "remote_input" && c.args.input === null),
+      start,
+    );
+    if (loss === "capture")
+      assert(await page.evaluate(() => window.fixture.captureLost));
+    const cancelledInputs = await page.evaluate(
+      (start) =>
+        window.fixture.calls
+          .slice(start)
+          .filter((c) => c.cmd === "remote_input")
+          .map((c) => c.args.input),
+      start,
+    );
+    assert.equal(
+      cancelledInputs.filter((i) => i?.kind === "button").length,
+      1,
+      `${loss} must discard queued UP and require a fresh gesture`,
+    );
+    assert(cancelledInputs[0].down);
+    await page.mouse.click(cx, cy);
+    await released(start);
+  }
+  // System switching is sent to the remote input queue rather than handled by
+  // the local desktop. A delayed release must finish before any shortcut key.
+  await revealToolbar();
+  await page.getByText("更多操作", { exact: true }).click();
+  await switchWindow().waitFor();
+  await page.waitForTimeout(100);
+  start = await page.evaluate(() => {
+    window.fixture.delay = true;
+    return window.fixture.calls.length;
+  });
+  await switchWindow().click();
+  await page.waitForFunction(() => !!window.fixture.release);
+  assert.deepEqual(
+    await page.evaluate(
+      (start) =>
+        window.fixture.calls
+          .slice(start)
+          .filter((c) => c.cmd === "remote_input")
+          .map((c) => c.args.input),
+      start,
+    ),
+    [null],
+    "the shortcut must wait for release-all in the serial queue",
+  );
+  await page.evaluate(() => {
+    window.fixture.release();
+    window.fixture.release = null;
+  });
+  await page.waitForFunction(
+    (start) =>
+      window.fixture.calls.slice(start).filter((c) => c.cmd === "remote_input")
+        .length === 5,
+    start,
+  );
+  assert.deepEqual(
+    await page.evaluate(
+      (start) =>
+        window.fixture.calls
+          .slice(start)
+          .filter((c) => c.cmd === "remote_input")
+          .map((c) => c.args.input),
+      start,
+    ),
+    [
+      null,
+      { kind: "key", vk: 0xa4, down: true, repeat: false },
+      { kind: "key", vk: 0x09, down: true, repeat: false },
+      { kind: "key", vk: 0x09, down: false },
+      { kind: "key", vk: 0xa4, down: false },
+    ],
+    "Alt+Tab must release old gestures, switch once, and release both keys",
+  );
+  assert(
+    await page.evaluate(
+      () => document.activeElement === document.querySelector(".remote-screen"),
+    ),
+    "window switching returns local focus to the remote screen",
+  );
+  await page.getByText("更多操作", { exact: true }).click();
   start = await page.evaluate(() => window.fixture.calls.length);
   await page.mouse.move(cx, cy);
   await page.mouse.down();
@@ -674,6 +1069,18 @@ const fs = require("node:fs");
         ),
     beforeMouseRecovery,
   );
+  // If native control is paused while release-all is pending, the shortcut's
+  // old generation must not deliver any queued modifier or Tab events.
+  await revealToolbar();
+  await page.getByText("更多操作", { exact: true }).click();
+  await switchWindow().waitFor();
+  await page.waitForTimeout(100);
+  const cancelledShortcut = await page.evaluate(() => {
+    window.fixture.delay = true;
+    return window.fixture.calls.length;
+  });
+  await switchWindow().click();
+  await page.waitForFunction(() => !!window.fixture.release);
   await page.evaluate(() => {
     window.fixture.inputBlocked = true;
     window.fixture.inputGeneration++;
@@ -682,7 +1089,25 @@ const fs = require("node:fs");
     .getByRole("alertdialog", { name: "控制已暂停", exact: true })
     .waitFor({ state: "attached" });
   assert(await page.getByAltText("远端桌面").isVisible());
-  assert.equal(await page.getByText("会话已结束，远端画面已清除").count(), 0);
+  assert.equal(await switchWindow().count(), 0, "paused control cannot switch");
+  await page.evaluate(() => {
+    window.fixture.release();
+    window.fixture.release = null;
+  });
+  await page.waitForTimeout(100);
+  assert.deepEqual(
+    await page.evaluate(
+      (start) =>
+        window.fixture.calls
+          .slice(start)
+          .filter((c) => c.cmd === "remote_input")
+          .map((c) => c.args.input),
+      cancelledShortcut,
+    ),
+    [null],
+    "a paused input generation must discard the queued remote shortcut",
+  );
+  assert.equal(await page.getByText("连接已结束").count(), 0);
   const blockedBefore = await page.evaluate(
     () => window.fixture.calls.filter((c) => c.cmd === "remote_input").length,
   );
@@ -694,11 +1119,15 @@ const fs = require("node:fs");
     blockedBefore,
   );
   await page.screenshot({ path: ".local/ui-verification/input-paused.png" });
-  await page.getByRole("button", { name: "重试控制", exact: true }).click();
+  await page
+    .getByRole("alertdialog", { name: "控制已暂停", exact: true })
+    .getByRole("button", { name: "重试控制", exact: true })
+    .click();
   await page
     .getByText("控制已暂停", { exact: true })
     .waitFor({ state: "detached" });
   assert(await page.getByAltText("远端桌面").isVisible());
+  await page.getByText("更多操作", { exact: true }).click();
   await page.getByAltText("远端桌面").click();
   await page.keyboard.press("Z");
   await page.waitForFunction(() =>
@@ -724,8 +1153,9 @@ const fs = require("node:fs");
     () => window.fixture.calls.filter((c) => c.cmd === "remote_input").length,
   );
   await page.evaluate(() => (window.fixture.closed = true));
-  await page.getByText("会话已结束，远端画面已清除").waitFor();
+  await page.getByText("连接已结束", { exact: true }).waitFor();
   assert.equal(await page.getByAltText("远端桌面").count(), 0);
+  assert.equal(await switchWindow().count(), 0, "ended control cannot switch");
   await page.evaluate(() => window.fixture.release());
   await page.keyboard.press("E");
   await page.waitForTimeout(250);
@@ -753,12 +1183,12 @@ const fs = require("node:fs");
   });
   await page
     .locator(".viewer-empty-state")
-    .getByRole("button", { name: "取消重连并关闭" })
+    .getByRole("button", { name: "取消重连" })
     .waitFor();
   assert.equal(await page.getByAltText("远端桌面").count(), 0);
   await page
     .locator(".viewer-empty-state")
-    .getByRole("button", { name: "取消重连并关闭" })
+    .getByRole("button", { name: "取消重连" })
     .click();
   assert.equal(
     await page.evaluate(
@@ -839,6 +1269,11 @@ const fs = require("node:fs");
   await page.waitForFunction(
     () => document.querySelector(".remote-screen").tabIndex === -1,
   );
+  assert.equal(
+    await switchWindow().count(),
+    0,
+    "view permission cannot switch",
+  );
   await page.getByAltText("远端桌面").click();
   await page.keyboard.press("A");
   assert.equal(
@@ -862,7 +1297,7 @@ const fs = require("node:fs");
   assert.deepEqual(errors, []);
   await browser.close();
   console.log(
-    "PASS repeated left/right pairs, multi-button capture, outside drag release, frame-layout change, blur/lost-capture and continued control; fit/quality/FPS/pause/terminal/read-only and screenshot coverage. Synthetic IPC only.",
+    "PASS repeated left/right pairs, multi-button capture, queued outside UP then release-all, external held entry, blur/lost-capture cancellation, ordered remote Alt+Tab and view/paused/ended guards; fit/quality/FPS/pause/terminal/read-only and screenshot coverage. Synthetic IPC only.",
   );
 })().catch((e) => {
   console.error(e);

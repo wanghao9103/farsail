@@ -8,7 +8,7 @@
 
 ## 服务器在线升级
 
-在线升级通过 HTTPS 下载固定版本协调服务包，核对完整 SHA256 和包内校验，再调用备份、升级与回退流程。[服务端预览包已发布](https://github.com/wanghao9103/farsail/releases/tag/coordinator-ubuntu-login-20261009)。客户端应用内自动更新留到后续。
+后续日常升级使用[常驻服务端升级入口](SERVER_UPDATES.zh-CN.md)，自动查找最新可用协调服务包及校验值。下面的命令明确固定历史 Ubuntu/登录修复版本：通过 HTTPS 下载协调服务包，核对 SHA256 和包内校验，再调用备份、升级与回退流程。[该服务端预览包已发布](https://github.com/wanghao9103/farsail/releases/tag/coordinator-ubuntu-login-20261009)。[客户端更新](CLIENT_UPDATES.zh-CN.md)是独立流程。
 
 在服务器以有 Docker 和部署文件访问权限的用户执行以下命令：
 
@@ -33,7 +33,7 @@ bash "$update_dir/release/upgrade-coordinator.sh" "$update_dir/release" /home/da
 bash scripts/deploy/update-online.sh HTTPS_PACKAGE_URL RELEASE_PACKAGE_SHA256 /home/data/farsail
 ```
 
-两个占位参数分别使用上方命令中的下载地址和 SHA256，不直接执行未校验的远程脚本。
+旧固定版本参数模式保持兼容。日常升级的新入口已省去这两个占位参数，按其首次安装说明操作后，无需每次填写地址和 SHA256。不要执行未校验的远程脚本。
 
 ## 1. 上传离线升级包
 

@@ -8,9 +8,11 @@
 
 # FarSail
 
-FarSail is an open-source remote desktop project with a Windows client built using Rust, Tauri 2 and React, encrypted peer-to-peer connections, and self-hosted relay support. File transfer and mobile clients are planned capabilities, not delivered features.
+FarSail is an open-source remote desktop project with Windows and Ubuntu clients built using Rust, Tauri 2 and React, encrypted peer-to-peer connections, and self-hosted relay support. Bidirectional single-file transfer and an Ubuntu ARM64 client have been available since 0.1.21; version 0.1.22 added an update dialog and interface refinements. The latest public release is [0.1.30](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.30). Older installations need an upgrade for these additions. Mobile clients remain planned.
 
-The account, device and authorization coordinator is written in Rust. **WI-001 (coordinator), WI-002 (Windows client), WI-003 (authenticated encrypted transport), and WI-004 (Windows remote viewing/input baseline) have been verified locally. WI-008B provides a verified [Windows x64 preview installer](docs/WINDOWS_INSTALL.md).** The iroh data channel supports local direct connections and a self-hosted TLS relay. Windows hosts can enable local sharing and transmit JPEG frames and mouse/keyboard input after per-request approval. The installer is unsigned; public cross-NAT behavior, file contents, HEVC and mobile clients remain unverified or unimplemented.
+Version 0.1.23 replaces the separate screen/file receiving switches with **Allow remote connections**: Windows enables both capabilities, while Ubuntu enables files only. Standalone file connections still require approval and a native Save As choice. Since 0.1.28, file paste within remote control shares the session approval. It also keeps the application running in the tray when its main window is closed; Windows requests administrator permission at startup through the system UAC prompt. See [Windows startup](docs/WINDOWS_INSTALL.md) and [file transfer](docs/FILES.md) for the current flow and restart behavior.
+
+The account, device and authorization coordinator is written in Rust. **WI-001 (coordinator), WI-002 (Windows client), WI-003 (authenticated encrypted transport), and WI-004 (Windows remote viewing/input baseline) have been verified locally. WI-008B provides a verified [Windows x64 preview installer](docs/WINDOWS_INSTALL.md).** The iroh data channel supports local direct connections and a self-hosted TLS relay. Windows hosts can enable local sharing and transmit JPEG frames and mouse/keyboard input after per-request approval. Automatic-update packages use the release signing key; Windows publisher certificates are configured separately; public cross-NAT behavior, physical Windows file transfer, HEVC and mobile clients remain unverified or unimplemented. See [file transfer](docs/FILES.md) for usage and the precise verification boundary.
 
 ## Documented preview milestones
 
@@ -25,6 +27,21 @@ The account, device and authorization coordinator is written in Rust. **WI-001 (
 - 0.1.10 remembers local sharing and unattended-access choices. After a normal restart, login, device, connection and the interactive desktop are rechecked before restoration. Manual disable remains disabled on the next start; logout clears enabled preferences. Advanced connection settings remain effective for the current run only. See [SHARE-020](docs/verification/WI-SHARE-020.md).
 - 0.1.11 fixes lost mouse-button releases under stale geometry, adds pointer capture and cleanup on blur or dragging outside the image, and includes P2P discovery refresh and saved sharing/unattended preferences. Continuous clicks and focus switches between owned ordinary windows passed. See [INPUT-021](docs/verification/WI-INPUT-021.md) for delivery evidence and downloads.
 
+- 0.1.21 publicly provides [signed Windows x64, Ubuntu x64 and ARM64 installers](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.21), including automatic updates, device-login restoration, independent file transfer and Windows background-window activation improvements. Physical two-computer and special-game acceptance remains pending.
+
+- 0.1.22 publishes [signed installers for all three targets](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.22) and advances the update channel. It adds an update dialog, simplifies interface copy and improves narrow-window layouts, file-list scrolling and remote toolbar menus. See [client updates](docs/CLIENT_UPDATES.md) for upgrade steps and verification limits.
+
+- 0.1.23 publishes [signed installers for all three targets](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.23), unifies remote screen/file enablement, requests Windows administrator permission at startup and keeps connections running when the main window closes to the tray. The [release workflow](https://github.com/wanghao9103/farsail/actions/runs/39208981511) and public-download checks passed; interactive UAC and physical game/two-computer acceptance remain pending.
+
+- 0.1.30 improves authentication keyboard navigation, approval and file-page guidance, refresh states and viewer toolbar focus, while shortening repeated copy. Three-platform UI regressions, native/package checks and public signed-download verification passed; see the [release workflow](https://github.com/wanghao9103/farsail/actions/runs/39719518066).
+- 0.1.29 simplifies button labels and repeated copy, aligns page actions and controls, and improves narrow layouts. Quit moves from the sidebar to the top-left window menu. Three-platform signed packages and the public update feed passed verification; see the [release workflow](https://github.com/wanghao9103/farsail/actions/runs/39566630437).
+
+- 0.1.28 adds file copy/paste within an approved remote-control session. Copy up to 32 regular files locally, focus the remote Windows folder and press Ctrl+V, or use the viewer toolbar. Both clients must be updated. Three-platform signed installers and the fixed update feed passed public verification; see [file transfer](docs/FILES.md) and the [release workflow](https://github.com/wanghao9103/farsail/actions/runs/39365699777).
+
+- 0.1.27 publishes [signed installers for all three targets](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.27), simplifies update feedback, maps internal failures to brief messages and adds account-scoped persistent Ubuntu update authorization. The [release workflow](https://github.com/wanghao9103/farsail/actions/runs/39233924894) and public-download checks passed; live desktop authentication and persistence after reboot remain unverified.
+
+- 0.1.24 publishes [signed installers for all three targets](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.24), reduces fixed frame waits, pipelines at most two unacknowledged frames, reuses Windows capture textures, enables encoder acceleration and removes image-hover hints. The [release workflow](https://github.com/wanghao9103/farsail/actions/runs/39213734063) and public-download checks passed. A 30 FPS capture cadence is a target; game performance on user hardware remains unmeasured.
+
 These are recorded milestones. Local candidate work and its verification limits are retained in the verification documents; a local installer build is not a public release.
 
 <a id="计划能力"></a>
@@ -36,7 +53,7 @@ These are recorded milestones. Local candidate work and its verification limits 
 - Encrypted communication across networks, direct peer-to-peer (P2P) connections and relay fallback.
 - Multiple displays, resolution switching, negotiable 4:4:4 quality and adaptive bandwidth.
 - H.265/H.264 video, evaluation of AV1 support, and lossless compression before transfer for suitable data.
-- Bidirectional file transfer, independent file sessions, chunk verification, resume support and rate limits.
+- File-transfer resume, selective compression and configurable combined file/media bandwidth controls beyond the current single-file baseline.
 - Later mobile-host capabilities, verified separately against each platform's public APIs.
 
 <a id="文档与资产"></a>
@@ -54,8 +71,10 @@ English is the default documentation language. Use the language links at the top
 - [Windows preview installation](docs/WINDOWS_INSTALL.md): x64 installation without development tools, checksums, WebView2 and two-computer testing.
 - [Authenticated transport](docs/TRANSPORT.md): iroh handshake, short leases, data channels and path state.
 - [Windows remote control](docs/REMOTE.md): DXGI/JPEG, viewer, input permissions and safe shutdown.
+- [Desktop file transfer](docs/FILES.md): separate approval, native file selection, safe save, progress and limits.
 - [Self-hosted relay](deploy/relay/README.md): HTTPS certificates and public-IP configuration examples.
 - [Public-IP deployment bundle](docs/DEPLOYMENT.md): six-image offline artifacts, short-lived IP certificates, loopback Mailpit and backup/upgrade.
+- [Coordinator online updates](docs/SERVER_UPDATES.md): persistent command, automatic server package selection, checksums, backups and rollback.
 - [Implementation and verification](docs/IMPLEMENTATION.md): work-item progress and local evidence.
 
 The icon was generated with the built-in image-generation tool; v2 is the recommended candidate. Initial similarity screening does not establish uniqueness or complete trademark clearance.
@@ -85,7 +104,7 @@ npm ci
 npm run tauri -w @farsail/desktop -- dev
 ```
 
-`./scripts/test-remote.ps1 -RealCapture` runs frontend, real PostgreSQL/HTTP/iroh/DXGI integration checks and the Tauri build. The normal two-endpoint flow is: bind devices → start transport → enable sharing on the host → request authorization → explicitly approve on the host → connect and view. File contents remain unavailable. Public networking, cross-NAT, a second Windows machine and mobile clients are not proven by this work item's evidence.
+`./scripts/test-remote.ps1 -RealCapture` runs frontend, real PostgreSQL/HTTP/iroh/DXGI integration checks and the Tauri build. The normal two-endpoint flow is: bind devices → start transport → enable sharing on the host → request authorization → explicitly approve on the host → connect and view. The separate file workflow is documented in [file transfer](docs/FILES.md); it requires 0.1.21 on both desktops and a coordinator supporting the file protocol; older installers do not provide it. Public networking, cross-NAT, a second Windows machine and mobile clients are not proven by this work item's evidence.
 
 ## License
 

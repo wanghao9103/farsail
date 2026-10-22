@@ -8,7 +8,7 @@ The coordinator update adds Linux controller support, an additive database migra
 
 ## Server online upgrade
 
-Online upgrade downloads a pinned coordinator package over HTTPS, checks its exact SHA256 and internal checksums, then runs the backup and rollback procedure. [The server preview package is published](https://github.com/wanghao9103/farsail/releases/tag/coordinator-ubuntu-login-20261009). Client in-app updating is deferred.
+For ongoing updates, use [the persistent server updater](SERVER_UPDATES.md), which discovers the latest eligible coordinator package and checksum automatically. The commands below intentionally pin the historical Ubuntu/login fix: they download its coordinator package over HTTPS, check SHA256 and internal checksums, then run the backup and rollback procedure. [That server preview package is published](https://github.com/wanghao9103/farsail/releases/tag/coordinator-ubuntu-login-20261009). [Client updates](CLIENT_UPDATES.md) are separate.
 
 Run on the server as a user with Docker and deployment-file access:
 
@@ -33,7 +33,7 @@ A checkout containing the new helper can also run:
 bash scripts/deploy/update-online.sh HTTPS_PACKAGE_URL RELEASE_PACKAGE_SHA256 /home/data/farsail
 ```
 
-Replace the two placeholders with the URL and SHA256 shown above; do not execute unchecked remote scripts.
+This older pinned mode remains compatible. For routine upgrades, the new entry point removes both placeholders; follow its installation instructions instead of entering a URL and SHA256 each time. Do not execute unchecked remote scripts.
 
 ## 1. Upload the offline package
 

@@ -50,10 +50,9 @@ export function failureTitle(raw: string) {
 }
 
 export function failureMessage(raw: string) {
-  if (/transport timeout/i.test(raw))
-    return "暂时未能与远程电脑建立连接。你可以重新连接，或稍后再试。";
+  if (/transport timeout/i.test(raw)) return "请重新连接，或稍后再试。";
   if (/relay.*reachable|relay URL/i.test(raw))
-    return "暂时无法使用中继连接。请稍后重试，或检查连接设置中的中继地址。";
+    return "请检查中继服务器地址，或稍后重试。";
   if (/HTTP 401|signed out|sign in first/i.test(raw))
     return "请重新登录后再继续。";
   if (/HTTP 403|permission rejected/i.test(raw))
@@ -62,7 +61,7 @@ export function failureMessage(raw: string) {
   if (/HTTP 409/i.test(raw)) return "状态已发生变化，请刷新后再试。";
   if (/HTTP 429/i.test(raw)) return "请求较多，请稍后再试。";
   if (/[\u3400-\u9fff]/.test(raw)) return raw;
-  return "未能完成本次操作。请稍后重试，技术详情可帮助定位问题。";
+  return "未能完成本次操作，请稍后重试。";
 }
 
 export function FailureDialog({

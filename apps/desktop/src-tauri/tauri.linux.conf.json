@@ -6,7 +6,18 @@
     "shortDescription": "FarSail remote desktop client",
     "linux": {
       "deb": {
-        "depends": ["gnome-keyring", "fonts-noto-cjk", "pkexec"]
+        "depends": [
+          "gnome-keyring",
+          "fonts-noto-cjk",
+          "pkexec",
+          "libayatana-appindicator3-1"
+        ],
+        "files": {
+          "/usr/libexec/farsail-update-helper": "../../../.local/linux-update-helper/farsail-update-helper",
+          "/usr/share/polkit-1/actions/app.farsail.update.policy": "linux/app.farsail.update.policy"
+        },
+        "postInstallScript": "linux/postinst",
+        "postRemoveScript": "linux/postrm"
       }
     }
   }

@@ -1,7 +1,8 @@
+use crate::clipboard::Packet as ClipboardPacket;
 use crate::input_recovery::InputRecovery;
-use farsail_client::NativeClient;
+use farsail_client::{NativeClient, file_runtime::NativeFiles};
 use farsail_core::RemotePermission;
-use farsail_media::{BASELINE_PAYLOAD_BPS, ByteBudget, JpegFrame, wait_for_ack};
+use farsail_media::{BASELINE_PAYLOAD_BPS, ByteBudget, JpegFrame, MediaWindow, wait_for_ack};
 use farsail_transport::{Channel, Frame, Session};
 use farsail_windows::{
     Capture, Display, Input, InputSink, displays, foreground_window, input_context_ready,
@@ -17,6 +18,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::{Mutex, Semaphore, watch};
+type ClipboardReply = (u64, tokio::sync::oneshot::Sender<Result<(), String>>);
 
 #[derive(Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -272,6 +274,137 @@ struct Live {
     send_lock: Mutex<()>,
     send_permits: Semaphore,
     auto_resume_sending: AtomicBool,
+    file_supported: AtomicBool,
+    clipboard_serial: AtomicU64,
+    clipboard_gate: Mutex<()>,
+    clipboard_reply: StdMutex<Option<ClipboardReply>>,
+    clipboard_target: StdMutex<Option<(u64, farsail_windows::ForegroundWindow)>>,
+}
+impl Live {
+    fn active(&self) -> bool {
+        self.alive.load(Ordering::SeqCst)
+    }
+}
+
+async fn send_media(
+    session: Session,
+    alive: Arc<AtomicBool>,
+    video_profile: Arc<StdMutex<VideoProfile>>,
+    mut rx: watch::Receiver<Option<Vec<u8>>>,
+    mut ack_rx: watch::Receiver<u64>,
+) {
+    let mut budget = ByteBudget::new(BASELINE_PAYLOAD_BPS);
+    let mut missed = 0;
+    let mut window = MediaWindow::default();
+    let mut last_progress = tokio::time::Instant::now();
+    'sending: loop {
+        if !alive.load(Ordering::SeqCst) {
+            break;
+        }
+        match window.acknowledge(*ack_rx.borrow_and_update()) {
+            Ok(true) => {
+                missed = 0;
+                last_progress = tokio::time::Instant::now();
+            }
+            Ok(false) => (),
+            Err(_) => {
+                session.close_with_reason("invalid_media_ack");
+                break;
+            }
+        }
+        let deadline = Duration::from_secs(if video_profile.lock().unwrap().profile >= 2 {
+            5
+        } else {
+            2
+        });
+        let remaining = deadline.saturating_sub(last_progress.elapsed());
+        if let Some(sequence) = window.blocked_on() {
+            if !wait_for_ack(&mut ack_rx, sequence, remaining).await {
+                missed += 1;
+                last_progress = tokio::time::Instant::now();
+                if missed >= 3 {
+                    session.close_with_reason("media_timeout");
+                    break;
+                }
+            }
+            continue;
+        }
+        tokio::select! {
+            changed = rx.changed() => {
+                if changed.is_err() { break; }
+            }
+            changed = ack_rx.changed() => {
+                if changed.is_err() { break; }
+                continue;
+            }
+            _ = tokio::time::sleep(remaining), if !window.is_empty() => {
+                missed += 1;
+                last_progress = tokio::time::Instant::now();
+                if missed >= 3 {
+                    session.close_with_reason("media_timeout");
+                    break;
+                }
+                continue;
+            }
+        }
+        let (bytes, sequence) = loop {
+            if !alive.load(Ordering::SeqCst) {
+                break 'sending;
+            }
+            let Some(bytes) = rx.borrow_and_update().clone() else {
+                continue 'sending;
+            };
+            let frame = match JpegFrame::from_wire(&bytes) {
+                Ok(frame) => frame,
+                Err(_) => break 'sending,
+            };
+            let age = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(u64::MAX, |t| t.as_millis() as u64)
+                .saturating_sub(frame.meta.captured_ms);
+            let max_age = if frame.meta.width.max(frame.meta.height) > 1920 {
+                2000
+            } else {
+                700
+            };
+            if age > max_age {
+                continue 'sending;
+            }
+            let wait = budget.charge(bytes.len());
+            if !wait.is_zero() {
+                tokio::time::sleep(wait.min(Duration::from_millis(200))).await;
+                continue;
+            }
+            break (bytes, frame.meta.sequence);
+        };
+        let was_empty = window.is_empty();
+        if window.sent(sequence).is_err() {
+            break;
+        }
+        if was_empty {
+            last_progress = tokio::time::Instant::now();
+        }
+        let sent = session
+            .send(Frame {
+                channel: Channel::Media,
+                bytes,
+            })
+            .await;
+        if sent.is_err() && !matches!(sent, Err(farsail_transport::Error::Timeout)) {
+            break;
+        }
+        if sent.is_err() {
+            window.failed(sequence);
+            missed += 1;
+            last_progress = tokio::time::Instant::now();
+            if missed >= 3 {
+                session.close_with_reason("media_timeout");
+                break;
+            }
+        }
+    }
+    alive.store(false, Ordering::SeqCst);
+    session.close();
 }
 
 pub struct RemoteRuntime {
@@ -279,14 +412,23 @@ pub struct RemoteRuntime {
     client: Arc<NativeClient>,
     sessions: Mutex<HashMap<String, Arc<Live>>>,
     finished: Mutex<HashMap<String, Value>>,
+    files: Arc<NativeFiles>,
+    // Explorer may still be copying after the session closes. Keep verified
+    // clipboard sources until application exit rather than deleting them early.
+    staging: Option<tempfile::TempDir>,
 }
 impl RemoteRuntime {
-    pub fn new(client: Arc<NativeClient>) -> Arc<Self> {
+    pub fn new(client: Arc<NativeClient>, files: Arc<NativeFiles>) -> Arc<Self> {
         let runtime = Arc::new(Self {
             client,
             sessions: Mutex::new(HashMap::new()),
             updating: AtomicBool::new(false),
             finished: Mutex::new(HashMap::new()),
+            files,
+            staging: tempfile::Builder::new()
+                .prefix("farsail-clipboard-")
+                .tempdir()
+                .ok(),
         });
         let mut receiver = runtime.client.subscribe_sessions();
         let owner = runtime.clone();
@@ -325,6 +467,23 @@ impl RemoteRuntime {
             .duration_since(UNIX_EPOCH)
             .map_or(1, |t| t.as_millis() as u64);
         let (tx, rx) = watch::channel(None);
+        let directory = if session.permission() == RemotePermission::Control {
+            self.staging.as_ref().and_then(|root| {
+                tempfile::Builder::new()
+                    .prefix("session-")
+                    .tempdir_in(root.path())
+                    .ok()
+            })
+        } else {
+            None
+        };
+        let file_ready = if let Some(directory) = directory {
+            self.files
+                .attach_control(session.clone(), host, directory.keep());
+            self.files.status(Some(session.id())).is_ok()
+        } else {
+            false
+        };
         let live = Arc::new(Live {
             session: session.clone(),
             host,
@@ -347,17 +506,32 @@ impl RemoteRuntime {
             send_lock: Mutex::new(()),
             send_permits: Semaphore::new(32),
             auto_resume_sending: AtomicBool::new(false),
+            file_supported: AtomicBool::new(false),
+            clipboard_serial: AtomicU64::new(0),
+            clipboard_gate: Mutex::new(()),
+            clipboard_reply: StdMutex::new(None),
+            clipboard_target: StdMutex::new(None),
         });
         sessions.insert(session.id().into(), live.clone());
         drop(sessions);
         let owner = self.clone();
         tokio::spawn(async move {
+            if file_ready && host {
+                let _ = live
+                    .session
+                    .send(Frame {
+                        channel: Channel::Media,
+                        bytes: b"FSFC1".to_vec(),
+                    })
+                    .await;
+            }
             if host {
                 owner.run_host(live.clone()).await;
             } else {
                 owner.run_viewer(live.clone(), tx).await;
             }
             live.alive.store(false, Ordering::SeqCst);
+            owner.files.stop(live.session.id());
             if let Err(e) = live.input.lock().unwrap().release_all() {
                 *live.error.lock().unwrap() = Some(format!("input cleanup incomplete: {e}"));
             }
@@ -417,7 +591,7 @@ impl RemoteRuntime {
         {
             return;
         }
-        let (tx, mut rx) = watch::channel::<Option<Vec<u8>>>(None);
+        let (tx, rx) = watch::channel::<Option<Vec<u8>>>(None);
         let initial_profile = *live.video_profile.lock().unwrap();
         let _ = live
             .session
@@ -433,7 +607,7 @@ impl RemoteRuntime {
                 bytes: initial_profile.packet(b"FSP1"),
             })
             .await;
-        let (ack_tx, mut ack_rx) = watch::channel(0u64);
+        let (ack_tx, ack_rx) = watch::channel(0u64);
         let alive = live.alive.clone();
         let selected = live.selected.clone();
         let current = live.current.clone();
@@ -452,6 +626,7 @@ impl RemoteRuntime {
             let mut last_frame: Option<JpegFrame> = None;
             let mut last_emit = std::time::Instant::now();
             while alive.load(Ordering::SeqCst) {
+                let frame_started = std::time::Instant::now();
                 let id = selected.load(Ordering::SeqCst);
                 let profile = video_profile.lock().unwrap().profile;
                 let revision = capture_revision.load(Ordering::SeqCst);
@@ -516,77 +691,21 @@ impl RemoteRuntime {
                         }
                     }
                 }
-                std::thread::sleep(Duration::from_millis(66));
-            }
-        });
-        let sender_live = live.clone();
-        let sender = tokio::spawn(async move {
-            let mut budget = ByteBudget::new(BASELINE_PAYLOAD_BPS);
-            let mut missed = 0;
-            'sending: loop {
-                if missed == 0 && rx.changed().await.is_err() {
-                    break;
-                }
-                let (bytes, sequence) = loop {
-                    if !sender_live.alive.load(Ordering::SeqCst) {
-                        break 'sending;
-                    }
-                    let Some(bytes) = rx.borrow_and_update().clone() else {
-                        continue 'sending;
-                    };
-                    let frame = match JpegFrame::from_wire(&bytes) {
-                        Ok(frame) => frame,
-                        Err(_) => break 'sending,
-                    };
-                    let age = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .map_or(u64::MAX, |t| t.as_millis() as u64)
-                        .saturating_sub(frame.meta.captured_ms);
-                    let max_age = if frame.meta.width.max(frame.meta.height) > 1920 {
-                        2000
-                    } else {
-                        700
-                    };
-                    if age > max_age && missed == 0 {
-                        continue 'sending;
-                    }
-                    let wait = budget.charge(bytes.len());
-                    if !wait.is_zero() {
-                        tokio::time::sleep(wait.min(Duration::from_millis(200))).await;
-                        continue;
-                    }
-                    break (bytes, frame.meta.sequence);
-                };
-                let sent = sender_live
-                    .session
-                    .send(Frame {
-                        channel: Channel::Media,
-                        bytes,
-                    })
-                    .await;
-                if sent.is_err() && !matches!(sent, Err(farsail_transport::Error::Timeout)) {
-                    break;
-                }
-                let ack_deadline = Duration::from_secs(
-                    if sender_live.video_profile.lock().unwrap().profile >= 2 {
-                        5
-                    } else {
-                        2
-                    },
+                // Capture and encoding consume the frame interval rather than
+                // adding a fixed pause after every frame. Never catch up in bursts.
+                std::thread::sleep(
+                    Duration::from_nanos(1_000_000_000 / 30)
+                        .saturating_sub(frame_started.elapsed()),
                 );
-                if sent.is_err() || !wait_for_ack(&mut ack_rx, sequence, ack_deadline).await {
-                    missed += 1;
-                    if missed >= 3 {
-                        sender_live.session.close_with_reason("media_timeout");
-                        break;
-                    }
-                } else {
-                    missed = 0;
-                }
             }
-            sender_live.alive.store(false, Ordering::SeqCst);
-            sender_live.session.close();
         });
+        let sender = tokio::spawn(send_media(
+            live.session.clone(),
+            live.alive.clone(),
+            live.video_profile.clone(),
+            rx,
+            ack_rx,
+        ));
         let mut input_order = InputOrder::default();
         let mut input_window = std::time::Instant::now();
         let mut input_count = 0u32;
@@ -678,6 +797,15 @@ impl RemoteRuntime {
                     Err(farsail_transport::Error::Timeout) => continue,
                     Err(_) => break,
                 };
+                if frame.channel == Channel::File {
+                    if ClipboardPacket::is_packet(&frame.bytes) {
+                        self.clipboard_packet(&live, &frame.bytes, Some(input_order.last))
+                            .await;
+                    } else {
+                        self.files.route_control(live.session.id(), frame);
+                    }
+                    continue;
+                }
                 if frame.channel == Channel::Media
                     && frame.bytes.len() == 8
                     && &frame.bytes[..4] == b"FSS1"
@@ -709,7 +837,14 @@ impl RemoteRuntime {
                     && &frame.bytes[..4] == b"FSA1"
                 {
                     let sequence = u64::from_be_bytes(frame.bytes[4..12].try_into().unwrap());
-                    ack_tx.send_replace(sequence);
+                    ack_tx.send_if_modified(|confirmed| {
+                        if sequence > *confirmed {
+                            *confirmed = sequence;
+                            true
+                        } else {
+                            false
+                        }
+                    });
                 } else if frame.channel == Channel::Control
                     && live.session.permission() == RemotePermission::Control
                     && frame.bytes.len() <= 1024
@@ -901,6 +1036,21 @@ impl RemoteRuntime {
                 Err(farsail_transport::Error::Timeout) => continue,
                 Err(_) => break,
             };
+            if frame.channel == Channel::File {
+                if ClipboardPacket::is_packet(&frame.bytes) {
+                    self.clipboard_packet(&live, &frame.bytes, None).await;
+                } else {
+                    self.files.route_control(live.session.id(), frame);
+                }
+                continue;
+            }
+            if frame.channel == Channel::Media
+                && frame.bytes == b"FSFC1"
+                && live.session.permission() == RemotePermission::Control
+            {
+                live.file_supported.store(true, Ordering::SeqCst);
+                continue;
+            }
             if frame.channel == Channel::Control
                 && live.session.permission() == RemotePermission::Control
             {
@@ -970,6 +1120,202 @@ impl RemoteRuntime {
         }
     }
 
+    pub async fn check_file_control(&self, id: &str) -> Result<(), String> {
+        let live = self
+            .sessions
+            .lock()
+            .await
+            .get(id)
+            .cloned()
+            .ok_or("远程会话已结束。")?;
+        if live.host
+            || live.session.permission() != RemotePermission::Control
+            || !live.active()
+            || !live.session.is_open_now()
+            || live.input_state.lock().unwrap().blocked
+        {
+            return Err("当前会话不能粘贴文件，请恢复远程控制后重试。".into());
+        }
+        if !live.file_supported.load(Ordering::SeqCst) {
+            return Err("对方暂不支持远控文件粘贴，请更新两端客户端。".into());
+        }
+        if self.files.status(Some(id))?["state"] != "connected" {
+            return Err("文件通道已结束，请重新连接。".into());
+        }
+        Ok(())
+    }
+
+    async fn clipboard_exchange(&self, live: &Live, packet: ClipboardPacket) -> Result<(), String> {
+        let serial = packet.serial();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        *live.clipboard_reply.lock().unwrap() = Some((serial, tx));
+        let result = async {
+            live.session.send(Frame { channel: Channel::File, bytes: packet.encode() }).await.map_err(|_| "文件粘贴连接中断。")?;
+            tokio::select! {
+                result = tokio::time::timeout(Duration::from_secs(15), rx) => result.map_err(|_| "远程文件粘贴超时，请重试。")?.map_err(|_| "文件粘贴已取消。")?,
+                _ = live.session.wait_closed() => Err("远程会话已结束。".into()),
+            }
+        }.await;
+        live.clipboard_reply.lock().unwrap().take();
+        result
+    }
+
+    pub async fn paste_paths(
+        &self,
+        id: &str,
+        paths: Vec<std::path::PathBuf>,
+    ) -> Result<(), String> {
+        self.check_file_control(id).await?;
+        if paths.is_empty() || paths.len() > farsail_windows::clipboard::MAX_FILES {
+            return Err("一次请选择 1 至 32 个普通文件。".into());
+        }
+        let live = self
+            .sessions
+            .lock()
+            .await
+            .get(id)
+            .cloned()
+            .ok_or("远程会话已结束。")?;
+        let _gate = live
+            .clipboard_gate
+            .try_lock()
+            .map_err(|_| "正在传输文件，请稍候。")?;
+        self.check_file_control(id).await?;
+        let prepared = live.clipboard_serial.fetch_add(1, Ordering::SeqCst) + 1;
+        self.clipboard_exchange(
+            &live,
+            ClipboardPacket::Prepare {
+                serial: prepared,
+                after: live.send_sequence.load(Ordering::SeqCst),
+            },
+        )
+        .await?;
+        let mut ids = Vec::new();
+        for path in paths {
+            self.check_file_control(id).await?;
+            let transfer = self.files.send_path_id(id, path).await?;
+            self.files.wait_sent(id, &transfer).await?;
+            ids.push(transfer);
+        }
+        self.check_file_control(id).await?;
+        let serial = live.clipboard_serial.fetch_add(1, Ordering::SeqCst) + 1;
+        self.clipboard_exchange(
+            &live,
+            ClipboardPacket::Paste {
+                serial,
+                prepared,
+                ids,
+            },
+        )
+        .await
+    }
+
+    async fn clipboard_packet(&self, live: &Arc<Live>, bytes: &[u8], input_sequence: Option<u64>) {
+        if live.session.permission() != RemotePermission::Control {
+            return;
+        }
+        let Ok(packet) = ClipboardPacket::decode(bytes) else {
+            return;
+        };
+        if let ClipboardPacket::Result { serial, error } = packet {
+            if !live.host {
+                let mut pending = live.clipboard_reply.lock().unwrap();
+                if pending
+                    .as_ref()
+                    .is_some_and(|(expected, _)| *expected == serial)
+                    && let Some((_, reply)) = pending.take()
+                {
+                    let _ = reply.send(error.map_or(Ok(()), Err));
+                }
+            }
+            return;
+        }
+        if !live.host {
+            return;
+        }
+        let serial = packet.serial();
+        let result = if !live.active()
+            || !live.session.is_open_now()
+            || !self.client.hosting_enabled()
+            || !self.client.files_enabled()
+            || live.input_state.lock().unwrap().blocked
+        {
+            Err("远程控制已暂停或授权已结束。".into())
+        } else {
+            match packet {
+                ClipboardPacket::Prepare { serial, after } => {
+                    live.clipboard_target.lock().unwrap().take();
+                    if input_sequence != Some(after) {
+                        let _ = live
+                            .session
+                            .send(Frame {
+                                channel: Channel::File,
+                                bytes: ClipboardPacket::Result {
+                                    serial,
+                                    error: Some("正在同步远程按键，请稍后重新粘贴。".into()),
+                                }
+                                .encode(),
+                            })
+                            .await;
+                        return;
+                    }
+                    match foreground_window().filter(|w| input_context_ready(*w)) {
+                        Some(target) => match live.input.lock().unwrap().release_all() {
+                            Ok(()) => {
+                                *live.clipboard_target.lock().unwrap() = Some((serial, target));
+                                Ok(())
+                            }
+                            Err(_) => Err("无法松开远程按键，请恢复控制后重试。".into()),
+                        },
+                        None => Err("请先在远程电脑打开目标文件夹。".into()),
+                    }
+                }
+                ClipboardPacket::Paste { prepared, ids, .. } => {
+                    let target = live
+                        .clipboard_target
+                        .lock()
+                        .unwrap()
+                        .take()
+                        .filter(|(serial, _)| *serial == prepared);
+                    match (target, self.files.received_paths(live.session.id(), &ids)) {
+                        (Some((_, target)), Ok(paths)) => {
+                            let live = live.clone();
+                            let client = self.client.clone();
+                            tokio::task::spawn_blocking(move || {
+                                let mut sink = live.input.lock().unwrap();
+                                if !live.active() || !live.session.is_open_now() || !client.hosting_enabled() || !client.files_enabled() || live.input_state.lock().unwrap().blocked || foreground_window() != Some(target) || !input_context_ready(target) {
+                                    return Err("目标窗口已变化或控制已暂停，请回到目标文件夹后重新粘贴。".into());
+                                }
+                                sink.release_all().map_err(|_| "无法松开远程按键。")?;
+                                farsail_windows::clipboard::write_files(&paths)?;
+                                if !live.session.is_open_now() || !client.hosting_enabled() || !client.files_enabled() || foreground_window() != Some(target) || !input_context_ready(target) {
+                                    return Err("远程目标或授权已变化，文件已传入剪贴板，请在远端手动粘贴。".into());
+                                }
+                                let result = [(0xa2, true), (0x56, true), (0x56, false), (0xa2, false)].into_iter().try_for_each(|(vk, down)| sink.apply(Input::Key { vk, down, repeat: false }, None, 0).map_err(|_| "无法执行远程粘贴，请在远端手动粘贴。".to_owned()));
+                                let cleanup = sink.release_all().map_err(|_| "无法松开远程按键，请恢复控制。".to_owned());
+                                result.and(cleanup)
+                            }).await.unwrap_or_else(|_| Err("远程文件粘贴失败。".into()))
+                        }
+                        (_, Err(error)) => Err(error),
+                        _ => Err("粘贴目标已失效，请重新粘贴。".into()),
+                    }
+                }
+                ClipboardPacket::Result { .. } => unreachable!(),
+            }
+        };
+        let _ = live
+            .session
+            .send(Frame {
+                channel: Channel::File,
+                bytes: ClipboardPacket::Result {
+                    serial,
+                    error: result.err(),
+                }
+                .encode(),
+            })
+            .await;
+    }
+
     pub async fn status(&self, id: &str) -> Result<Value, String> {
         let live = self.sessions.lock().await.get(id).cloned();
         let Some(live) = live else {
@@ -998,7 +1344,7 @@ impl RemoteRuntime {
         let discovery = self.client.transport_discovery_state(path).await;
         let profile = *live.video_profile.lock().unwrap();
         Ok(
-            json!({"id":id,"state":path,"rtt_ms":rtt,"discovery":discovery,"permission":live.session.permission(),"sharing":live.host,"verification_code":live.session.verification_code().map_err(|e|e.to_string())?,"displays":*live.displays.lock().unwrap(),"error":*live.error.lock().unwrap(),"input":*live.input_state.lock().unwrap(),"mouse":*live.mouse_state.lock().unwrap(),"video":{"profile":profile.profile,"generation":profile.generation,"supported":live.video_supported.load(Ordering::SeqCst),"max_profile":live.video_max_profile.load(Ordering::SeqCst)}}),
+            json!({"id":id,"state":path,"rtt_ms":rtt,"discovery":discovery,"permission":live.session.permission(),"sharing":live.host,"verification_code":live.session.verification_code().map_err(|e|e.to_string())?,"displays":*live.displays.lock().unwrap(),"error":*live.error.lock().unwrap(),"input":*live.input_state.lock().unwrap(),"mouse":*live.mouse_state.lock().unwrap(),"files":{"supported":live.file_supported.load(Ordering::SeqCst),"status":self.files.status(Some(id)).ok()},"video":{"profile":profile.profile,"generation":profile.generation,"supported":live.video_supported.load(Ordering::SeqCst),"max_profile":live.video_max_profile.load(Ordering::SeqCst)}}),
         )
     }
     pub async fn next_frame(&self, id: &str, after: u64) -> Result<Vec<u8>, String> {
@@ -1206,9 +1552,12 @@ impl RemoteRuntime {
             self.stop(&id).await;
         }
     }
+    pub async fn has_active_sessions(&self) -> bool {
+        self.sessions.lock().await.values().any(|s| s.active())
+    }
     pub async fn begin_update(&self) -> bool {
         let sessions = self.sessions.lock().await;
-        if sessions.values().any(|s| s.alive.load(Ordering::SeqCst)) {
+        if sessions.values().any(|s| s.active()) {
             return false;
         }
         self.updating.store(true, Ordering::SeqCst);
@@ -1427,6 +1776,179 @@ mod tests {
             Ok("synthetic-input-grant".into())
         }
     }
+    async fn media_pair(
+        key: u8,
+    ) -> (
+        Session,
+        Session,
+        farsail_transport::Transport,
+        farsail_transport::Transport,
+    ) {
+        use farsail_transport::{Config, Transport};
+        let viewer = Transport::bind([key; 32], Config::default()).await.unwrap();
+        let host = Transport::bind([key + 1; 32], Config::default())
+            .await
+            .unwrap();
+        let authority = Arc::new(InputAuthority {
+            source: viewer.id(),
+            target: host.id(),
+        });
+        let accepting = tokio::spawn({
+            let host = host.clone();
+            let authority = authority.clone();
+            async move { host.accept(authority).await.unwrap() }
+        });
+        let source = viewer
+            .connect(
+                host.addr(),
+                "media-window-test",
+                RemotePermission::Control,
+                authority,
+            )
+            .await
+            .unwrap();
+        (source, accepting.await.unwrap(), viewer, host)
+    }
+
+    fn synthetic_media(sequence: u64) -> Vec<u8> {
+        JpegFrame::encode_rgb(
+            farsail_media::FrameMeta {
+                monitor: 1,
+                layout: 1,
+                sequence,
+                captured_ms: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64,
+                width: 64,
+                height: 32,
+                origin_x: 0,
+                origin_y: 0,
+            },
+            &[127; 64 * 32 * 3],
+            85,
+        )
+        .unwrap()
+        .to_wire()
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn media_pipeline_overlaps_ack_and_keeps_only_latest_waiting_frame() {
+        let (source, target, _viewer, _host) = media_pair(53).await;
+        let (frames, rx) = watch::channel(None);
+        let (acks, ack_rx) = watch::channel(0);
+        let alive = Arc::new(AtomicBool::new(true));
+        let sender = tokio::spawn(send_media(
+            target.clone(),
+            alive.clone(),
+            Arc::new(StdMutex::new(VideoProfile::default())),
+            rx,
+            ack_rx,
+        ));
+        let (received, mut viewer_frames) = tokio::sync::mpsc::channel(8);
+        let reader = tokio::spawn(async move {
+            while let Ok(frame) = source.receive().await {
+                let image = JpegFrame::from_wire(&frame.bytes).unwrap();
+                if received.send(image.meta.sequence).await.is_err() {
+                    break;
+                }
+            }
+        });
+        for sequence in [1, 2] {
+            frames.send_replace(Some(synthetic_media(sequence)));
+            assert_eq!(
+                tokio::time::timeout(Duration::from_secs(1), viewer_frames.recv())
+                    .await
+                    .unwrap(),
+                Some(sequence)
+            );
+        }
+        // Neither frame has been ACKed. Producer updates must overwrite one
+        // latest-frame slot, not queue additional JPEGs on the connection.
+        for sequence in 3..=20 {
+            frames.send_replace(Some(synthetic_media(sequence)));
+        }
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        assert!(matches!(
+            viewer_frames.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ));
+        acks.send_replace(2);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), viewer_frames.recv())
+                .await
+                .unwrap(),
+            Some(20)
+        );
+        frames.send_replace(Some(synthetic_media(21)));
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), viewer_frames.recv())
+                .await
+                .unwrap(),
+            Some(21)
+        );
+        // A permanently stalled receiver must still terminate after the
+        // existing three bounded ACK deadlines, rather than grow a send queue.
+        tokio::time::timeout(Duration::from_secs(7), sender)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!alive.load(Ordering::SeqCst));
+        assert_eq!(target.end_reason(), "media_timeout");
+        tokio::time::timeout(Duration::from_secs(1), reader)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn single_unacknowledged_frame_expires_even_when_capture_stops_updating() {
+        let (source, target, _viewer, _host) = media_pair(55).await;
+        let (frames, rx) = watch::channel(None);
+        let (_acks, ack_rx) = watch::channel(0);
+        let alive = Arc::new(AtomicBool::new(true));
+        let sender = tokio::spawn(send_media(
+            target.clone(),
+            alive.clone(),
+            Arc::new(StdMutex::new(VideoProfile::default())),
+            rx,
+            ack_rx,
+        ));
+        frames.send_replace(Some(synthetic_media(1)));
+        source.receive().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(7), sender)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!alive.load(Ordering::SeqCst));
+        assert_eq!(target.end_reason(), "media_timeout");
+    }
+
+    #[tokio::test]
+    async fn unsent_media_ack_closes_without_spinning_or_sending_more_frames() {
+        let (source, target, _viewer, _host) = media_pair(57).await;
+        let (frames, rx) = watch::channel(None);
+        let (acks, ack_rx) = watch::channel(0);
+        let alive = Arc::new(AtomicBool::new(true));
+        let sender = tokio::spawn(send_media(
+            target.clone(),
+            alive.clone(),
+            Arc::new(StdMutex::new(VideoProfile::default())),
+            rx,
+            ack_rx,
+        ));
+        frames.send_replace(Some(synthetic_media(1)));
+        source.receive().await.unwrap();
+        acks.send_replace(999);
+        tokio::time::timeout(Duration::from_secs(1), sender)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!alive.load(Ordering::SeqCst));
+        assert_eq!(target.end_reason(), "invalid_media_ack");
+    }
+
     #[tokio::test]
     async fn authenticated_input_pause_keeps_media_and_explicit_resume_available() {
         use farsail_transport::{Config, Transport};

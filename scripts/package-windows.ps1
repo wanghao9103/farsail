@@ -10,6 +10,7 @@ function Run([scriptblock]$Command) {
 if (-not $IsWindows -or (rustc -vV | Out-String) -notmatch 'host: x86_64-pc-windows-msvc') {
     throw 'Build on Windows x64 with the MSVC Rust host.'
 }
+. (Join-Path $PSScriptRoot 'windows-application-checks.ps1')
 $source = (git rev-parse HEAD).Trim()
 if (git status --porcelain --untracked-files=no) { throw 'Commit tracked changes before packaging.' }
 $output = Join-Path $PWD '.local/windows-package/artifacts'
@@ -35,8 +36,9 @@ $bytes = [IO.File]::ReadAllBytes($exe)
 $pe = [BitConverter]::ToInt32($bytes, 0x3c)
 if ([BitConverter]::ToUInt16($bytes, $pe + 4) -ne 0x8664) { throw 'Application is not AMD64' }
 if ([BitConverter]::ToUInt16($bytes, $pe + 24 + 68) -ne 2) { throw 'Release must use Windows GUI subsystem' }
+Assert-ApplicationManifest $exe
 $strings = [Text.Encoding]::ASCII.GetString($bytes)
-foreach ($probe in @('FARSAIL_IPC_SMOKE_PATH','FARSAIL_TEST_PROFILE_DIR','ipc_smoke_report','ipc_media_smoke','FARSAIL_VIEWER_SMOKE','ipc_viewer_state','FARSAIL_SHARE_SMOKE')) {
+foreach ($probe in @('FARSAIL_IPC_SMOKE_PATH','FARSAIL_TEST_PROFILE_DIR','ipc_smoke_report','ipc_media_smoke','FARSAIL_VIEWER_SMOKE','ipc_viewer_state','FARSAIL_SHARE_SMOKE','FARSAIL_TRAY_SMOKE','ipc_desktop_state')) {
     if ($strings.Contains($probe)) { throw "Debug probe in release: $probe" }
 }
 if ((Get-FileHash apps/desktop/src-tauri/icons/icon.ico).Hash -ne (Get-FileHash assets/branding/farsail-v2/icon.ico).Hash) {
@@ -57,5 +59,6 @@ $hash = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLowerInvariant()
     signature = (Get-AuthenticodeSignature $installer).Status.ToString()
     webview2 = 'embedded bootstrapper; internet required if runtime missing'
     configuration = 'release, embedded frontend, per-user NSIS'
+    application_execution_level = 'requireAdministrator'; application_ui_access = $false
 } | ConvertTo-Json | Set-Content (Join-Path $output 'release-metadata.json') -Encoding utf8
 Write-Output "Packaged $name SHA256=$hash source=$source"

@@ -1,0 +1,35 @@
+name: Server online updater
+on:
+  push:
+    paths:
+      - 'scripts/deploy/*online*'
+      - 'scripts/deploy/*upgrade-coordinator*'
+      - 'docs/SERVER_UPDATES*'
+      - '.github/workflows/server-updater.yml'
+  pull_request:
+    paths:
+      - 'scripts/deploy/*online*'
+      - 'scripts/deploy/*upgrade-coordinator*'
+      - 'docs/SERVER_UPDATES*'
+      - '.github/workflows/server-updater.yml'
+permissions:
+  contents: read
+jobs:
+  contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check shell syntax
+        run: bash -n scripts/deploy/update-online.sh scripts/deploy/upgrade-coordinator.sh scripts/deploy/install-online-updater.sh
+      - name: HTTPS download and latest selection
+        run: |
+          python scripts/deploy/test-update-online.py
+          python scripts/deploy/test-update-latest.py
+      - name: Upgrade, no-op, locks and rollback
+        run: python scripts/deploy/test-upgrade-coordinator.py
+      - name: Persistent updater installation
+        run: python scripts/deploy/test-install-online-updater.py

@@ -1,13 +1,21 @@
 #[cfg(target_os = "linux")]
 use farsail_client::LinuxStore as PlatformStore;
-use farsail_client::NativeClient;
 #[cfg(windows)]
 use farsail_client::WindowsStore as PlatformStore;
+use farsail_client::{NativeClient, file_runtime::NativeFiles};
 use farsail_core::RemotePermission;
 use farsail_transport::Config as TransportConfig;
 use std::sync::Arc;
 use tauri::Manager;
+mod clipboard;
+use clipboard::{remote_paste_files, remote_send_files};
 mod computer;
+mod desktop;
+use desktop::app_exit;
+#[cfg(debug_assertions)]
+use desktop::ipc_desktop_state;
+mod files;
+use files::{files_accept, files_cancel, files_reject, files_send, files_status};
 mod updater;
 use updater::{update_check, update_download, update_install, update_preferences, update_status};
 mod input_recovery;
@@ -51,6 +59,7 @@ async fn call(
     window: tauri::WebviewWindow,
     client: tauri::State<'_, Arc<NativeClient>>,
     remote: tauri::State<'_, Arc<RemoteRuntime>>,
+    files: tauri::State<'_, Arc<NativeFiles>>,
     op: String,
     args: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
@@ -60,6 +69,8 @@ async fn call(
         "logout" | "password" | "unbind_device" | "bind"
     ) {
         viewer::cancel_all(window.app_handle());
+        client.disable_files_local();
+        files.stop_all();
         // Cancel remembered permission before awaiting runtime cleanup.
         let preference = if op != "logout" {
             client.cancel_sharing_restore();
@@ -76,6 +87,7 @@ async fn call(
         && let Some(id) = args.get("id").and_then(serde_json::Value::as_str)
     {
         viewer::cancel_session(window.app_handle(), id);
+        files.stop(id);
         remote.stop(id).await;
     }
     // Local sign-out must still clear credentials when the optional preference store fails.
@@ -99,7 +111,13 @@ async fn share_enable(
         .await
         .map_err(|e| e.to_string())
 }
-fn check_sharing_desktop() -> farsail_client::Result<()> {
+#[cfg(not(windows))]
+fn check_sharing_desktop() -> farsail_client::Result<bool> {
+    // Screen hosting is Windows-only. Other platforms can still accept file connections.
+    Ok(false)
+}
+#[cfg(windows)]
+fn check_sharing_desktop() -> farsail_client::Result<bool> {
     let displays =
         farsail_windows::displays().map_err(|e| farsail_client::Error::Invalid(e.to_string()))?;
     let display = displays
@@ -107,19 +125,21 @@ fn check_sharing_desktop() -> farsail_client::Result<()> {
         .ok_or_else(|| farsail_client::Error::Invalid("no interactive display".into()))?;
     farsail_windows::Capture::new(display.id)
         .map_err(|e| farsail_client::Error::Invalid(e.to_string()))?;
-    Ok(())
+    Ok(true)
 }
 #[tauri::command]
 async fn share_disable(
     window: tauri::WebviewWindow,
     client: tauri::State<'_, Arc<NativeClient>>,
     remote: tauri::State<'_, Arc<RemoteRuntime>>,
+    files: tauri::State<'_, Arc<NativeFiles>>,
 ) -> Result<serde_json::Value, String> {
     viewer::main_only(&window)?;
     let preference = client.stop_sharing_preference();
+    files.stop_hosts();
     remote.stop_hosts().await;
     let result = client
-        .set_host_capability(false)
+        .disable_remote_access()
         .await
         .map_err(|e| e.to_string());
     preference.map_err(|e| e.to_string())?;
@@ -249,6 +269,7 @@ async fn transport_close(
     window: tauri::WebviewWindow,
     client: tauri::State<'_, Arc<NativeClient>>,
     remote: tauri::State<'_, Arc<RemoteRuntime>>,
+    files: tauri::State<'_, Arc<NativeFiles>>,
     id: String,
 ) -> Result<(), String> {
     viewer::scoped(&window, &id)?;
@@ -257,6 +278,7 @@ async fn transport_close(
     } else {
         viewer::cancel_session(window.app_handle(), &id);
     }
+    files.stop(&id);
     remote.stop(&id).await;
     let _ = client
         .call("revoke_remote", serde_json::json!({"id":id}))
@@ -323,8 +345,17 @@ pub fn run() {
     #[cfg(windows)]
     farsail_windows::ensure_dpi_awareness().expect("FarSail requires per-monitor DPI awareness");
     let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _, _| desktop::show(app)))
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
         .on_page_load(|webview, _| {
+            #[cfg(debug_assertions)]
+            if std::env::var_os("FARSAIL_TRAY_SMOKE").is_some() {
+                if webview.label() == "main" && !IPC_SMOKE_STARTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    let _ = webview.eval(include_str!("tray_smoke.js"));
+                }
+                return;
+            }
             #[cfg(all(debug_assertions, target_os = "linux"))]
             if std::env::var_os("FARSAIL_UBUNTU_SMOKE").is_some() {
                 if webview.label() == "main" && !IPC_SMOKE_STARTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
@@ -376,7 +407,10 @@ pub fn run() {
             app.manage(updater.clone());
             let store = Arc::new(PlatformStore::new(dir)?);
             let client = Arc::new(NativeClient::new(store)?);
-            let remote=RemoteRuntime::new(client.clone());
+            let files=NativeFiles::new(client.clone());
+            let remote=RemoteRuntime::new(client.clone(), files.clone());
+            tauri::async_runtime::spawn(files.clone().listen());
+            app.manage(files);
             let heartbeat = client.clone();
             tauri::async_runtime::spawn(async move {
                 // Runs on every ordinary application start, regardless of the selected UI page.
@@ -391,6 +425,7 @@ pub fn run() {
                         && heartbeat.call("heartbeat", serde_json::Value::Null).await.is_ok() {
                         let _ = heartbeat.refresh_transport_address().await;
                         let _=heartbeat.clear_stale_host_capability().await;
+                        let _=heartbeat.clear_stale_files_capability().await;
                     }
                 }
             });
@@ -402,6 +437,7 @@ pub fn run() {
             });
             app.manage(client);
             app.manage(remote);
+            desktop::setup(app);
             #[cfg(not(debug_assertions))] updater.start(app.handle().clone());
             #[cfg(debug_assertions)]
             viewer::smoke_setup(app.handle())?;
@@ -430,44 +466,18 @@ pub fn run() {
                 }
                 return;
             }
-            viewer::cancel_all(window.app_handle());
-            window.state::<Arc<NativeClient>>().cancel_sharing_restore();
-            static CLOSING: std::sync::atomic::AtomicBool =
-                std::sync::atomic::AtomicBool::new(false);
-            if !CLOSING.swap(true, std::sync::atomic::Ordering::SeqCst) {
-                api.prevent_close();
-                let remote = window
-                    .app_handle()
-                    .state::<Arc<RemoteRuntime>>()
-                    .inner()
-                    .clone();
-                let client = window
-                    .app_handle()
-                    .state::<Arc<NativeClient>>()
-                    .inner()
-                    .clone();
-                let window = window.clone();
-                tauri::async_runtime::spawn(async move {
-                    client.disable_host_local();
-                    remote.stop_all().await;
-                    let _ = tokio::time::timeout(
-                        std::time::Duration::from_secs(2),
-                        client.set_host_capability(false),
-                    )
-                    .await;
-                    client.stop_transport().await;
-                    for (label, child) in window.app_handle().webview_windows() {
-                        if label != "main" {
-                            let _ = child.destroy();
-                        }
-                    }
-                    let _ = window.destroy();
-                });
-            }
+            desktop::close_main(window, api);
         }
     });
     #[cfg(debug_assertions)]
     let builder = builder.invoke_handler(tauri::generate_handler![
+        remote_paste_files,
+        remote_send_files,
+        files_status,
+        files_send,
+        files_accept,
+        files_reject,
+        files_cancel,
         update_status,
         update_preferences,
         update_check,
@@ -496,10 +506,19 @@ pub fn run() {
         remote_input,
         ipc_viewer_state,
         ipc_smoke_report,
-        ipc_media_smoke
+        ipc_media_smoke,
+        ipc_desktop_state,
+        app_exit
     ]);
     #[cfg(not(debug_assertions))]
     let builder = builder.invoke_handler(tauri::generate_handler![
+        remote_paste_files,
+        remote_send_files,
+        files_status,
+        files_send,
+        files_accept,
+        files_reject,
+        files_cancel,
         update_status,
         update_preferences,
         update_check,
@@ -525,11 +544,17 @@ pub fn run() {
         media_next,
         media_select,
         media_profile,
-        remote_input
+        remote_input,
+        app_exit
     ]);
+    #[allow(unused_mut)]
+    let mut context = tauri::generate_context!();
+    #[cfg(debug_assertions)]
+    desktop::isolate_test_context(&mut context);
     builder
-        .run(tauri::generate_context!())
-        .expect("FarSail failed to start");
+        .build(context)
+        .expect("FarSail failed to start")
+        .run(desktop::on_run_event);
 }
 
 #[cfg(test)]
