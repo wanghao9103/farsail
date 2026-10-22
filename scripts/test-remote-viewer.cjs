@@ -220,11 +220,32 @@ const fs = require("node:fs");
       screen.x + screen.width / 2,
       screen.y + screen.height / 2,
     );
+    await page.locator(".remote-screen").focus();
     await page.locator(".viewer-toolbar").waitFor({ state: "hidden" });
     await page.getByRole("button", { name: "显示工具栏", exact: true }).hover();
     await page.locator(".viewer-toolbar").hover();
   };
   await load();
+  // Keyboard users can reveal the toolbar and keep it open while choosing controls.
+  await page.mouse.move(500, 600);
+  await page.locator(".viewer-toolbar").waitFor({ state: "hidden" });
+  await page
+    .getByRole("button", { name: "显示工具栏", exact: true })
+    .press("Enter");
+  await page.waitForFunction(
+    () => document.activeElement?.getAttribute("aria-label") === "对方的显示器",
+  );
+  await page.getByLabel("对方的显示器", { exact: true }).press("Tab");
+  await page.waitForTimeout(2500);
+  assert(await page.locator(".viewer-toolbar").isVisible());
+  assert(
+    await page
+      .locator(".viewer-toolbar")
+      .evaluate((element) => element.contains(document.activeElement)),
+    "auto-hide must not remove a focused toolbar control",
+  );
+  await page.locator(".remote-screen").focus();
+  await page.locator(".viewer-toolbar").waitFor({ state: "hidden" });
   for (const [discovery, label] of [
     ["trying_direct", "正在尝试直连"],
     ["relay_fallback", "定时重试直连"],
@@ -426,6 +447,7 @@ const fs = require("node:fs");
   await page.getByLabel("保持工具栏显示").uncheck();
   await page.getByText("更多操作", { exact: true }).click();
   await page.mouse.move(900, 600);
+  await page.locator(".remote-screen").focus();
   await page.locator(".viewer-toolbar").waitFor({ state: "hidden" });
   assert((await page.locator(".remote-screen").boundingBox()).height >= 763);
   await page.getByRole("button", { name: "显示工具栏", exact: true }).hover();
@@ -452,6 +474,7 @@ const fs = require("node:fs");
     // This assertion measures a static frame. Avoid revoking its blob URL while img.decode() is pending.
     await page.evaluate(() => (window.fixture.heartbeat = false));
     await page.mouse.move(400, 300);
+    await page.locator(".remote-screen").focus();
     await page.locator(".viewer-toolbar").waitFor({ state: "hidden" });
     await page.getByAltText("远端桌面").evaluate((img) => img.decode());
     const area = await page.locator(".remote-screen").boundingBox();
@@ -577,6 +600,7 @@ const fs = require("node:fs");
   await page.getByRole("button", { name: "保持比例", exact: true }).click();
   await page.getByText("更多操作", { exact: true }).click();
   await page.mouse.move(400, 300);
+  await page.locator(".remote-screen").focus();
   await page.locator(".viewer-toolbar").waitFor({ state: "hidden" });
   const buttonCount = await page.evaluate(
     () =>

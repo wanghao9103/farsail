@@ -249,8 +249,10 @@ const fs = require("node:fs");
             session_id: "session-1",
           };
         if (op === "verify") {
-          if (a.token !== "012345" || a.email !== "tester@example.invalid")
-            throw "HTTP 400";
+          const numericCode =
+            a.token === "012345" && a.email === "tester@example.invalid";
+          const legacyToken = a.token === "L".repeat(43) && !a.email;
+          if (!numericCode && !legacyToken) throw "HTTP 400";
           f.verified = true;
           return {};
         }
@@ -275,7 +277,23 @@ const fs = require("node:fs");
               role: "admin",
             },
           ];
-        if (op === "admin_registration") return { value: "open" };
+        if (op === "admin_registration") {
+          if (f.failAdminLoad) throw "HTTP 503";
+          const value = f.adminRegistration ?? "open";
+          if (f.deferAdminLoad) {
+            return new Promise((resolve, reject) => {
+              (f.adminWaiters ??= []).push({
+                resolve: () => resolve({ value }),
+                reject: () => reject("HTTP 503"),
+              });
+            });
+          }
+          return { value };
+        }
+        if (op === "admin_set_registration") {
+          f.adminRegistration = a.value;
+          return {};
+        }
         if (op === "admin_sessions")
           return [
             {
@@ -300,7 +318,19 @@ const fs = require("node:fs");
           return { id: "signup-1", code: "synthetic-signup" };
         if (op === "remote_sessions") return f.requests;
         if (op === "pending") return f.pending;
-        if (op === "sessions") return f.sessions;
+        if (op === "sessions") {
+          if (f.failSessions) throw "HTTP 503";
+          const snapshot = f.sessions.map((session) => ({ ...session }));
+          if (f.deferSessions) {
+            return new Promise((resolve, reject) => {
+              (f.sessionWaiters ??= []).push({
+                resolve: () => resolve(snapshot),
+                reject: () => reject("HTTP 503"),
+              });
+            });
+          }
+          return snapshot;
+        }
         if (op === "revoke_session") {
           f.sessions = f.sessions.filter((s) => s.id !== a.id);
           return {};
@@ -359,6 +389,156 @@ const fs = require("node:fs");
     await page.getByRole("button", { name: "退出", exact: true }).isVisible(),
     false,
   );
+  // Keyboard tab changes keep focus on the selected entry and expose its panel.
+  const loginTab = page.getByRole("tab", { name: "登录", exact: true });
+  const registerTab = page.getByRole("tab", { name: "注册", exact: true });
+  const assertAuthTab = async (name) => {
+    const selectedTab = page.getByRole("tab", {
+      name,
+      exact: true,
+      selected: true,
+    });
+    await selectedTab.waitFor();
+    await page.waitForFunction(
+      (id) => document.activeElement === document.getElementById(id),
+      await selectedTab.getAttribute("id"),
+    );
+    assert(await selectedTab.evaluate((el) => document.activeElement === el));
+    assert.equal(await page.locator('[role="tab"][tabindex="0"]').count(), 1);
+    const panel = page.getByRole("tabpanel", { name, exact: true });
+    assert(await panel.isVisible());
+    assert.equal(
+      await selectedTab.getAttribute("aria-controls"),
+      await panel.getAttribute("id"),
+    );
+    assert.equal(
+      await panel.getAttribute("aria-labelledby"),
+      await selectedTab.getAttribute("id"),
+    );
+  };
+  await loginTab.press("ArrowRight");
+  await assertAuthTab("注册");
+  await registerTab.press("Tab");
+  assert(
+    await page
+      .getByLabel("邮箱地址", { exact: true })
+      .evaluate((el) => document.activeElement === el),
+    "Tab from the selected entry should enter its form, skipping the inactive tab",
+  );
+  await page.getByLabel("邮箱地址", { exact: true }).press("Shift+Tab");
+  await assertAuthTab("注册");
+  await registerTab.press("ArrowRight");
+  await assertAuthTab("登录");
+  await loginTab.press("ArrowLeft");
+  await assertAuthTab("注册");
+  await registerTab.press("Home");
+  await assertAuthTab("登录");
+  await loginTab.press("End");
+  await assertAuthTab("注册");
+  await registerTab.press("Home");
+  await assertAuthTab("登录");
+
+  // Removed flow-entry buttons transfer focus to the new heading, and return restores it.
+  await page
+    .getByRole("button", { name: "找回密码", exact: true })
+    .press("Enter");
+  const assertAuthFlow = async (title) => {
+    const heading = page.getByRole("heading", { name: title, exact: true });
+    await heading.waitFor();
+    await page.waitForFunction(
+      (id) => document.activeElement === document.getElementById(id),
+      await heading.getAttribute("id"),
+    );
+    assert(await heading.evaluate((el) => document.activeElement === el));
+    assert.equal(
+      await page.getByRole("tablist", { name: "账号入口" }).count(),
+      0,
+    );
+    assert(
+      await page
+        .getByRole("button", { name: "返回登录", exact: true })
+        .isVisible(),
+    );
+  };
+  await assertAuthFlow("找回密码");
+  await page
+    .getByRole("button", { name: "已有重置码", exact: true })
+    .press("Enter");
+  await assertAuthFlow("设置新密码");
+  await page
+    .getByRole("button", { name: "返回登录", exact: true })
+    .press("Enter");
+  await assertAuthTab("登录");
+  await page
+    .getByRole("button", { name: "验证邮箱", exact: true })
+    .press("Enter");
+  await assertAuthFlow("验证邮箱");
+  await page
+    .getByRole("button", { name: "返回登录", exact: true })
+    .press("Enter");
+  await assertAuthTab("登录");
+  // Existing codes remain usable after reopening the client, without registering again.
+  await page.getByRole("button", { name: "验证邮箱", exact: true }).click();
+  await page.getByLabel("邮箱地址", { exact: true }).waitFor();
+  await page
+    .getByText("填写注册邮箱和收到的验证码。", { exact: true })
+    .waitFor();
+  await page.getByLabel("邮箱验证码", { exact: true }).fill("012345");
+  await page.getByRole("button", { name: "完成验证", exact: true }).click();
+  assert(
+    await page
+      .getByLabel("邮箱地址", { exact: true })
+      .evaluate((input) => input.validity.valueMissing),
+  );
+  assert.equal(
+    await page.evaluate(
+      () =>
+        window.fixture.calls.filter(
+          (c) => c.cmd === "call" && c.args.op === "verify",
+        ).length,
+    ),
+    0,
+  );
+  await page
+    .getByLabel("邮箱地址", { exact: true })
+    .fill("tester@example.invalid");
+  await page
+    .getByText("填写注册邮箱和收到的验证码。", { exact: true })
+    .waitFor();
+  await page.getByRole("button", { name: "完成验证", exact: true }).click();
+  await page
+    .getByRole("heading", { name: "登录 FarSail", exact: true })
+    .waitFor();
+  await page.waitForFunction(
+    () => document.activeElement?.id === "auth-login-tab",
+  );
+  assert.deepEqual(
+    await page.evaluate(
+      () =>
+        window.fixture.calls.findLast(
+          (c) => c.cmd === "call" && c.args.op === "verify",
+        ).args.args,
+    ),
+    { email: "tester@example.invalid", token: "012345" },
+  );
+  // Previously issued long codes retain their email-free verification path.
+  await page.getByLabel("邮箱地址", { exact: true }).fill("");
+  await page.getByRole("button", { name: "验证邮箱", exact: true }).click();
+  await page.getByLabel("邮箱验证码", { exact: true }).fill("L".repeat(43));
+  await page.getByRole("button", { name: "完成验证", exact: true }).click();
+  await page
+    .getByRole("heading", { name: "登录 FarSail", exact: true })
+    .waitFor();
+  assert.deepEqual(
+    await page.evaluate(
+      () =>
+        window.fixture.calls.findLast(
+          (c) => c.cmd === "call" && c.args.op === "verify",
+        ).args.args,
+    ),
+    { token: "L".repeat(43) },
+  );
+  await page.evaluate(() => (window.fixture.verified = false));
   await page.getByRole("tab", { name: "注册", exact: true }).click();
   await page
     .getByLabel("邮箱地址", { exact: true })
@@ -366,6 +546,12 @@ const fs = require("node:fs");
   await page.getByLabel("密码", { exact: true }).fill("synthetic-password-123");
   await page.getByRole("button", { name: "注册", exact: true }).click();
   await page.getByLabel("邮箱验证码", { exact: true }).waitFor();
+  await page
+    .getByText(
+      "验证码发送请求已提交，请查看 tester@example.invalid 的收件箱。",
+      { exact: true },
+    )
+    .waitFor();
   await page.getByLabel("邮箱验证码", { exact: true }).fill("012345");
   await page
     .getByRole("button", { name: "重新发送验证码", exact: true })
@@ -375,9 +561,10 @@ const fs = require("node:fs");
     await page.getByLabel("邮箱验证码", { exact: true }).inputValue(),
     "012345",
   );
+  assert.equal(await page.locator('input[type="password"]').count(), 0);
   assert.equal(
-    await page.locator('input[type="email"], input[type="password"]').count(),
-    0,
+    await page.getByLabel("邮箱地址", { exact: true }).inputValue(),
+    "tester@example.invalid",
   );
   const resend = await page.evaluate(() =>
     window.fixture.calls.findLast(
@@ -401,10 +588,42 @@ const fs = require("node:fs");
     await page.getByLabel("邮箱验证码", { exact: true }).inputValue(),
     "012345",
   );
-  assert.equal(
-    await page.locator('input[type="email"], input[type="password"]').count(),
-    0,
+  assert.equal(await page.locator('input[type="password"]').count(), 0);
+  const resendCountBeforeEmailChange = await page.evaluate(
+    () =>
+      window.fixture.calls.filter(
+        (c) => c.cmd === "call" && c.args.op === "resend",
+      ).length,
   );
+  await page
+    .getByLabel("邮箱地址", { exact: true })
+    .fill("corrected@example.invalid");
+  await page
+    .getByText("填写注册邮箱和收到的验证码。", { exact: true })
+    .waitFor();
+  await page
+    .getByRole("button", { name: "重新发送验证码", exact: true })
+    .click();
+  await page
+    .getByRole("alertdialog")
+    .filter({ hasText: "重发所需的账号信息已失效" })
+    .waitFor();
+  assert.equal(
+    await page.evaluate(
+      () =>
+        window.fixture.calls.filter(
+          (c) => c.cmd === "call" && c.args.op === "resend",
+        ).length,
+    ),
+    resendCountBeforeEmailChange,
+  );
+  await page
+    .getByRole("alertdialog")
+    .getByLabel("关闭错误", { exact: true })
+    .click();
+  await page
+    .getByLabel("邮箱地址", { exact: true })
+    .fill("tester@example.invalid");
   await page.getByLabel("邮箱验证码", { exact: true }).fill("bad-code");
   await page.getByRole("button", { name: "完成验证", exact: true }).click();
   await page.getByRole("alertdialog").filter({ hasText: "HTTP 400" }).waitFor();
@@ -728,7 +947,44 @@ const fs = require("node:fs");
   );
 
   await page.getByRole("button", { name: "连接他人电脑", exact: true }).click();
-  await page.getByLabel("目标设备 ID", { exact: true }).fill("remote-0002");
+  const targetSelect = page.getByLabel("目标设备", { exact: true });
+  const requestPermission = page.getByLabel("连接后可以做什么", {
+    exact: true,
+  });
+  const sendRequest = page.getByRole("button", {
+    name: "发送连接请求",
+    exact: true,
+  });
+  await targetSelect.selectOption("remote-0002");
+  const requestsBeforePermissionChange = await page.evaluate(
+    () => window.fixture.calls.filter((c) => c.args.op === "request").length,
+  );
+  await requestPermission.selectOption("files");
+  assert.equal(await targetSelect.inputValue(), "remote-0002");
+  assert.match(
+    await targetSelect.locator("option:checked").innerText(),
+    /家里的电脑.*当前不可用/,
+  );
+  assert(await sendRequest.isDisabled());
+  await page.getByLabel("目标设备 ID", { exact: true }).press("Enter");
+  assert.equal(
+    await page.evaluate(
+      () => window.fixture.calls.filter((c) => c.args.op === "request").length,
+    ),
+    requestsBeforePermissionChange,
+    "changing permissions must not send a request to an unavailable selection",
+  );
+  await requestPermission.selectOption("view");
+  assert.equal(await targetSelect.inputValue(), "remote-0002");
+  assert(await sendRequest.isEnabled());
+  // A deliberately entered cross-account ID stays separate from device choices.
+  await page
+    .getByLabel("目标设备 ID", { exact: true })
+    .fill("external-device-regression");
+  assert.equal(await targetSelect.inputValue(), "custom");
+  await page
+    .getByLabel("邀请码（跨账号时填写）", { exact: true })
+    .fill("synthetic-external-invite");
   await page
     .getByLabel("连接后可以做什么", { exact: true })
     .selectOption("control");
@@ -741,15 +997,37 @@ const fs = require("node:fs");
     await page.evaluate(() => window.fixture.requests[0].permission),
     "control",
   );
+  assert.equal(
+    await page.evaluate(() => window.fixture.requests[0].target_device_id),
+    "external-device-regression",
+  );
   await page.getByRole("button", { name: "邀请他人连接", exact: true }).click();
-  await page
-    .getByLabel("允许对方连接哪台电脑", { exact: true })
-    .selectOption("local-0001");
   // Invitation permissions must be explicit and independent from the other form.
   assert.equal(
     await page.getByLabel("允许对方做什么", { exact: true }).inputValue(),
     "view",
   );
+  const inviteTargetSelect = page.getByLabel("允许对方连接哪台电脑", {
+    exact: true,
+  });
+  await inviteTargetSelect.selectOption("remote-0002");
+  await page
+    .getByLabel("允许对方做什么", { exact: true })
+    .selectOption("files");
+  assert.equal(await inviteTargetSelect.inputValue(), "remote-0002");
+  assert.match(
+    await inviteTargetSelect.locator("option:checked").innerText(),
+    /家里的电脑.*当前不可用/,
+  );
+  assert(
+    await page
+      .getByRole("button", { name: "生成邀请码", exact: true })
+      .isDisabled(),
+  );
+  await page.getByLabel("允许对方做什么", { exact: true }).selectOption("view");
+  await page
+    .getByLabel("允许对方连接哪台电脑", { exact: true })
+    .selectOption("local-0001");
   await page.getByRole("button", { name: "生成邀请码", exact: true }).click();
   await page.getByText("synthetic-invitation", { exact: true }).waitFor();
   assert.equal(
@@ -794,15 +1072,87 @@ const fs = require("node:fs");
     .getByText("synthetic-invitation", { exact: true })
     .waitFor({ state: "hidden" });
 
+  await page.evaluate(() => {
+    window.fixture.deferSessions = true;
+    window.fixture.sessionWaiters = [];
+  });
   await page.getByRole("button", { name: "账号安全", exact: true }).click();
+  await page.getByText("正在加载登录记录…", { exact: true }).waitFor();
+  const refreshSessions = page.getByRole("button", {
+    name: "刷新登录记录",
+    exact: true,
+  });
+  assert(await refreshSessions.isDisabled());
+  assert.equal(
+    await page.getByText("暂无登录记录", { exact: true }).count(),
+    0,
+  );
+  await page.evaluate(() => {
+    window.fixture.deferSessions = false;
+    for (const pending of window.fixture.sessionWaiters.splice(0))
+      pending.resolve();
+  });
   await page.getByText("当前客户端", { exact: true }).waitFor();
   await assertShell();
   await page.screenshot({ path: ".local/ui-verification/login-records.png" });
+  // A delayed refresh must not restore a login that a newer revoke removed.
+  await page.evaluate(() => (window.fixture.deferSessions = true));
+  await refreshSessions.click();
+  assert(await refreshSessions.isDisabled());
+  assert(await page.getByText("当前客户端", { exact: true }).isVisible());
   await page.getByRole("button", { name: "退出此登录", exact: true }).click();
   await page
-    .getByText("其他客户端登录", { exact: true })
+    .getByText("其他客户端", { exact: true })
     .waitFor({ state: "hidden" });
+  await page.waitForFunction(() => window.fixture.sessionWaiters.length === 2);
+  await page.evaluate(() => window.fixture.sessionWaiters.shift().resolve());
+  assert(
+    await refreshSessions.isDisabled(),
+    "old finally must not end the newer refresh",
+  );
+  assert.equal(await page.getByText("其他客户端", { exact: true }).count(), 0);
+  await page.evaluate(() => {
+    window.fixture.deferSessions = false;
+    window.fixture.sessionWaiters.shift().resolve();
+  });
+  await page.getByText("已退出该客户端的登录", { exact: true }).waitFor();
   assert.equal(await page.evaluate(() => window.fixture.sessions.length), 1);
+  assert(await refreshSessions.isEnabled());
+  await page.evaluate(() => (window.fixture.failNextOp = "sessions"));
+  await refreshSessions.click();
+  await page.getByRole("alertdialog", { name: "无法加载登录记录" }).waitFor();
+  await page.getByRole("button", { name: "关闭错误", exact: true }).click();
+  assert(await page.getByText("当前客户端", { exact: true }).isVisible());
+  await page.getByText("刷新失败，显示上次记录。", { exact: true }).waitFor();
+  await refreshSessions.click();
+  await page
+    .getByText("刷新失败，显示上次记录。", { exact: true })
+    .waitFor({ state: "hidden" });
+  // First-load failure stays distinct from a successful empty result after dismissal.
+  await page.getByRole("button", { name: "我的设备", exact: true }).click();
+  await page.evaluate(() => (window.fixture.failSessions = true));
+  await page.getByRole("button", { name: "账号安全", exact: true }).click();
+  await page.getByRole("alertdialog", { name: "无法加载登录记录" }).waitFor();
+  await page.getByRole("button", { name: "关闭错误", exact: true }).click();
+  await page
+    .getByText("登录记录暂时不可用，请刷新重试。", { exact: true })
+    .waitFor();
+  assert.equal(
+    await page.getByText("暂无登录记录", { exact: true }).count(),
+    0,
+  );
+  await page.evaluate(() => (window.fixture.failSessions = false));
+  await refreshSessions.click();
+  await page.getByText("当前客户端", { exact: true }).waitFor();
+  // Responses to a page that has been left must not reopen its error dialog.
+  await page.evaluate(() => (window.fixture.deferSessions = true));
+  await refreshSessions.click();
+  await page.getByRole("button", { name: "我的设备", exact: true }).click();
+  await page.evaluate(() => {
+    window.fixture.deferSessions = false;
+    window.fixture.sessionWaiters.shift().reject();
+  });
+  assert.equal(await page.getByRole("alertdialog").count(), 0);
 
   for (const size of [
     { width: 1120, height: 760 },
@@ -857,6 +1207,20 @@ const fs = require("node:fs");
     false,
   );
   await page.setViewportSize({ width: 360, height: 580 });
+  assert(
+    await page.locator(".device-list").evaluate((el) => el.clientHeight >= 120),
+    "compact devices must retain enough space for two rows",
+  );
+  const deviceSearch = page.getByLabel("搜索设备", { exact: true });
+  await deviceSearch.fill("  REMOTE-0002  ");
+  assert.equal(await page.locator(".device-list-item").count(), 1);
+  await deviceSearch.fill("no-such-device-for-regression");
+  assert.equal(await page.locator(".device-list-item").count(), 0);
+  assert.equal(await page.locator(".device-detail-pane").isVisible(), false);
+  await page.getByRole("button", { name: "清除筛选", exact: true }).click();
+  assert.equal(await deviceSearch.inputValue(), "");
+  assert(await deviceSearch.evaluate((el) => document.activeElement === el));
+  assert((await page.locator(".device-list-item").count()) > 1);
   await page.getByRole("button", { name: "远程连接", exact: true }).click();
   await assertShell();
   assert(
@@ -892,9 +1256,7 @@ const fs = require("node:fs");
   await page.evaluate(() => {
     window.fixture.failNextOp = "recover_request";
   });
-  await page
-    .getByRole("button", { name: "发送密码重置邮件", exact: true })
-    .click();
+  await page.getByRole("button", { name: "发送邮件", exact: true }).click();
   await page
     .getByRole("alertdialog")
     .filter({ hasText: "操作未完成" })
@@ -908,9 +1270,7 @@ const fs = require("node:fs");
       .getByRole("heading", { name: "找回密码", exact: true })
       .isVisible(),
   );
-  await page
-    .getByRole("button", { name: "发送密码重置邮件", exact: true })
-    .click();
+  await page.getByRole("button", { name: "发送邮件", exact: true }).click();
   await page
     .getByLabel("邮件中的重置码", { exact: true })
     .fill("synthetic-reset");
@@ -963,7 +1323,7 @@ const fs = require("node:fs");
         sharingCommands.indexOf("share_enable"),
   );
   assert.equal(
-    await page.getByLabel("中继地址", { exact: true }).isVisible(),
+    await page.getByLabel("中继服务器地址", { exact: true }).isVisible(),
     false,
   );
   assert.equal(
@@ -1109,9 +1469,9 @@ const fs = require("node:fs");
 
   await page.getByRole("button", { name: "我的设备", exact: true }).click();
   await page.getByText("设备信息与管理", { exact: true }).click();
-  await page.getByRole("button", { name: "修改设备名称", exact: true }).click();
+  await page.getByRole("button", { name: "重命名", exact: true }).click();
   await page.getByLabel("新的设备名称", { exact: true }).fill("不应保存的名称");
-  await page.getByRole("button", { name: "取消改名", exact: true }).click();
+  await page.getByRole("button", { name: "取消", exact: true }).click();
   assert.equal(
     await page.evaluate(() => window.fixture.devices[0].name),
     "工作电脑",
@@ -1158,17 +1518,135 @@ const fs = require("node:fs");
 
   await page.evaluate(() => {
     window.fixture.role = "admin";
+    window.fixture.adminRegistration = "invite_only";
+    window.fixture.deferAdminLoad = true;
+    window.fixture.adminWaiters = [];
   });
   await page.getByRole("button", { name: "刷新", exact: true }).click();
   await page.getByRole("button", { name: "管理控制台", exact: true }).click();
+  const adminPolicy = page.getByLabel("账号注册方式", { exact: true });
+  const saveAdminPolicy = page
+    .locator(".page-admin")
+    .getByRole("button", { name: "保存", exact: true });
+  const refreshAdmin = page
+    .locator("#page-actions")
+    .getByRole("button", { name: "刷新管理数据", exact: true });
+  const adminLoadError = page.getByRole("alertdialog", {
+    name: "无法加载管理数据",
+    exact: true,
+  });
+  await page.getByText("正在加载管理数据…", { exact: true }).waitFor();
+  assert(await adminPolicy.isDisabled());
+  assert(await saveAdminPolicy.isDisabled());
+  assert(await refreshAdmin.isDisabled());
+  assert.equal(await adminPolicy.inputValue(), "");
+  assert.equal(
+    await page.getByText("暂无登录记录", { exact: true }).count(),
+    0,
+  );
+  assert.equal(
+    await page.getByText("暂无操作记录", { exact: true }).count(),
+    0,
+  );
+  // Even a submitted form cannot save an unread default policy.
+  await adminPolicy.evaluate((el) => el.form.requestSubmit());
+  assert.equal(
+    await page.evaluate(
+      () =>
+        window.fixture.calls.filter(
+          (call) => call.args?.op === "admin_set_registration",
+        ).length,
+    ),
+    0,
+  );
+  await page.evaluate(() => {
+    window.fixture.deferAdminLoad = false;
+    for (const pending of window.fixture.adminWaiters.splice(0))
+      pending.resolve();
+  });
+  await page.waitForFunction(
+    () =>
+      document.querySelector('[aria-label="账号注册方式"]')?.value ===
+      "invite_only",
+  );
+  assert(await saveAdminPolicy.isEnabled());
+  await adminPolicy.selectOption("closed");
+  await saveAdminPolicy.click();
+  await page.waitForFunction(
+    () => window.fixture.adminRegistration === "closed",
+  );
+
+  // A failed refresh keeps the last records and offers a working retry.
+  await page.evaluate(() => (window.fixture.failAdminLoad = true));
+  await refreshAdmin.click();
+  await adminLoadError.waitFor();
+  assert(await saveAdminPolicy.isDisabled());
+  assert.equal(await adminPolicy.inputValue(), "closed");
+  assert(
+    await page
+      .getByText("修改注册方式 · 开放注册", { exact: true })
+      .isVisible(),
+  );
+  await page.evaluate(() => (window.fixture.failAdminLoad = false));
+  await adminLoadError
+    .getByRole("button", { name: "重试", exact: true })
+    .click();
+  await page.waitForFunction(
+    () =>
+      document.querySelector('[aria-label="账号注册方式"]')?.disabled === false,
+  );
+  assert(await saveAdminPolicy.isEnabled());
+
+  // Initial failure remains unavailable after dismissal, until a fresh read succeeds.
+  await page.getByRole("button", { name: "我的设备", exact: true }).click();
+  await page.evaluate(() => (window.fixture.failAdminLoad = true));
+  await page.getByRole("button", { name: "管理控制台", exact: true }).click();
+  await adminLoadError.waitFor();
+  await adminLoadError
+    .getByRole("button", { name: "关闭错误", exact: true })
+    .click();
+  await page
+    .getByText("管理数据暂时不可用，请刷新重试。", { exact: true })
+    .waitFor();
+  assert(await adminPolicy.isDisabled());
+  assert(await saveAdminPolicy.isDisabled());
+  assert.equal(
+    await page.getByText("暂无登录记录", { exact: true }).count(),
+    0,
+  );
+  assert.equal(
+    await page.getByText("暂无操作记录", { exact: true }).count(),
+    0,
+  );
+  const savedPolicyCalls = await page.evaluate(
+    () =>
+      window.fixture.calls.filter(
+        (call) => call.args?.op === "admin_set_registration",
+      ).length,
+  );
+  await adminPolicy.evaluate((el) => el.form.requestSubmit());
+  assert.equal(
+    await page.evaluate(
+      () =>
+        window.fixture.calls.filter(
+          (call) => call.args?.op === "admin_set_registration",
+        ).length,
+    ),
+    savedPolicyCalls,
+  );
+  await page.evaluate(() => (window.fixture.failAdminLoad = false));
+  await refreshAdmin.click();
+  await page.waitForFunction(() => {
+    const policy = document.querySelector('[aria-label="账号注册方式"]');
+    return policy?.value === "closed" && policy.disabled === false;
+  });
+  assert(await saveAdminPolicy.isEnabled());
   await page.getByText("修改注册方式 · 开放注册", { exact: true }).waitFor();
   assert.equal(await page.locator("pre.meta-row").count(), 0);
   await page
     .getByLabel("受邀邮箱", { exact: true })
     .fill("invited@example.invalid");
-  await page
-    .getByRole("button", { name: "生成注册邀请码", exact: true })
-    .click();
+  await page.getByRole("button", { name: "生成邀请码", exact: true }).click();
   await page.getByRole("button", { name: "收起邀请码", exact: true }).click();
   assert(
     await page
@@ -1194,9 +1672,7 @@ const fs = require("node:fs");
     el.scrollTop = el.scrollHeight;
   });
   await page.screenshot({ path: ".local/ui-verification/admin-records.png" });
-  await page
-    .getByRole("button", { name: "生成注册邀请码", exact: true })
-    .click();
+  await page.getByRole("button", { name: "生成邀请码", exact: true }).click();
   await page.getByText("synthetic-signup", { exact: true }).waitFor();
   await page.getByRole("button", { name: "账号安全", exact: true }).click();
   await page
@@ -1235,7 +1711,7 @@ const fs = require("node:fs");
     await page.getByLabel("本机设备名称", { exact: true }).inputValue(),
     "DESKTOP-测试",
   );
-  await page.getByRole("button", { name: "添加这台电脑", exact: true }).click();
+  await page.getByRole("button", { name: "添加", exact: true }).click();
   await page
     .getByRole("status")
     .filter({ hasText: "这台电脑已添加" })
@@ -1298,9 +1774,9 @@ const fs = require("node:fs");
     "这台 Windows 电脑",
   );
   await page.getByText("设备信息与管理", { exact: true }).click();
-  await page.getByRole("button", { name: "修改设备名称", exact: true }).click();
+  await page.getByRole("button", { name: "重命名", exact: true }).click();
   await page.getByLabel("新的设备名称", { exact: true }).fill("自定义工作站");
-  await page.getByRole("button", { name: "保存名称", exact: true }).click();
+  await page.getByRole("button", { name: "保存", exact: true }).click();
   await page
     .getByRole("heading", { name: "自定义工作站", exact: true })
     .waitFor();
@@ -1321,12 +1797,10 @@ const fs = require("node:fs");
     "",
   );
   assert(
-    await page
-      .getByRole("button", { name: "添加这台电脑", exact: true })
-      .isDisabled(),
+    await page.getByRole("button", { name: "添加", exact: true }).isDisabled(),
   );
   await page.getByLabel("本机设备名称", { exact: true }).fill("手动名称");
-  await page.getByRole("button", { name: "添加这台电脑", exact: true }).click();
+  await page.getByRole("button", { name: "添加", exact: true }).click();
   await page
     .getByRole("status")
     .filter({ hasText: "这台电脑已添加" })
@@ -1425,7 +1899,7 @@ const fs = require("node:fs");
   await page.getByRole("button", { name: "总览", exact: true }).click();
   await page.getByRole("button", { name: "刷新状态", exact: true }).click();
   await page.getByLabel("本机设备名称", { exact: true }).fill("Ubuntu-测试");
-  await page.getByRole("button", { name: "添加这台电脑", exact: true }).click();
+  await page.getByRole("button", { name: "添加", exact: true }).click();
   const upgradeDialog = page.getByRole("alertdialog");
   await upgradeDialog.waitFor();
   assert((await upgradeDialog.innerText()).includes("请先升级协调服务"));

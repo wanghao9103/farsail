@@ -209,11 +209,7 @@ export function UpdateDialog({
         <UpdateProgress status={status} />
         <div className="actions update-dialog-actions">
           <button className="secondary" autoFocus onClick={onDismiss}>
-            {status.phase === "installing"
-              ? "关闭窗口"
-              : status.preferences.autoInstall
-                ? "后台更新"
-                : "稍后"}
+            关闭
           </button>
           <button
             className="primary"

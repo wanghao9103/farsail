@@ -200,11 +200,11 @@ try {
     Click-UI '*我的设备'
     Set-UIValue '邮箱地址' 'fixture@example.invalid'; Set-UIValue '密码' 'synthetic-password'
     Click-UI '登录'
-    $null=Find-UI '*还没有设备*'
+    $null=Find-UI '暂无设备'
     Click-UI '*总览'
-    # Wait for the actual form; the device page has an identically named navigation button.
+    # Wait for the actual form after navigating to the overview.
     Set-UIValue '本机设备名称' 'Synthetic sharing fixture'
-    Click-UI '添加这台电脑'
+    Click-UI '添加'
     $null=Find-UI 'Synthetic sharing fixture'
     Close-App
     $preferencePath=Join-Path $profileDir 'sharing-preferences.bin'

@@ -214,7 +214,18 @@ const fs = require("node:fs");
   const nav = (name) =>
     page.locator("nav").getByRole("button", { name, exact: true });
   await page.goto("http://127.0.0.1:1420/");
-  await nav("我的设备").click();
+  await nav("文件传输").click();
+  await page
+    .getByRole("heading", { name: "暂无文件连接", exact: true })
+    .waitFor();
+  assert.equal(await page.locator(".file-transfer-pane").count(), 0);
+  assert.equal(
+    await page.getByRole("button", { name: "发送文件", exact: true }).count(),
+    0,
+    "an empty file page should offer a device choice, not an unusable send action",
+  );
+  await page.getByRole("button", { name: "选择设备", exact: true }).click();
+  await page.getByRole("heading", { name: "我的设备", exact: true }).waitFor();
   // A single explicit remote-access choice permits Files on Linux, never screen sharing.
   assert.equal(
     await page
@@ -292,9 +303,7 @@ const fs = require("node:fs");
     window.filesFixture.requests[0].state = "approved";
   });
   await page.getByRole("button", { name: "刷新", exact: true }).click();
-  await page
-    .getByRole("button", { name: "选择文件发送", exact: true })
-    .waitFor();
+  await page.getByRole("button", { name: "发送文件", exact: true }).waitFor();
   await page.getByText("已直连", { exact: true }).waitFor();
   assert.equal(
     await page.evaluate(
@@ -322,12 +331,12 @@ const fs = require("node:fs");
     "files",
   );
   // A cancelled native open dialog creates no transfer; errors remain actionable.
-  await page.getByRole("button", { name: "选择文件发送", exact: true }).click();
+  await page.getByRole("button", { name: "发送文件", exact: true }).click();
   assert.equal(await page.locator(".file-transfer").count(), 0);
   await page.evaluate(() => {
     window.filesFixture.nextFailure = "files_send";
   });
-  await page.getByRole("button", { name: "选择文件发送", exact: true }).click();
+  await page.getByRole("button", { name: "发送文件", exact: true }).click();
   await page.getByRole("alertdialog").waitFor();
   assert(
     (await page.getByRole("alertdialog").innerText()).includes(
@@ -341,7 +350,7 @@ const fs = require("node:fs");
   await page.evaluate(() => {
     window.filesFixture.chooseFile = true;
   });
-  await page.getByRole("button", { name: "选择文件发送", exact: true }).click();
+  await page.getByRole("button", { name: "发送文件", exact: true }).click();
   await page.getByText(/等待对方接收/).waitFor();
   await page.getByRole("button", { name: "取消传输", exact: true }).click();
   await page.getByText(/发送 · 1.0 KB · 已取消/).waitFor();
@@ -460,6 +469,37 @@ const fs = require("node:fs");
     });
   });
   await page.getByRole("button", { name: "刷新", exact: true }).click();
+  await nav("文件传输").click();
+  await page.locator(".file-session").filter({ hasText: "等待批准" }).click();
+  await page.getByText("待你批准文件连接", { exact: true }).waitFor();
+  assert.equal(
+    await page.getByText("等待对方批准文件连接", { exact: true }).count(),
+    0,
+  );
+  assert.equal(
+    await page.getByRole("button", { name: "取消请求", exact: true }).count(),
+    0,
+    "an incoming request must direct the recipient to approval, not cancellation",
+  );
+  await page.getByRole("button", { name: "查看请求", exact: true }).click();
+  await page.getByRole("heading", { name: "连接请求", exact: true }).waitFor();
+  await page.setViewportSize({ width: 360, height: 580 });
+  const approvalHint = page
+    .locator(".connection-list-pane > .hint")
+    .filter({ hasText: "请先开启“允许远程连接”。" });
+  await approvalHint.waitFor();
+  assert(await approvalHint.isVisible());
+  assert(
+    await page
+      .getByRole("button", { name: "允许文件传输", exact: true })
+      .isDisabled(),
+  );
+  await page.getByRole("button", { name: "连接设置", exact: true }).click();
+  await page
+    .getByRole("heading", { name: "共享与设置", exact: true })
+    .waitFor();
+  await page.setViewportSize({ width: 1120, height: 760 });
+  await nav("我的设备").click();
   await page
     .locator(".device-list")
     .getByRole("button", { name: /^本机测试电脑/ })

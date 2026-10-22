@@ -349,7 +349,7 @@ async function alignedActions(actions) {
             ),
           });
           await updateDialog(page)
-            .getByRole("button", { name: "稍后", exact: true })
+            .getByRole("button", { name: "关闭", exact: true })
             .click();
           await alignedActions(settings.locator(".actions"));
           assert(
@@ -435,7 +435,7 @@ async function alignedActions(actions) {
       await updateDialog(page).waitFor();
       assert.equal(await showCount(page), 1);
       await updateDialog(page)
-        .getByRole("button", { name: "稍后", exact: true })
+        .getByRole("button", { name: "关闭", exact: true })
         .click();
       await polls(page);
       await noDialog(page);
@@ -481,7 +481,7 @@ async function alignedActions(actions) {
         .getByText("FarSail 0.1.24 已可更新。", { exact: true })
         .waitFor();
       await updateDialog(page)
-        .getByRole("button", { name: "稍后", exact: true })
+        .getByRole("button", { name: "关闭", exact: true })
         .click();
       await polls(page);
       await noDialog(page);
@@ -539,7 +539,7 @@ async function alignedActions(actions) {
           downloaded: 500,
         }),
       );
-      await dialog.getByRole("button", { name: "稍后", exact: true }).click();
+      await dialog.getByRole("button", { name: "关闭", exact: true }).click();
       await polls(page);
       await noDialog(page);
       await page.evaluate(() => window.updateFixture.finishDownload());
@@ -558,7 +558,7 @@ async function alignedActions(actions) {
         .getByRole("button", { name: "安装更新", exact: true })
         .click();
       await dialog.getByText(/等待远程连接结束/).waitFor();
-      await dialog.getByRole("button", { name: "稍后", exact: true }).click();
+      await dialog.getByRole("button", { name: "关闭", exact: true }).click();
       await polls(page);
       await noDialog(page);
       await page.evaluate(() =>
@@ -585,12 +585,10 @@ async function alignedActions(actions) {
           .isDisabled(),
       );
       assert.equal(
-        await dialog.getByRole("button", { name: "稍后", exact: true }).count(),
-        0,
+        await dialog.getByRole("button", { name: "关闭", exact: true }).count(),
+        1,
       );
-      await dialog
-        .getByRole("button", { name: "关闭窗口", exact: true })
-        .click();
+      await dialog.getByRole("button", { name: "关闭", exact: true }).click();
       assert.equal(
         await page.evaluate(() => window.updateFixture.update.phase),
         "installing",
@@ -617,7 +615,7 @@ async function alignedActions(actions) {
         ),
       );
       assert.equal(await dialog.locator(".hint").count(), 0);
-      await dialog.getByRole("button", { name: "稍后", exact: true }).click();
+      await dialog.getByRole("button", { name: "关闭", exact: true }).click();
       await page
         .getByRole("button", { name: "共享与设置", exact: true })
         .click();
@@ -697,7 +695,7 @@ async function alignedActions(actions) {
         await dialog
           .getByRole("button", { name: "安装更新", exact: true })
           .waitFor();
-        await dialog.getByRole("button", { name: "稍后", exact: true }).click();
+        await dialog.getByRole("button", { name: "关闭", exact: true }).click();
         await polls(page);
         await noDialog(page);
         await untouchedPreferences(page);
@@ -710,7 +708,7 @@ async function alignedActions(actions) {
         await available(page);
         await updateDialog(page).waitFor();
         await updateDialog(page)
-          .getByRole("button", { name: "后台更新", exact: true })
+          .getByRole("button", { name: "关闭", exact: true })
           .click();
         await polls(page);
         await untouchedPreferences(page, true);

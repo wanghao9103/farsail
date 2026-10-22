@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useId, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -43,6 +43,7 @@ import {
   Subtract16Regular,
   Square16Regular,
   ChevronRight16Regular,
+  ChevronLeft16Regular,
   ArrowSync20Regular,
 } from "@fluentui/react-icons";
 
@@ -110,12 +111,13 @@ function RemoteAccessControls({
   act: Action;
   prepareTransport: () => Promise<void>;
 }) {
+  const descriptionId = useId();
   return (
     <div className="preference-rows">
       <label className="preference-row">
         <span>
           <strong>允许远程连接</strong>
-          <small>
+          <small id={`${descriptionId}-access`}>
             {canShareLocalScreen(state)
               ? "屏幕控制与文件传输，默认每次连接需批准。"
               : "文件传输，每次连接需批准。"}
@@ -125,6 +127,7 @@ function RemoteAccessControls({
           type="checkbox"
           role="switch"
           aria-label="允许远程连接"
+          aria-describedby={`${descriptionId}-access`}
           checked={sharingChoice(state)}
           disabled={busy || !state.deviceId}
           onChange={() =>
@@ -144,12 +147,15 @@ function RemoteAccessControls({
         <label className="preference-row">
           <span>
             <strong>同账号远程值守</strong>
-            <small>同账号设备可直接控制屏幕并传输文件。</small>
+            <small id={`${descriptionId}-watch`}>
+              同账号设备可直接控制屏幕并传输文件。
+            </small>
           </span>
           <input
             type="checkbox"
             role="switch"
             aria-label="同账号远程值守"
+            aria-describedby={`${descriptionId}-watch`}
             checked={watchChoice(state)}
             disabled={busy || (!state.sharing && !watchChoice(state))}
             onChange={() =>
@@ -660,6 +666,7 @@ function App() {
               key={id}
               className={tab === id ? "active" : ""}
               aria-label={label}
+              aria-current={tab === id ? "page" : undefined}
               title={label}
               onClick={() => setTab(id)}
             >
@@ -860,7 +867,6 @@ function App() {
                       <label>
                         中继服务器地址
                         <input
-                          aria-label="中继地址"
                           placeholder="https://服务器IP:8443/"
                           value={relayUrl}
                           onChange={(e) => setRelayUrl(e.target.value)}
@@ -869,7 +875,6 @@ function App() {
                       <label>
                         本机 UDP 监听地址
                         <input
-                          aria-label="UDP 绑定地址"
                           value={bindAddr}
                           onChange={(e) => setBindAddr(e.target.value)}
                         />
@@ -990,6 +995,8 @@ function App() {
               act={act}
               prepareTransport={prepareTransport}
               onRefresh={refresh}
+              onChooseDevice={() => setTab("devices")}
+              onReviewRequests={() => setTab("requests")}
             />
           ) : tab === "security" ? (
             <Security
@@ -1035,9 +1042,47 @@ function Auth({
   onSettings: () => void;
 }) {
   const loginErrorDialog = useRef<HTMLDialogElement>(null);
+  const loginTab = useRef<HTMLButtonElement>(null);
+  const registerTab = useRef<HTMLButtonElement>(null);
+  const flowHeading = useRef<HTMLHeadingElement>(null);
+  const previousMode = useRef(mode);
+  const pendingFocus = useRef<"heading" | "login" | "register" | null>(null);
+  const isEntry = mode === "login" || mode === "register";
+  useEffect(() => {
+    const previous = previousMode.current;
+    previousMode.current = mode;
+    if (previous !== mode) {
+      pendingFocus.current = !isEntry
+        ? "heading"
+        : previous !== "login" && previous !== "register"
+          ? (mode as "login" | "register")
+          : null;
+    }
+    if (busy || !pendingFocus.current) return;
+    const target =
+      pendingFocus.current === "heading"
+        ? flowHeading.current
+        : (pendingFocus.current === "login" ? loginTab : registerTab).current;
+    target?.focus();
+    pendingFocus.current = null;
+  }, [mode, isEntry, busy]);
+  const moveAuthTab = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (busy) return;
+    let next: "login" | "register";
+    if (event.key === "Home") next = "login";
+    else if (event.key === "End") next = "register";
+    else if (event.key === "ArrowLeft" || event.key === "ArrowRight")
+      next = mode === "login" ? "register" : "login";
+    else return;
+    event.preventDefault();
+    setMode(next);
+    (next === "login" ? loginTab : registerTab).current?.focus();
+  };
   const [loginError, setLoginError] = useState("");
   const [loginErrorTitle, setLoginErrorTitle] = useState("登录未成功");
   const [loginTechnicalError, setLoginTechnicalError] = useState("");
+  const [verificationRequestedEmail, setVerificationRequestedEmail] =
+    useState("");
   const [email, setEmail] = useState(""),
     [password, setPassword] = useState(""),
     [newPassword, setNewPassword] = useState(""),
@@ -1057,6 +1102,7 @@ function Auth({
           "重发所需的账号信息已失效，请在登录页填写邮箱和密码，再进入验证邮箱页重试。",
         );
       await api("resend", { email, password });
+      setVerificationRequestedEmail(email.trim());
     }, "验证码重发请求已提交");
   };
   const submit = async () => {
@@ -1104,6 +1150,7 @@ function Auth({
           password,
           invite_code: invite || undefined,
         });
+        setVerificationRequestedEmail(email.trim());
         setToken("");
         setMode("verify");
       }, "账号已创建");
@@ -1115,6 +1162,7 @@ function Auth({
         });
         setToken("");
         setPassword("");
+        setVerificationRequestedEmail("");
         setMode("login");
       }, "邮箱验证成功");
     if (mode === "recover")
@@ -1186,163 +1234,205 @@ function Auth({
         </details>
       </dialog>
       <section className="card auth-card">
-        <div className="auth-tabs" role="tablist" aria-label="账号入口">
+        {isEntry ? (
+          <div
+            className="auth-tabs"
+            role="tablist"
+            aria-label="账号入口"
+            onKeyDown={moveAuthTab}
+          >
+            <button
+              ref={loginTab}
+              id="auth-login-tab"
+              role="tab"
+              aria-controls="auth-panel"
+              tabIndex={mode === "login" ? 0 : -1}
+              aria-selected={mode === "login"}
+              className={mode === "login" ? "active" : ""}
+              disabled={busy}
+              onClick={() => setMode("login")}
+            >
+              登录
+            </button>
+            <button
+              ref={registerTab}
+              id="auth-register-tab"
+              role="tab"
+              aria-controls="auth-panel"
+              tabIndex={mode === "register" ? 0 : -1}
+              aria-selected={mode === "register"}
+              className={mode === "register" ? "active" : ""}
+              disabled={busy}
+              onClick={() => setMode("register")}
+            >
+              注册
+            </button>
+          </div>
+        ) : (
           <button
-            role="tab"
-            aria-selected={mode === "login"}
-            className={mode === "login" ? "active" : ""}
+            className="text-button auth-back"
             disabled={busy}
             onClick={() => setMode("login")}
           >
-            登录
+            <ChevronLeft16Regular aria-hidden="true" />
+            返回登录
           </button>
-          <button
-            role="tab"
-            aria-selected={mode === "register"}
-            className={mode === "register" ? "active" : ""}
-            disabled={busy}
-            onClick={() => setMode("register")}
-          >
-            注册
-          </button>
-        </div>
-        <div className="eyebrow">SECURE ACCESS</div>
-        <h2
-          className={
-            ["login", "register"].includes(mode) ? "sr-only" : undefined
-          }
-        >
-          {titles[mode]}
-        </h2>
-        {mode === "verify" && (
-          <p className="muted">
-            {email ? `验证码已发送至 ${email}。` : "请查看注册邮箱中的验证码。"}
-          </p>
         )}
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            void submit();
-          }}
-          className="form"
+        <div
+          id="auth-panel"
+          role={isEntry ? "tabpanel" : undefined}
+          aria-labelledby={isEntry ? `auth-${mode}-tab` : "auth-flow-title"}
         >
-          {["login", "register", "recover"].includes(mode) && (
-            <label>
-              邮箱地址
-              <input
-                type="email"
-                required
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@example.com"
-                autoComplete="email"
-              />
-            </label>
+          <h2
+            ref={flowHeading}
+            id="auth-flow-title"
+            tabIndex={isEntry ? undefined : -1}
+            className={isEntry ? "sr-only" : "auth-flow-title"}
+          >
+            {titles[mode]}
+          </h2>
+          {mode === "verify" && (
+            <p className="muted">
+              {verificationRequestedEmail
+                ? `验证码发送请求已提交，请查看 ${verificationRequestedEmail} 的收件箱。`
+                : "填写注册邮箱和收到的验证码。"}
+            </p>
           )}
-          {["login", "register"].includes(mode) && (
-            <label>
-              密码
-              <input
-                type="password"
-                aria-label="密码"
-                aria-describedby={
-                  mode === "register" ? "register-password-hint" : undefined
-                }
-                required
-                minLength={mode === "register" ? 12 : 1}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                autoComplete={
-                  mode === "register" ? "new-password" : "current-password"
-                }
-              />
-              {mode === "register" && (
-                <small id="register-password-hint" className="muted">
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              void submit();
+            }}
+            className="form"
+          >
+            {["login", "register", "recover", "verify"].includes(mode) && (
+              <label>
+                邮箱地址
+                <input
+                  type="email"
+                  required={mode !== "verify" || /^\d{6}$/.test(token.trim())}
+                  disabled={busy}
+                  value={email}
+                  onChange={(e) => {
+                    const next = e.target.value;
+                    if (
+                      next.trim().toLowerCase() !== email.trim().toLowerCase()
+                    ) {
+                      setVerificationRequestedEmail("");
+                      if (mode === "verify") setPassword("");
+                    }
+                    setEmail(next);
+                  }}
+                  placeholder="you@example.com"
+                  autoComplete="email"
+                />
+              </label>
+            )}
+            {["login", "register"].includes(mode) && (
+              <label>
+                密码
+                <input
+                  type="password"
+                  aria-label="密码"
+                  aria-describedby={
+                    mode === "register" ? "register-password-hint" : undefined
+                  }
+                  required
+                  minLength={mode === "register" ? 12 : 1}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  autoComplete={
+                    mode === "register" ? "new-password" : "current-password"
+                  }
+                />
+                {mode === "register" && (
+                  <small id="register-password-hint" className="muted">
+                    至少 12 个字符
+                  </small>
+                )}
+              </label>
+            )}
+            {["verify", "reset"].includes(mode) && (
+              <label>
+                {mode === "verify" ? "邮箱验证码" : "邮件中的重置码"}
+                <input
+                  required
+                  value={token}
+                  onChange={(e) => setToken(e.target.value)}
+                  autoComplete={mode === "verify" ? "one-time-code" : "off"}
+                  inputMode={mode === "verify" ? "numeric" : "text"}
+                  placeholder={
+                    mode === "verify" ? "请输入 6 位数字验证码" : undefined
+                  }
+                />
+              </label>
+            )}
+            {mode === "reset" && (
+              <label>
+                新密码
+                <input
+                  type="password"
+                  required
+                  minLength={12}
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  autoComplete="new-password"
+                  aria-label="新密码"
+                  aria-describedby="reset-password-hint"
+                />
+                <small id="reset-password-hint" className="muted">
                   至少 12 个字符
                 </small>
-              )}
-            </label>
-          )}
-          {["verify", "reset"].includes(mode) && (
-            <label>
-              {mode === "verify" ? "邮箱验证码" : "邮件中的重置码"}
-              <input
-                required
-                value={token}
-                onChange={(e) => setToken(e.target.value)}
-                autoComplete={mode === "verify" ? "one-time-code" : "off"}
-                inputMode={mode === "verify" ? "numeric" : "text"}
-                placeholder={
-                  mode === "verify" ? "请输入 6 位数字验证码" : undefined
-                }
-              />
-            </label>
-          )}
-          {mode === "reset" && (
-            <label>
-              新密码
-              <input
-                type="password"
-                required
-                minLength={12}
-                value={newPassword}
-                onChange={(e) => setNewPassword(e.target.value)}
-                autoComplete="new-password"
-                aria-label="新密码"
-                aria-describedby="reset-password-hint"
-              />
-              <small id="reset-password-hint" className="muted">
-                至少 12 个字符
-              </small>
-            </label>
-          )}
-          {mode === "register" && (
-            <label>
-              注册邀请码（若服务要求）
-              <input
-                value={invite}
-                onChange={(e) => setInvite(e.target.value)}
-                autoComplete="off"
-              />
-            </label>
-          )}
-          <button className="primary wide" disabled={busy}>
-            {busy
-              ? "请稍候…"
-              : mode === "register"
-                ? "注册"
-                : mode === "verify"
-                  ? "完成验证"
-                  : mode === "login"
-                    ? "登录"
-                    : mode === "recover"
-                      ? "发送密码重置邮件"
-                      : "重置密码"}
-          </button>
-        </form>
-        <div className="auth-links">
-          {mode === "verify" && (
-            <button disabled={busy} onClick={() => void resendVerification()}>
-              重新发送验证码
+              </label>
+            )}
+            {mode === "register" && (
+              <label>
+                注册邀请码（若服务要求）
+                <input
+                  value={invite}
+                  onChange={(e) => setInvite(e.target.value)}
+                  autoComplete="off"
+                />
+              </label>
+            )}
+            <button className="primary wide" disabled={busy}>
+              {busy
+                ? "请稍候…"
+                : mode === "register"
+                  ? "注册"
+                  : mode === "verify"
+                    ? "完成验证"
+                    : mode === "login"
+                      ? "登录"
+                      : mode === "recover"
+                        ? "发送邮件"
+                        : "重置密码"}
             </button>
-          )}
-          {(
-            {
-              login: ["recover", "verify"],
-              register: [],
-              verify: [],
-              recover: ["reset"],
-              reset: ["recover"],
-            }[mode] as (typeof mode)[]
-          ).map((x) => (
-            <button key={x} disabled={busy} onClick={() => setMode(x)}>
-              {x === "reset"
-                ? "已有重置码"
-                : x === "recover" && mode === "reset"
-                  ? "重新发送重置邮件"
-                  : titles[x]}
-            </button>
-          ))}
+          </form>
+          <div className="auth-links">
+            {mode === "verify" && (
+              <button disabled={busy} onClick={() => void resendVerification()}>
+                重新发送验证码
+              </button>
+            )}
+            {(
+              {
+                login: ["recover", "verify"],
+                register: [],
+                verify: [],
+                recover: ["reset"],
+                reset: ["recover"],
+              }[mode] as (typeof mode)[]
+            ).map((x) => (
+              <button key={x} disabled={busy} onClick={() => setMode(x)}>
+                {x === "reset"
+                  ? "已有重置码"
+                  : x === "recover" && mode === "reset"
+                    ? "重新发送邮件"
+                    : titles[x]}
+              </button>
+            ))}
+          </div>
         </div>
       </section>
     </div>
@@ -1413,7 +1503,7 @@ function Overview({
               required
             />
             <button className="primary" disabled={busy || !name.trim()}>
-              添加这台电脑
+              添加
             </button>
           </form>
           {!state.computerName && (
@@ -1456,7 +1546,7 @@ function Overview({
           台在线{pending.length ? ` · ${pending.length} 条待批准` : ""}
         </span>
         <button className="primary" onClick={() => onNavigate("devices")}>
-          查看所有设备
+          查看设备
           <ChevronRight16Regular />
         </button>
       </div>
@@ -1464,7 +1554,7 @@ function Overview({
         <div className="section-heading">
           <div>
             <div className="eyebrow">ACTIVITY</div>
-            <h2>最近的远程连接</h2>
+            <h2>最近连接</h2>
           </div>
           <button
             className="text-button"
@@ -1503,11 +1593,18 @@ function Overview({
     </div>
   );
 }
-function Empty({ text }: { text: string }) {
+function Empty({
+  text,
+  children,
+}: {
+  text: string;
+  children?: React.ReactNode;
+}) {
   return (
     <div className="empty">
       <Desktop20Regular aria-hidden="true" />
       <p>{text}</p>
+      {children}
     </div>
   );
 }
@@ -1621,6 +1718,9 @@ function Devices({
 }) {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all");
+  const searchInput = useRef<HTMLInputElement>(null);
+  const query = search.trim().toLowerCase();
+  const filtered = !!query || filter !== "all";
   const [selected, setSelected] = useState<string | null>(null);
   const [waiting, setWaiting] = useState<{ id: string; target: string } | null>(
     null,
@@ -1648,8 +1748,8 @@ function Devices({
   const shown = devices
     .filter(
       (d) =>
-        (d.name.toLowerCase().includes(search.toLowerCase()) ||
-          d.id.includes(search)) &&
+        (d.name.toLowerCase().includes(query) ||
+          d.id.toLowerCase().includes(query)) &&
         (filter !== "online" || d.online),
     )
     .sort(
@@ -1788,11 +1888,21 @@ function Devices({
           ? "对方尚未允许屏幕连接，请检查对方的远程连接设置。"
           : "";
   return (
-    <section className="device-workspace">
+    <section
+      className={`device-workspace${device ? "" : " device-workspace-empty"}`}
+    >
       <div className="device-list-pane">
         <div className="section-heading">
           <h2 className="heading-with-count">
-            设备列表 <span className="count">{devices.length}</span>
+            设备列表{" "}
+            <span
+              className="count"
+              aria-label={`显示 ${shown.length} 台，共 ${devices.length} 台`}
+            >
+              {filtered
+                ? `${shown.length} / ${devices.length}`
+                : devices.length}
+            </span>
           </h2>
           <button
             className="text-button"
@@ -1804,6 +1914,7 @@ function Devices({
         </div>
         <div className="filters">
           <input
+            ref={searchInput}
             aria-label="搜索设备"
             placeholder="搜索电脑名称或设备 ID"
             value={search}
@@ -1843,13 +1954,20 @@ function Devices({
             </button>
           ))}
           {!shown.length && (
-            <Empty
-              text={
-                devices.length
-                  ? "没有匹配的设备"
-                  : "还没有设备，请先添加这台电脑。"
-              }
-            />
+            <Empty text={devices.length ? "没有匹配的设备" : "暂无设备"}>
+              {filtered && devices.length > 0 && (
+                <button
+                  className="secondary"
+                  onClick={() => {
+                    setSearch("");
+                    setFilter("all");
+                    searchInput.current?.focus();
+                  }}
+                >
+                  清除筛选
+                </button>
+              )}
+            </Empty>
           )}
         </div>
         {!state.deviceId && (
@@ -1906,7 +2024,7 @@ function Devices({
                   className="text-button"
                   onClick={() => onNavigate("settings")}
                 >
-                  服务器与高级连接设置 →
+                  连接设置 →
                 </button>
               </>
             ) : (
@@ -1965,9 +2083,7 @@ function Devices({
                       文件传输
                     </button>
                     {!device.can_files && (
-                      <p className="muted">
-                        对方尚未开放文件传输，请检查对方的远程连接设置。
-                      </p>
+                      <p className="muted">对方尚未开放文件传输。</p>
                     )}
                   </>
                 )}
@@ -2050,7 +2166,7 @@ function Devices({
                     className="primary"
                     disabled={busy || !newName.trim()}
                   >
-                    保存名称
+                    保存
                   </button>
                   <button
                     className="secondary"
@@ -2058,7 +2174,7 @@ function Devices({
                     disabled={busy}
                     onClick={() => setEditing(false)}
                   >
-                    取消改名
+                    取消
                   </button>
                 </form>
               ) : (
@@ -2069,7 +2185,7 @@ function Devices({
                     setEditing(true);
                   }}
                 >
-                  修改设备名称
+                  重命名
                 </button>
               )}
               {confirmUnbind ? (
@@ -2099,9 +2215,7 @@ function Devices({
               )}
             </details>
           </>
-        ) : (
-          <Empty text="选择一台设备，查看连接操作。" />
-        )}
+        ) : null}
       </div>
     </section>
   );
@@ -2178,6 +2292,7 @@ function Requests({
     return () => window.clearInterval(timer);
   }, [requests, transportReady]);
   const [target, setTarget] = useState(""),
+    [targetChoice, setTargetChoice] = useState("custom"),
     [inviteTarget, setInviteTarget] = useState(invitation?.target ?? ""),
     [permission, setPermission] = useState<"view" | "control" | "files">(
       "view",
@@ -2215,6 +2330,17 @@ function Requests({
       x.enabled &&
       x.online &&
       (permission === "files" ? x.can_files : x.can_host),
+  );
+  const targetUnavailable =
+    targetChoice !== "custom" && !targets.some((d) => d.id === targetChoice);
+  const inviteTargets = devices.filter(
+    (d) =>
+      d.online &&
+      d.enabled &&
+      (invitePermission === "files" ? d.can_files : d.can_host),
+  );
+  const inviteTargetAvailable = inviteTargets.some(
+    (d) => d.id === inviteTarget,
   );
   return (
     <div className="connections-workspace">
@@ -2259,6 +2385,7 @@ function Requests({
             className="form"
             onSubmit={(e) => {
               e.preventDefault();
+              if (targetUnavailable) return;
               void act(async () => {
                 await prepareTransport();
                 await api("request", {
@@ -2268,18 +2395,31 @@ function Requests({
                   invitation_code: code.trim() || undefined,
                 });
                 setSection("active");
-              }, "连接请求已发送，请等待对方批准；可在“当前连接”查看进度");
+              }, "连接请求已发送");
             }}
           >
             <label>
               目标设备
               <select
-                value={devices.some((x) => x.id === target) ? target : "custom"}
-                onChange={(e) =>
-                  setTarget(e.target.value === "custom" ? "" : e.target.value)
+                aria-label="目标设备"
+                value={targetChoice}
+                aria-invalid={targetUnavailable || undefined}
+                aria-describedby={
+                  targetUnavailable ? "request-target-unavailable" : undefined
                 }
+                onChange={(e) => {
+                  setTargetChoice(e.target.value);
+                  setTarget(e.target.value === "custom" ? "" : e.target.value);
+                }}
               >
                 <option value="custom">输入对方提供的设备 ID</option>
+                {targetUnavailable && (
+                  <option value={targetChoice} disabled>
+                    {devices.find((d) => d.id === targetChoice)?.name ??
+                      "已选设备"}
+                    （当前不可用）
+                  </option>
+                )}
                 {targets.map((d) => (
                   <option key={d.id} value={d.id}>
                     {d.name}
@@ -2291,9 +2431,21 @@ function Requests({
               aria-label="目标设备 ID"
               placeholder="粘贴对方的完整设备 ID"
               value={target}
-              onChange={(e) => setTarget(e.target.value)}
+              onChange={(e) => {
+                setTargetChoice("custom");
+                setTarget(e.target.value);
+              }}
               required
             />
+            {targetUnavailable && (
+              <p
+                id="request-target-unavailable"
+                className="hint field-notice"
+                role="status"
+              >
+                所选设备暂不支持此连接。请检查设备状态或重新选择。
+              </p>
+            )}
             <label>
               连接后可以做什么
               <select
@@ -2316,7 +2468,10 @@ function Requests({
                 autoComplete="off"
               />
             </label>
-            <button className="primary" disabled={busy || !state.deviceId}>
+            <button
+              className="primary"
+              disabled={busy || !state.deviceId || targetUnavailable}
+            >
               发送连接请求
             </button>
           </form>
@@ -2343,6 +2498,7 @@ function Requests({
             className="form"
             onSubmit={(e) => {
               e.preventDefault();
+              if (!inviteTargetAvailable) return;
               void act(
                 async () => {
                   const v = await api<{ code: string; id: string }>("invite", {
@@ -2367,24 +2523,30 @@ function Requests({
               <select
                 aria-label="允许对方连接哪台电脑"
                 value={inviteTarget}
+                aria-invalid={
+                  (!!inviteTarget && !inviteTargetAvailable) || undefined
+                }
+                aria-describedby={
+                  inviteTarget && !inviteTargetAvailable
+                    ? "invite-target-unavailable"
+                    : undefined
+                }
                 onChange={(e) => setInviteTarget(e.target.value)}
                 required
               >
                 <option value="">选择设备</option>
-                {devices
-                  .filter(
-                    (x) =>
-                      (invitePermission === "files"
-                        ? x.can_files
-                        : x.can_host) &&
-                      x.enabled &&
-                      x.online,
-                  )
-                  .map((d) => (
-                    <option key={d.id} value={d.id}>
-                      {d.name}
-                    </option>
-                  ))}
+                {inviteTarget && !inviteTargetAvailable && (
+                  <option value={inviteTarget} disabled>
+                    {devices.find((d) => d.id === inviteTarget)?.name ??
+                      "已选设备"}
+                    （当前不可用）
+                  </option>
+                )}
+                {inviteTargets.map((d) => (
+                  <option key={d.id} value={d.id}>
+                    {d.name}
+                  </option>
+                ))}
               </select>
             </label>
             <label>
@@ -2403,38 +2565,30 @@ function Requests({
                 <option value="files">仅传输文件</option>
               </select>
             </label>
+            {inviteTarget && !inviteTargetAvailable && (
+              <p
+                id="invite-target-unavailable"
+                className="hint field-notice"
+                role="status"
+              >
+                所选设备暂不支持此连接。请检查设备状态或重新选择。
+              </p>
+            )}
             <button
-              disabled={
-                busy ||
-                !!invite ||
-                !devices.some(
-                  (d) =>
-                    d.id === inviteTarget &&
-                    d.online &&
-                    d.enabled &&
-                    (invitePermission === "files" ? d.can_files : d.can_host),
-                )
-              }
+              disabled={busy || !!invite || !inviteTargetAvailable}
               className="secondary"
             >
               生成邀请码
             </button>
           </form>
-          {!devices.some(
-            (d) =>
-              d.online &&
-              d.enabled &&
-              (invitePermission === "files" ? d.can_files : d.can_host),
-          ) && (
+          {!inviteTargets.length && !inviteTarget && (
             <p className="hint">
               {invitePermission === "files"
                 ? "暂无可传输文件的在线电脑。请在对方电脑允许远程连接。"
                 : "还没有开启共享的在线电脑。请先在那台电脑开启本机共享。"}
             </p>
           )}
-          {invite && (
-            <p className="muted">更换设备或权限前，请先取消当前邀请。</p>
-          )}
+          {invite && <p className="muted">生成新邀请前，请先取消当前邀请。</p>}
           {invite && generatedInvite && (
             <div className="invite-code">
               <span>
@@ -2500,14 +2654,16 @@ function Requests({
             <span className="count">{pending.length}</span>
           </div>
           <p className="muted">只批准你认识的连接。</p>
-          {!state.sharing && pending.some((p) => p.permission !== "files") && (
+          {pending.some((p) =>
+            p.permission === "files" ? !state.filesEnabled : !state.sharing,
+          ) && (
             <p className="hint">
-              本机共享尚未开启。
+              请先开启“允许远程连接”。
               <button
                 className="text-button"
                 onClick={() => onNavigate("settings")}
               >
-                去开启共享
+                连接设置
               </button>
             </p>
           )}
@@ -2548,7 +2704,7 @@ function Requests({
                             await prepareTransport();
                           await api("decide", { id: p.id, approve: true });
                           if (p.permission === "files") onFiles(p.id);
-                        }, "已允许连接，对方现在可以连接这台电脑")
+                        }, "已允许连接")
                       }
                     >
                       {p.permission === "files"
@@ -2926,6 +3082,9 @@ function Viewer({
   const [toolsOpen, setToolsOpen] = useState(false);
   const [toolbarPinned, setToolbarPinned] = useState(false);
   const toolbarHovered = useRef(false);
+  const toolbarFocused = useRef(false);
+  const toolbar = useRef<HTMLElement>(null);
+  const focusToolbarOnReveal = useRef(false);
   const toolbarTimer = useRef<number | undefined>(undefined);
   const [profileWanted, setProfileWanted] = useState<number | null>(null);
   const [profilePending, setProfilePending] = useState<number | null>(null);
@@ -2979,14 +3138,28 @@ function Viewer({
     fileBusy;
   const scheduleHide = () => {
     window.clearTimeout(toolbarTimer.current);
-    if (!toolbarPinned && !toolsOpen && !toolbarHovered.current)
-      toolbarTimer.current = window.setTimeout(
-        () => setToolbarVisible(false),
-        2200,
-      );
+    if (
+      !toolbarPinned &&
+      !toolsOpen &&
+      !toolbarHovered.current &&
+      !toolbarFocused.current
+    )
+      toolbarTimer.current = window.setTimeout(() => {
+        if (!toolbarFocused.current) setToolbarVisible(false);
+      }, 2200);
   };
   useEffect(() => {
-    if (toolbarVisible) scheduleHide();
+    if (toolbarVisible) {
+      if (focusToolbarOnReveal.current) {
+        focusToolbarOnReveal.current = false;
+        toolbar.current
+          ?.querySelector<HTMLElement>(
+            "select:not(:disabled), button:not(:disabled), summary",
+          )
+          ?.focus({ preventScroll: true });
+      }
+      scheduleHide();
+    }
     return () => window.clearTimeout(toolbarTimer.current);
   }, [toolbarVisible, toolbarPinned, toolsOpen]);
   useEffect(() => {
@@ -3628,14 +3801,32 @@ function Viewer({
         <button
           className="viewer-reveal"
           onMouseEnter={() => setToolbarVisible(true)}
-          onClick={() => setToolbarVisible(true)}
+          onClick={(e) => {
+            focusToolbarOnReveal.current = e.detail === 0;
+            setToolbarVisible(true);
+          }}
         >
           显示工具栏
         </button>
       )}
       <div className="viewer-body">
         <header
+          ref={toolbar}
           className="viewer-toolbar"
+          onFocusCapture={() => {
+            toolbarFocused.current = true;
+            window.clearTimeout(toolbarTimer.current);
+            setToolbarVisible(true);
+          }}
+          onBlurCapture={(e) => {
+            if (
+              e.relatedTarget instanceof Node &&
+              e.currentTarget.contains(e.relatedTarget)
+            )
+              return;
+            toolbarFocused.current = false;
+            scheduleHide();
+          }}
           onMouseEnter={() => {
             toolbarHovered.current = true;
             window.clearTimeout(toolbarTimer.current);
@@ -4086,6 +4277,9 @@ function Security({
   const [oldPassword, setOld] = useState(""),
     [newPassword, setNew] = useState(""),
     [loadError, setLoadError] = useState(""),
+    [sessionsLoading, setSessionsLoading] = useState(true),
+    [sessionsLoaded, setSessionsLoaded] = useState(false),
+    [sessionsFailed, setSessionsFailed] = useState(false),
     [sessions, setSessions] = useState<
       {
         id: string;
@@ -4094,17 +4288,60 @@ function Security({
         current: boolean;
       }[]
     >([]);
+  const sessionsRequest = useRef({
+    active: false,
+    context: 0,
+    revision: 0,
+    pending: false,
+  });
+  const loadSessions = useCallback(async (replace = false) => {
+    const request = sessionsRequest.current;
+    if (!request.active || (request.pending && !replace)) return;
+    const revision = ++request.revision;
+    request.pending = true;
+    const current = () => request.active && request.revision === revision;
+    setSessionsLoading(true);
+    setSessionsFailed(false);
+    setLoadError("");
+    try {
+      const rows = await api<typeof sessions>("sessions");
+      if (!current()) return;
+      setSessions(rows);
+      setSessionsLoaded(true);
+    } catch (e) {
+      if (!current()) return;
+      setSessionsFailed(true);
+      setLoadError(errorText(e));
+    } finally {
+      if (current()) {
+        request.pending = false;
+        setSessionsLoading(false);
+      }
+    }
+  }, []);
   useEffect(() => {
-    void api<typeof sessions>("sessions")
-      .then(setSessions)
-      .catch((e) => setLoadError(errorText(e)));
-  }, [me.id]);
+    const request = sessionsRequest.current;
+    request.active = true;
+    request.context++;
+    setSessions([]);
+    setSessionsLoaded(false);
+    void loadSessions();
+    return () => {
+      request.active = false;
+      request.context++;
+      request.revision++;
+      request.pending = false;
+    };
+  }, [me.id, loadSessions]);
   return (
     <div className="stack">
       <FailureDialog
         error={loadError}
         onDismiss={() => setLoadError("")}
-        action={{ title: "无法加载登录记录" }}
+        action={{
+          title: "无法加载登录记录",
+          retry: () => void loadSessions(),
+        }}
       />
       <div className="two-col">
         <div className="card">
@@ -4175,29 +4412,34 @@ function Security({
           </div>
           <button
             className="text-button"
-            onClick={() =>
-              void api<typeof sessions>("sessions")
-                .then((rows) => {
-                  setSessions(rows);
-                  setLoadError("");
-                })
-                .catch((e) => setLoadError(errorText(e)))
-            }
+            aria-label="刷新登录记录"
+            disabled={busy || sessionsLoading}
+            onClick={() => void loadSessions()}
           >
-            刷新
+            {sessionsLoading
+              ? sessionsLoaded
+                ? "刷新中…"
+                : "加载中…"
+              : "刷新"}
           </button>
         </div>
+        {sessionsFailed && sessions.length > 0 && (
+          <p className="hint" role="status">
+            刷新失败，显示上次记录。
+          </p>
+        )}
         <div
           className="login-records"
           tabIndex={0}
           aria-label="账号登录记录列表"
+          aria-busy={sessionsLoading}
         >
           {sessions.length ? (
             sessions.map((x) => (
               <div className="list-row" key={x.id}>
                 <div>
                   <strong>
-                    {x.id === me.session_id ? "当前客户端" : "其他客户端登录"}
+                    {x.id === me.session_id ? "当前客户端" : "其他客户端"}
                   </strong>
                   <small>
                     登录时间：{dateLabel(x.created_at)}
@@ -4215,8 +4457,17 @@ function Security({
                     disabled={busy}
                     onClick={() =>
                       void act(async () => {
+                        const context = sessionsRequest.current.context;
                         await api("revoke_session", { id: x.id });
-                        setSessions(await api("sessions"));
+                        if (
+                          !sessionsRequest.current.active ||
+                          sessionsRequest.current.context !== context
+                        )
+                          return;
+                        setSessions((rows) =>
+                          rows.filter((row) => row.id !== x.id),
+                        );
+                        await loadSessions(true);
                       }, "已退出该客户端的登录")
                     }
                   >
@@ -4225,8 +4476,14 @@ function Security({
                 )}
               </div>
             ))
+          ) : sessionsLoading && !sessionsLoaded ? (
+            <div role="status">
+              <Empty text="正在加载登录记录…" />
+            </div>
+          ) : sessionsFailed ? (
+            <Empty text="登录记录暂时不可用，请刷新重试。" />
           ) : (
-            <Empty text="没有可显示的登录记录。" />
+            <Empty text="暂无登录记录" />
           )}
         </div>
       </div>
@@ -4246,7 +4503,7 @@ function Admin({
 }) {
   const [users, setUsers] = useState<User[]>([]),
     [after, setAfter] = useState(""),
-    [registration, setRegistration] = useState("open"),
+    [registration, setRegistration] = useState(""),
     [email, setEmail] = useState(invitation?.email ?? ""),
     [loadError, setLoadError] = useState(""),
     [deviceId, setDeviceId] = useState(""),
@@ -4264,6 +4521,10 @@ function Admin({
       }[]
     >([]);
   const [hasMore, setHasMore] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loaded, setLoaded] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const loadRequest = useRef({ active: false, revision: 0, pending: false });
   const invite = invitation?.code ?? "";
   const inviteId = invitation?.id ?? "";
   const inviteVisible = invitation?.visible ?? true;
@@ -4300,27 +4561,64 @@ function Admin({
       invite_only: "仅限邀请",
       closed: "关闭注册",
     })[value] ?? "详见记录详情";
-  const load = async () => {
-    const [u, r, s, a] = await Promise.all([
-      api<User[]>("admin_users"),
-      api<{ value: string }>("admin_registration"),
-      api<typeof sessions>("admin_sessions"),
-      api<typeof audit>("admin_audit"),
-    ]);
-    setUsers(u);
-    setHasMore(u.length === 100);
-    setAfter(u.at(-1)?.id ?? "");
-    setRegistration(r.value);
-    setSessions(s);
-    setAudit(a);
-  };
-  useEffect(() => {
-    void load().catch((e) => setLoadError(errorText(e)));
+  const load = useCallback(async () => {
+    const request = loadRequest.current;
+    if (!request.active || request.pending) return false;
+    const revision = ++request.revision;
+    const current = () => request.active && request.revision === revision;
+    request.pending = true;
+    setLoading(true);
+    setFailed(false);
+    setLoadError("");
+    try {
+      const [u, r, s, a] = await Promise.all([
+        api<User[]>("admin_users"),
+        api<{ value: string }>("admin_registration"),
+        api<typeof sessions>("admin_sessions"),
+        api<typeof audit>("admin_audit"),
+      ]);
+      if (!current()) return false;
+      setUsers(u);
+      setHasMore(u.length === 100);
+      setAfter(u.at(-1)?.id ?? "");
+      setRegistration(r.value);
+      setSessions(s);
+      setAudit(a);
+      setLoaded(true);
+      return true;
+    } catch (e) {
+      if (current()) {
+        setFailed(true);
+        setLoadError(errorText(e));
+      }
+      return false;
+    } finally {
+      if (current()) {
+        request.pending = false;
+        setLoading(false);
+      }
+    }
   }, []);
+  useEffect(() => {
+    const request = loadRequest.current;
+    request.active = true;
+    void load();
+    return () => {
+      request.active = false;
+      request.revision++;
+      request.pending = false;
+    };
+  }, [load]);
   const loadMore = () =>
     void act(
       async () => {
+        const revision = loadRequest.current.revision;
         const u = await api<User[]>("admin_users", { after });
+        if (
+          !loadRequest.current.active ||
+          loadRequest.current.revision !== revision
+        )
+          return HANDLED_FAILURE;
         setUsers((x) => [...x, ...u]);
         setAfter(u.at(-1)?.id ?? "");
         setHasMore(u.length === 100);
@@ -4330,12 +4628,41 @@ function Admin({
     );
   return (
     <div className="stack">
+      <PageActions>
+        <button
+          className="text-button"
+          aria-label="刷新管理数据"
+          disabled={busy || loading}
+          onClick={() =>
+            void act(
+              async () => ((await load()) ? undefined : HANDLED_FAILURE),
+              "管理数据已刷新",
+              false,
+            )
+          }
+        >
+          <ArrowSync20Regular aria-hidden="true" />
+          {loading ? (loaded ? "刷新中…" : "加载中…") : "刷新"}
+        </button>
+      </PageActions>
       {loadError && (
         <FailureDialog
           error={loadError}
           onDismiss={() => setLoadError("")}
-          action={{ title: "无法加载管理数据" }}
+          action={{ title: "无法加载管理数据", retry: () => void load() }}
         />
+      )}
+      {loading && !loaded && (
+        <p className="hint" role="status">
+          正在加载管理数据…
+        </p>
+      )}
+      {failed && (
+        <p className="hint" role="status">
+          {loaded
+            ? "刷新失败，当前显示上次获取的管理数据。"
+            : "管理数据暂时不可用，请刷新重试。"}
+        </p>
       )}
       <div className="two-col">
         <div className="card">
@@ -4345,23 +4672,32 @@ function Admin({
             className="inline-form"
             onSubmit={(e) => {
               e.preventDefault();
+              if (busy || !loaded || failed || loadRequest.current.pending)
+                return;
               void act(
                 () => api("admin_set_registration", { value: registration }),
-                "注册策略已更新",
+                "注册方式已更新",
               );
             }}
           >
             <select
               aria-label="账号注册方式"
               value={registration}
+              disabled={busy || loading || !loaded || failed}
               onChange={(e) => setRegistration(e.target.value)}
             >
+              {!loaded && (
+                <option value="">{loading ? "加载中…" : "暂不可用"}</option>
+              )}
               <option value="open">开放注册</option>
-              <option value="invite_only">仅邀请</option>
+              <option value="invite_only">仅限邀请</option>
               <option value="closed">关闭注册</option>
             </select>
-            <button className="primary" disabled={busy}>
-              保存注册方式
+            <button
+              className="primary"
+              disabled={busy || loading || !loaded || failed}
+            >
+              保存
             </button>
           </form>
         </div>
@@ -4401,7 +4737,7 @@ function Admin({
               onChange={(e) => setEmail(e.target.value)}
             />
             <button className="primary" disabled={busy || !!invite}>
-              生成注册邀请码
+              生成邀请码
             </button>
           </form>
           {invite && (
@@ -4466,7 +4802,7 @@ function Admin({
             onClick={() =>
               void act(
                 () => api("admin_device_revoke", { id: deviceId }),
-                "设备已禁用",
+                "设备已停用",
               )
             }
           >
@@ -4487,28 +4823,8 @@ function Admin({
         </div>
       </div>
       <div className="card">
-        <div className="section-heading">
-          <div>
-            <div className="eyebrow">USERS</div>
-            <h2>用户管理</h2>
-          </div>
-          <button
-            className="text-button"
-            disabled={busy}
-            onClick={() =>
-              void act(
-                async () => {
-                  await load();
-                  setLoadError("");
-                },
-                "管理数据已刷新",
-                false,
-              )
-            }
-          >
-            刷新管理数据
-          </button>
-        </div>
+        <div className="eyebrow">USERS</div>
+        <h2>用户管理</h2>
         {users.map((u) => (
           <div className="list-row" key={u.id}>
             <div>
@@ -4521,7 +4837,7 @@ function Admin({
             </div>
             <button
               className={u.enabled ? "danger-text" : "secondary"}
-              disabled={busy}
+              disabled={busy || loading}
               onClick={() =>
                 void act(
                   async () => {
@@ -4539,8 +4855,13 @@ function Admin({
             </button>
           </div>
         ))}
+        {loaded && !users.length && <Empty text="暂无用户" />}
         {hasMore && (
-          <button className="text-button" disabled={busy} onClick={loadMore}>
+          <button
+            className="text-button"
+            disabled={busy || loading}
+            onClick={loadMore}
+          >
             加载更多
           </button>
         )}
@@ -4569,9 +4890,9 @@ function Admin({
                 </div>
               </div>
             ))
-          ) : (
+          ) : loaded ? (
             <Empty text="暂无登录记录" />
-          )}
+          ) : null}
         </div>
         <div className="card">
           <div className="eyebrow">AUDIT</div>
@@ -4596,9 +4917,9 @@ function Admin({
                 </div>
               </div>
             ))
-          ) : (
-            <Empty text="暂无审计记录" />
-          )}
+          ) : loaded ? (
+            <Empty text="暂无操作记录" />
+          ) : null}
         </div>
       </div>
     </div>

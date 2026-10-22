@@ -588,7 +588,7 @@ select:focus {
 }
 @media (max-width: 580px) {
   .connection-intro > p,
-  .connection-list-pane > p {
+  .connection-list-pane > p.muted {
     display: none;
   }
   .connection-list-pane {
