@@ -42,7 +42,7 @@ Tauri automatically merges `apps/desktop/src-tauri/tauri.linux.conf.json`, selec
 
 ## ARM64 installation and architecture identification
 
-Use `FarSail_0.1.21_arm64.deb` on an ARM64 Linux desktop and the same-version `amd64.deb` on x64. Check the operating-system architecture and the package before installation, rather than selecting solely by processor model: a 64-bit ARM processor can run a 32-bit operating system.
+Use `FarSail_0.1.30_arm64.deb` on an ARM64 Linux desktop and the same-version `amd64.deb` on x64. Check the operating-system architecture and the package before installation, rather than selecting solely by processor model: a 64-bit ARM processor can run a 32-bit operating system.
 
 | Operating system | uname -m | Debian architecture | Rust target               |
 | ---------------- | -------- | ------------------- | ------------------------- |
@@ -54,15 +54,15 @@ After downloading the ARM64 installer, run from its directory:
 ```bash
 uname -m
 dpkg --print-architecture
-dpkg-deb -f ./FarSail_0.1.21_arm64.deb Package Version Architecture
+dpkg-deb -f ./FarSail_0.1.30_arm64.deb Package Version Architecture
 test "$(dpkg --print-architecture)" = arm64
-test "$(dpkg-deb -f ./FarSail_0.1.21_arm64.deb Architecture)" = arm64
-sudo apt install ./FarSail_0.1.21_arm64.deb
+test "$(dpkg-deb -f ./FarSail_0.1.30_arm64.deb Architecture)" = arm64
+sudo apt install ./FarSail_0.1.30_arm64.deb
 ```
 
 Native ARM64 desktops use the same source startup and build commands above; Tauri packages for the native Rust target. Merely adding a Rust target to an x64 machine does not establish ARM GTK/WebKitGTK compilation or execution. The release flow uses a separate ARM64 runner and checks the actual packaged ELF, dependencies, system keyring and native IPC. Automatic updates select `linux-aarch64-deb`; an older feed lacking this architecture reports no compatible update instead of downloading an amd64 package. See [client updates](CLIENT_UPDATES.md).
 
-The current [0.1.29 client release](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.29) publicly provides signed Ubuntu x64 and ARM64 packages, checksums and verification metadata. The [0.1.21 release](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.21) remains the first published ARM64/file-transfer baseline. Select the installer matching your architecture. Actions artifacts remain temporary build attachments; use the versioned Release for distribution. ARM64 has the same Linux client scope: Windows connections and independent file transfers, without local Linux screen sharing.
+The current [0.1.30 client release](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.30) publicly provides signed Ubuntu x64 and ARM64 packages, checksums and verification metadata. The [0.1.21 release](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.21) remains the first published ARM64/file-transfer baseline. Select the installer matching your architecture. Actions artifacts remain temporary build attachments; use the versioned Release for distribution. ARM64 has the same Linux client scope: Windows connections and independent file transfers, without local Linux screen sharing.
 
 ## Credential storage
 
@@ -77,4 +77,4 @@ bash scripts/test-desktop-linux.sh
 
 The script runs Rust tests, Clippy, the frontend and native build, then creates an isolated session bus, data directory and keyring. The actual WebKitGTK window checks Linux metadata, the absence of local screen-host capability, workspace bounds, settings IPC and binary media IPC. The Ubuntu workflow also runs the synthetic account/device and viewer regressions using Playwright WebKit and builds a Debian artifact. Local checks do not establish Ubuntu-to-Windows physical two-computer operation, a Wayland session, Ubuntu 24.04 installation or a public release.
 
-For Ubuntu binding HTTP 422 or distinct login feedback, follow the [production upgrade steps](UPGRADE_UBUNTU_LOGIN.md), then install the current desktop 0.1.29; 0.1.18 is the historical bootstrap version for that fix.
+For Ubuntu binding HTTP 422 or distinct login feedback, follow the [production upgrade steps](UPGRADE_UBUNTU_LOGIN.md), then install the current desktop 0.1.30; 0.1.18 is the historical bootstrap version for that fix.

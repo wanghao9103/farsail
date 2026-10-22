@@ -6,7 +6,7 @@
 
 FarSail 0.1.11 是支持自动适配与 720p/1080p/2K/4K 档位的 JPEG 查看/鼠标键盘控制预览。远程窗口默认最大化，使用与客户端一致的深色标题栏，全屏时隐藏；工具栏自动隐藏，移到顶部或点击显示入口可展开，并可固定显示。默认完整画面铺满可用区域，比例不同时会拉伸；“更多操作 → 画面显示”可选择保持比例（有意留边），选择会保留，鼠标坐标同步。编码不放大源显示器、不修改远端系统分辨率。需要 Windows 10/11 x64 的普通交互桌面；不需要安装 Rust、Node 或开发工具。此固定 0.1.11 安装包不包含文件传输；HEVC、自适应视频码率和手机端仍不可用。安全桌面、UAC 和无人登录桌面不支持。
 
-当前公开版本为 [0.1.29](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.29)，包含签名自动更新、Ubuntu/Windows [单文件传输](FILES.zh-CN.md)、远控一次批准后的文件粘贴及界面优化。三平台构建与 Windows 安装/重启/重装/卸载 CI 已通过；物理 Windows 文件传输仍需验收。下文固定 0.1.11 包与说明保留为历史记录，旧包不包含新增功能。
+当前公开版本为 [0.1.30](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.30)，包含签名自动更新、Ubuntu/Windows [单文件传输](FILES.zh-CN.md)、远控一次批准后的文件粘贴及界面优化。三平台构建与 Windows 安装/重启/重装/卸载 CI 已通过；物理 Windows 文件传输仍需验收。下文固定 0.1.11 包与说明保留为历史记录，旧包不包含新增功能。
 
 0.1.23 起在本机设备面板和设置页使用**允许远程连接**，取消独立文件接收开关。Windows 同时允许屏幕与文件请求，首次默认关闭，并保存选择，在普通重启后通过检查再恢复。关闭时结束本机接入的屏幕与文件连接。远程值守仍只自动批准同账号屏幕请求；文件连接需逐次批准，每个文件需本机选择保存位置。当前操作见[文件传输](FILES.zh-CN.md)，旧版 0.1.22 保留独立开关。
 
@@ -20,7 +20,7 @@ Windows 客户端 0.1.23 起在 FarSail 启动时申请管理员权限，无需�
 
 ## 下载与安装
 
-当前固定预发布：[下载安装包](https://github.com/wanghao9103/farsail/releases/download/windows-preview-0.1.11-70d9393/FarSail_0.1.11_x64-setup.exe)、[SHA256SUMS.txt](https://github.com/wanghao9103/farsail/releases/download/windows-preview-0.1.11-70d9393/SHA256SUMS.txt)，其余元数据见 [发布页](https://github.com/wanghao9103/farsail/releases/tag/windows-preview-0.1.11-70d9393)。源码 SHA、安装包 SHA256 和安装验证证据见 [INPUT-021](verification/WI-INPUT-021.zh-CN.md)。同时下载 `FarSail_0.1.11_x64-setup.exe`、`SHA256SUMS.txt`、`release-metadata.json`。PowerShell 在下载目录执行：
+历史固定预发布：[下载安装包](https://github.com/wanghao9103/farsail/releases/download/windows-preview-0.1.11-70d9393/FarSail_0.1.11_x64-setup.exe)、[SHA256SUMS.txt](https://github.com/wanghao9103/farsail/releases/download/windows-preview-0.1.11-70d9393/SHA256SUMS.txt)，其余元数据见 [发布页](https://github.com/wanghao9103/farsail/releases/tag/windows-preview-0.1.11-70d9393)。源码 SHA、安装包 SHA256 和安装验证证据见 [INPUT-021](verification/WI-INPUT-021.zh-CN.md)。同时下载 `FarSail_0.1.11_x64-setup.exe`、`SHA256SUMS.txt`、`release-metadata.json`。PowerShell 在下载目录执行：
 
 ```powershell
 $expected = ((Get-Content ./SHA256SUMS.txt -Raw).Trim() -split '\s+')[0]

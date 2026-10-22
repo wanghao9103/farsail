@@ -4,6 +4,12 @@
 
 # FarSail 实施与接力记录
 
+## 客户端 0.1.30 界面与状态处理已发布（2026-10-22）
+
+不可变标签 `client-v0.1.30` 指向 `cce49b2a1c1afeedf2d13eea6db6c96529e54258`。[发布工作流](https://github.com/wanghao9103/farsail/actions/runs/39719518066)与[公开版本](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.30)通过三平台签名包和原生安装检查。12 份公开附件与重建结果一致，签名和摘要核验通过，普通固定更新清单与版本清单逐字一致。同源的 [Windows](https://github.com/wanghao9103/farsail/actions/runs/39717675586) 和 [Ubuntu x64 / ARM64](https://github.com/wanghao9103/farsail/actions/runs/39717675562) 桌面、更新、文件和远控全部界面套件通过，包括每个平台 13 项更新弹窗用例、原生 IPC 边界与平台生命周期检查。
+
+认证页签支持键盘操作，子流程返回后恢复焦点，邮箱验证保留注册邮箱。安全与管理页刷新保留已有记录，未读取或读取失败的注册设置不可保存。文件页区分入站待批准、出站等待和已批准未建连状态，恢复窄窗口引导，空态可跳转选择设备。键盘焦点位于远控工具栏内部时保持可见。重复说明与按钮继续精简，关闭更新弹窗返回入口焦点，不启动下载或安装。真实已安装客户端跨版本更新、物理双机及交互式 UAC 仍待验收，见[客户端更新](CLIENT_UPDATES.zh-CN.md)。
+
 ## 客户端 0.1.29 文案与布局清理已发布（2026-10-21）
 
 不可变标签 `client-v0.1.29` 指向 `167a3dc387fb3355844bff69aed798c115d20204`。[发布工作流](https://github.com/wanghao9103/farsail/actions/runs/39566630437)与[公开版本](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.29)通过三平台签名包、原生安装与公开下载重建核验。Windows、Ubuntu x64 / ARM64 的桌面、更新弹窗13项、文件及远控界面回归通过。按钮只表达操作，页面操作移到主标题旁，统一控件与卡片间距，修正窄窗口导航及文件标题对齐。侧栏退出入口收进窗口菜单，仍走原有正常退出清理。真实已安装客户端跨版本更新、物理双机及交互式 UAC 仍待验收，见[客户端更新](CLIENT_UPDATES.zh-CN.md)。

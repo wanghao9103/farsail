@@ -42,7 +42,7 @@ Tauri 自动合并 `apps/desktop/src-tauri/tauri.linux.conf.json`，选择 Debia
 
 ## ARM64 安装与架构识别
 
-ARM64 Linux 桌面使用 `FarSail_0.1.21_arm64.deb`；x64 使用同版本的 `amd64.deb`。先检查实际操作系统架构，再核对安装包，不要仅凭处理器型号选择：64 位 ARM 处理器也可能安装了 32 位系统。
+ARM64 Linux 桌面使用 `FarSail_0.1.30_arm64.deb`；x64 使用同版本的 `amd64.deb`。先检查实际操作系统架构，再核对安装包，不要仅凭处理器型号选择：64 位 ARM 处理器也可能安装了 32 位系统。
 
 | 操作系统    | uname -m | Debian 架构 | Rust 目标                 |
 | ----------- | -------- | ----------- | ------------------------- |
@@ -54,15 +54,15 @@ ARM64 Linux 桌面使用 `FarSail_0.1.21_arm64.deb`；x64 使用同版本的 `am
 ```bash
 uname -m
 dpkg --print-architecture
-dpkg-deb -f ./FarSail_0.1.21_arm64.deb Package Version Architecture
+dpkg-deb -f ./FarSail_0.1.30_arm64.deb Package Version Architecture
 test "$(dpkg --print-architecture)" = arm64
-test "$(dpkg-deb -f ./FarSail_0.1.21_arm64.deb Architecture)" = arm64
-sudo apt install ./FarSail_0.1.21_arm64.deb
+test "$(dpkg-deb -f ./FarSail_0.1.30_arm64.deb Architecture)" = arm64
+sudo apt install ./FarSail_0.1.30_arm64.deb
 ```
 
 原生 ARM64 桌面可使用与上节相同的源码启动和构建命令，Tauri 依据原生 Rust 目标生成对应包。x64 机器上仅增加 Rust target 不足以完成 GTK/WebKitGTK 的 ARM 构建与运行验证；发布流程使用独立 ARM64 runner，检查真正的包内 ELF、依赖、系统密钥环和原生 IPC。自动更新按 `linux-aarch64-deb` 选择 ARM64 包，旧清单缺少该架构时会提示没有兼容更新，不下载 amd64 包。完整流程见[客户端更新](CLIENT_UPDATES.zh-CN.md)。
 
-[0.1.29 客户端 Release](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.29) 已公开 Ubuntu x64 与 ARM64 签名包、校验文件及验证元数据；[0.1.21 版本](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.21)保留为首个公开 ARM64/文件传输基线。用户应选择与本机架构一致的安装包。Actions 构建附件仍属于临时构建产物，公开分发以该版本 Release 为准。ARM64 仍具备 Linux 客户端的同一能力范围：连接 Windows、独立文件传输，不提供 Linux 本机屏幕共享。
+[0.1.30 客户端 Release](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.30) 已公开 Ubuntu x64 与 ARM64 签名包、校验文件及验证元数据；[0.1.21 版本](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.21)保留为首个公开 ARM64/文件传输基线。用户应选择与本机架构一致的安装包。Actions 构建附件仍属于临时构建产物，公开分发以该版本 Release 为准。ARM64 仍具备 Linux 客户端的同一能力范围：连接 Windows、独立文件传输，不提供 Linux 本机屏幕共享。
 
 ## 凭据存储
 
@@ -77,4 +77,4 @@ bash scripts/test-desktop-linux.sh
 
 脚本运行 Rust 测试、Clippy、前端与原生构建，再创建隔离的会话总线、数据目录和密钥环。真实 WebKitGTK 窗口检查 Linux 元数据、本机屏幕被控能力缺席、工作区边界、设置 IPC 和二进制媒体 IPC。Ubuntu 工作流还会使用 Playwright WebKit 执行账号/设备与查看端的合成回归，并构建 Debian 制品。本地检查不代表 Ubuntu 到 Windows 的物理双机远控、Wayland 会话、Ubuntu 24.04 安装或公开发布已验收。
 
-Ubuntu 绑定返回 422 或需要新的登录提示时，按[现网升级步骤](UPGRADE_UBUNTU_LOGIN.zh-CN.md)先升级协调服务，再安装当前客户端 0.1.29；0.1.18 是该修复的历史引导版本。
+Ubuntu 绑定返回 422 或需要新的登录提示时，按[现网升级步骤](UPGRADE_UBUNTU_LOGIN.zh-CN.md)先升级协调服务，再安装当前客户端 0.1.30；0.1.18 是该修复的历史引导版本。
