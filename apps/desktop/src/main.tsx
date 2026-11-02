@@ -3092,22 +3092,38 @@ function Viewer({
   const [autoQuality, setAutoQuality] = useState(true);
   const [viewportEdge, setViewportEdge] = useState(0);
   const [fullscreen, setFullscreen] = useState(false);
-  const [fitMode, setFitMode] = useState<"fill" | "contain">(() => {
-    try {
-      return localStorage.getItem("farsail.viewer.fit") === "contain"
-        ? "contain"
-        : "fill";
-    } catch {
-      return "fill";
-    }
+  // Phone and desktop choices are independent: the legacy desktop fill
+  // preference must never stretch a newly connected portrait phone.
+  const [fitChoices, setFitChoices] = useState(() => {
+    const read = (key: string, fallback: "fill" | "contain") => {
+      try {
+        const value = localStorage.getItem(key);
+        return value === "fill" || value === "contain" ? value : fallback;
+      } catch {
+        return fallback;
+      }
+    };
+    return {
+      desktop: read("farsail.viewer.fit", "fill"),
+      android: read("farsail.viewer.fit.android", "contain"),
+    };
   });
-  useEffect(() => {
+  const fitPlatform = status?.platform === "android" ? "android" : "desktop";
+  const fitMode = status ? fitChoices[fitPlatform] : "contain";
+  const setFitMode = (mode: "fill" | "contain") => {
+    setFitChoices((old) => ({ ...old, [fitPlatform]: mode }));
     try {
-      localStorage.setItem("farsail.viewer.fit", fitMode);
+      localStorage.setItem(
+        fitPlatform === "android"
+          ? "farsail.viewer.fit.android"
+          : "farsail.viewer.fit",
+        mode,
+      );
     } catch {
-      /* Session choice remains usable if storage is unavailable. */
+      /* This session remains usable without storage. */
     }
-  }, [fitMode]);
+  };
+  const phoneWindowConfigured = useRef(false);
   const windowAction = (action: string) =>
     void invoke<{ fullscreen?: boolean }>("viewer_window_action", { action })
       .then((s) => {
@@ -3388,6 +3404,14 @@ function Viewer({
     clearPointer();
     send(null);
   };
+  useEffect(() => {
+    releaseInputs();
+  }, [fitMode]);
+  useEffect(() => {
+    if (status?.platform !== "android" || phoneWindowConfigured.current) return;
+    phoneWindowConfigured.current = true;
+    windowAction("phone_layout");
+  }, [status?.platform]);
   const recoverMouse = () => {
     generation.current++;
     clearPointer();
@@ -3769,7 +3793,11 @@ function Viewer({
             onDoubleClick={() => windowAction("maximize")}
           >
             <span>
-              FarSail <span className="window-subtitle">遥舟 · 远程桌面</span>
+              FarSail{" "}
+              <span className="window-subtitle">
+                遥舟 ·{" "}
+                {status?.platform === "android" ? "远程手机" : "远程桌面"}
+              </span>
             </span>
           </div>
           <div className="window-controls">

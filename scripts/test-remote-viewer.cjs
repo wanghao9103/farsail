@@ -56,37 +56,42 @@ const fs = require("node:fs");
       delay: false,
       release: null,
     });
-    const canvas = document.createElement("canvas");
-    canvas.width = 800;
-    canvas.height = 450;
-    const ctx = canvas.getContext("2d");
-    ctx.fillStyle = "#274c52";
-    ctx.fillRect(0, 0, 800, 450);
-    ctx.fillStyle = "white";
-    ctx.font = "26px sans-serif";
-    ctx.fillText("Synthetic remote desktop", 40, 80);
-    for (const [x, y, color] of [
-      [0, 0, "#c84943"],
-      [736, 0, "#418de0"],
-      [0, 386, "#e3b94f"],
-      [736, 386, "#a05fd3"],
-    ]) {
-      ctx.fillStyle = color;
-      ctx.fillRect(x, y, 64, 64);
-    }
-    const jpeg = Uint8Array.from(
-      atob(canvas.toDataURL("image/jpeg").split(",")[1]),
-      (c) => c.charCodeAt(0),
-    );
-    const packet = new Uint8Array(49 + jpeg.length),
+    let packet, v;
+    f.frame = (width, height) => {
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext("2d");
+      ctx.fillStyle = "#274c52";
+      ctx.fillRect(0, 0, width, height);
+      ctx.fillStyle = "white";
+      ctx.font = "26px sans-serif";
+      ctx.fillText("Synthetic remote desktop", 40, 80);
+      for (const [x, y, color] of [
+        [0, 0, "#c84943"],
+        [width - 64, 0, "#418de0"],
+        [0, height - 64, "#e3b94f"],
+        [width - 64, height - 64, "#a05fd3"],
+      ]) {
+        ctx.fillStyle = color;
+        ctx.fillRect(x, y, 64, 64);
+      }
+      const jpeg = Uint8Array.from(
+        atob(canvas.toDataURL("image/jpeg").split(",")[1]),
+        (c) => c.charCodeAt(0),
+      );
+      packet = new Uint8Array(49 + jpeg.length);
       v = new DataView(packet.buffer);
-    packet.set([70, 83, 77, 49, 1]);
-    v.setUint32(5, 1);
-    v.setBigUint64(9, 1n);
-    v.setBigUint64(17, 1n);
-    v.setUint32(33, 800);
-    v.setUint32(37, 450);
-    packet.set(jpeg, 49);
+      packet.set([70, 83, 77, 49, 1]);
+      v.setUint32(5, 1);
+      v.setBigUint64(9, 1n);
+      v.setBigUint64(17, 1n);
+      v.setUint32(33, width);
+      v.setUint32(37, height);
+      packet.set(jpeg, 49);
+      f.lastFrame = 0;
+    };
+    f.frame(800, 450);
     window.__TAURI_INTERNALS__ = {
       metadata: { currentWindow: { label: "viewer-test" } },
       invoke: async (cmd, args = {}) => {
@@ -472,14 +477,28 @@ const fs = require("node:fs");
   );
   assert(await page.getByAltText("远端桌面").isVisible());
   await page.evaluate(() => (window.fixture.heartbeat = true));
-  const verifyFillPixels = async () => {
+  const verifyFillPixels = async (source = null) => {
     // This assertion measures a static frame. Avoid revoking its blob URL while img.decode() is pending.
     await page.evaluate(() => (window.fixture.heartbeat = false));
     await page.mouse.move(400, 300);
     await page.locator(".remote-screen").focus();
     await page.locator(".viewer-toolbar").waitFor({ state: "hidden" });
     await page.getByAltText("远端桌面").evaluate((img) => img.decode());
-    const area = await page.locator(".remote-screen").boundingBox();
+    let area = await page.locator(".remote-screen").boundingBox();
+    if (source) {
+      const scale = Math.min(
+        area.width / source.width,
+        area.height / source.height,
+      );
+      const width = source.width * scale,
+        height = source.height * scale;
+      area = {
+        x: area.x + (area.width - width) / 2,
+        y: area.y + (area.height - height) / 2,
+        width,
+        height,
+      };
+    }
     const points = [
       [0.03, 0.03],
       [0.97, 0.03],
@@ -1298,7 +1317,24 @@ const fs = require("node:fs");
   );
   await page.evaluate(() => {
     window.fixture.platform = "android";
+    window.fixture.frame(582, 1280);
   });
+  await page.waitForFunction(
+    () =>
+      document.querySelector(".remote-screen img")?.naturalWidth === 582 &&
+      !document.querySelector(".viewer-fill"),
+  );
+  assert.equal(
+    await page.evaluate(() => localStorage.getItem("farsail.viewer.fit")),
+    "fill",
+    "legacy desktop preference is retained without stretching phones",
+  );
+  await page.waitForFunction(() =>
+    window.fixture.calls.some(
+      (c) =>
+        c.cmd === "viewer_window_action" && c.args.action === "phone_layout",
+    ),
+  );
   await revealToolbar();
   await page.getByText("更多操作", { exact: true }).click();
   await page.getByRole("group", { name: "手机导航", exact: true }).waitFor();
@@ -1343,6 +1379,88 @@ const fs = require("node:fs");
   assert.equal(
     await page.getByRole("group", { name: "手机导航", exact: true }).count(),
     0,
+  );
+  await page.evaluate(() => {
+    window.fixture.permission = "control";
+  });
+  await page.waitForFunction(
+    () => document.querySelector(".remote-screen").tabIndex === 0,
+  );
+  if (await page.locator(".viewer-more[open]").count())
+    await page.getByText("更多操作", { exact: true }).click();
+  for (const size of [
+    { width: 1200, height: 800 },
+    { width: 640, height: 900 },
+    { width: 1920, height: 1080 },
+  ]) {
+    await page.setViewportSize(size);
+    await verifyFillPixels({ width: 582, height: 1280 });
+    const area = await page.getByAltText("远端桌面").boundingBox();
+    const scale = Math.min(area.width / 582, area.height / 1280);
+    const left = area.x + (area.width - 582 * scale) / 2;
+    const top = area.y + (area.height - 1280 * scale) / 2;
+    const before = await page.evaluate(() => window.fixture.calls.length);
+    await page.mouse.click(area.x + 2, area.y + area.height / 2);
+    await page.waitForTimeout(180);
+    assert.equal(
+      await page.evaluate(
+        (before) =>
+          window.fixture.calls
+            .slice(before)
+            .filter(
+              (c) =>
+                c.cmd === "remote_input" && c.args.input?.kind === "button",
+            ).length,
+        before,
+      ),
+      0,
+      "portrait side bands must not inject clicks",
+    );
+    await page.mouse.click(
+      left + 582 * scale * 0.25,
+      top + 1280 * scale * 0.75,
+    );
+    await page.waitForFunction(
+      (before) =>
+        window.fixture.calls
+          .slice(before)
+          .filter(
+            (c) => c.cmd === "remote_input" && c.args.input?.kind === "button",
+          ).length === 2,
+      before,
+    );
+    const input = await page.evaluate(
+      () =>
+        window.fixture.calls
+          .filter(
+            (c) => c.cmd === "remote_input" && c.args.input?.kind === "button",
+          )
+          .at(-1).args.input,
+    );
+    assert(
+      Math.abs(input.x - 0.25) < 0.005 && Math.abs(input.y - 0.75) < 0.005,
+      "portrait clicks use the fitted image rectangle",
+    );
+  }
+  await page.screenshot({
+    path: ".local/ui-verification/viewer-android-portrait.png",
+  });
+  await page.evaluate(() => window.fixture.frame(1280, 582));
+  await page.waitForFunction(
+    () => document.querySelector(".remote-screen img")?.naturalWidth === 1280,
+  );
+  await verifyFillPixels({ width: 1280, height: 582 });
+  assert.equal(
+    await page.evaluate(
+      () =>
+        window.fixture.calls.filter(
+          (c) =>
+            c.cmd === "viewer_window_action" &&
+            c.args.action === "phone_layout",
+        ).length,
+    ),
+    1,
+    "rotation and polling must not reset a user-resized phone window",
   );
   assert.deepEqual(errors, []);
   await browser.close();

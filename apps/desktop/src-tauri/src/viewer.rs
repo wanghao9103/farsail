@@ -174,6 +174,29 @@ pub async fn viewer_window_action(
         return Err("不是查看窗口".into());
     }
     let result = match action.as_str() {
+        "phone_layout" => {
+            let monitor = window.current_monitor().map_err(|e| e.to_string())?;
+            let (width, height) = monitor
+                .map(|m| {
+                    let size = m.size().to_logical::<f64>(m.scale_factor());
+                    (
+                        640.0_f64.min(size.width * 0.9),
+                        900.0_f64.min(size.height * 0.9),
+                    )
+                })
+                .unwrap_or((640.0, 800.0));
+            window.unmaximize().map_err(|e| e.to_string())?;
+            window
+                .set_min_size(Some(tauri::LogicalSize::new(360.0, 420.0)))
+                .map_err(|e| e.to_string())?;
+            window
+                .set_size(tauri::LogicalSize::new(width.max(360.0), height.max(420.0)))
+                .map_err(|e| e.to_string())?;
+            window
+                .set_title("FarSail · 远程手机")
+                .map_err(|e| e.to_string())?;
+            window.center()
+        }
         "minimize" => window.minimize(),
         "drag" => window.start_dragging(),
         "state" => Ok(()),
@@ -442,11 +465,15 @@ pub fn smoke_probe(webview: &tauri::Webview) {
         toggleFullscreen();
         await new Promise(r=>setTimeout(r,300));
         if(!document.querySelector('.viewer-titlebar')) throw Error('titlebar should return after fullscreen');
+        await invoke('viewer_window_action',{action:'phone_layout'});
+        await new Promise(r=>setTimeout(r,300));
+        const phone=await invoke('ipc_viewer_state');
+        if(phone.maximized || phone.width>641 || phone.height>901 || phone.height<=phone.width) throw Error('phone window sizing failed');
         await invoke('viewer_window_action',{action:'minimize'});
         await new Promise(r=>setTimeout(r,300));
         const minimized=await invoke('ipc_viewer_state');
         if(!minimized.minimized || !minimized.mainExists) throw Error('minimize/main isolation failed');
-        await invoke('ipc_smoke_report',{result:JSON.stringify({ok:true,denied,initial,restored,maximized,fullscreen,minimized})});
+        await invoke('ipc_smoke_report',{result:JSON.stringify({ok:true,denied,initial,restored,maximized,fullscreen,phone,minimized})});
         await invoke('viewer_window_action',{action:'close'});
       } catch(e) { await invoke('ipc_smoke_report',{result:JSON.stringify({ok:false,error:String(e),denied})}); }
     },800)"#);
@@ -455,8 +482,12 @@ pub fn smoke_probe(webview: &tauri::Webview) {
 #[cfg(debug_assertions)]
 #[tauri::command]
 pub fn ipc_viewer_state(window: tauri::WebviewWindow) -> Result<Value, String> {
+    let size = window
+        .inner_size()
+        .map_err(|e| e.to_string())?
+        .to_logical::<f64>(window.scale_factor().map_err(|e| e.to_string())?);
     Ok(
-        json!({"decorations":window.is_decorated().map_err(|e|e.to_string())?,"maximized":window.is_maximized().map_err(|e|e.to_string())?,"fullscreen":window.is_fullscreen().map_err(|e|e.to_string())?,"minimized":window.is_minimized().map_err(|e|e.to_string())?,"mainExists":window.app_handle().get_webview_window("main").is_some()}),
+        json!({"width":size.width,"height":size.height,"decorations":window.is_decorated().map_err(|e|e.to_string())?,"maximized":window.is_maximized().map_err(|e|e.to_string())?,"fullscreen":window.is_fullscreen().map_err(|e|e.to_string())?,"minimized":window.is_minimized().map_err(|e|e.to_string())?,"mainExists":window.app_handle().get_webview_window("main").is_some()}),
     )
 }
 pub fn cancel(app: &tauri::AppHandle, label: &str) -> Option<String> {
