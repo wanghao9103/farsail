@@ -40,3 +40,11 @@ Local logs and screenshots are under `.local/android-verification`. The reproduc
 Physical Android manufacturers, long-running battery behavior, Android 8–14 and 16 KB device runtime, production HTTPS relay, cross-NAT, mobile file transfer, audio, multitouch and arbitrary desktop shortcuts have not been accepted. Password inputs are excluded. An already-dispatched Android gesture can finish within 1.5 seconds after cancellation; pending actions are invalidated immediately.
 
 See [Android usage and build instructions](../ANDROID.md).
+
+## 0.1.2 sharing status and control authorization regression
+
+2026-11-02: Rust 9 tests, Clippy, debug/release builds and lint passed. Real emulator media, input, background operation, local stop, same-account automatic approval and foreign-account exclusion passed. Two device tests passed accessibility-entry location and persistent HTTP 409 failure details. Direct details may require a system signature permission; the fallback locates FarSail while retaining normal system confirmation.
+
+Coordinator package coordinator-android-026491f reproduced old Android HTTP 409, then passed a real isolated image upgrade with Android sharing, approval/revocation and retained data/backups. The user will upgrade production; this task did not deploy it. Android 0.1.2 / code 3 was installed in place on OPPO / Android 16 with the same certificate and original installation time. The physical phone was locked at final inspection; production sharing/control awaits the user upgrade.
+
+Actions 41402009662 completed successfully after retrying publication only; all 4 version assets retained their identities and digests. Canonical/versioned signed feeds matched; API digests, APK signature, original certificate and 16 KB alignment passed.
