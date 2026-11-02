@@ -19,6 +19,8 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -27,6 +29,9 @@ jobs:
         with:
           node-version: '22'
       - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
       - run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0' 'ndk;27.2.12479018'
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -60,6 +65,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -68,6 +75,9 @@ jobs:
         with:
           node-version: '22'
       - uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+          log-accepted-android-sdk-licenses: false
       - run: sdkmanager 'build-tools;35.0.0'
       - uses: actions/download-artifact@v4
         with:
@@ -78,7 +88,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           ANDROID_UPDATE_PRIVATE_KEY: ${{ secrets.ANDROID_UPDATE_PRIVATE_KEY }}
           RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
-        run: node scripts/publish-android-update.mjs
+        run: GITHUB_SHA="$(git rev-parse HEAD)" node scripts/publish-android-update.mjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:
