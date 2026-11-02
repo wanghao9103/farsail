@@ -32,8 +32,8 @@
   curl -q --fail --show-error --location --proto '=https' --proto-redir '=https' \
     --retry 2 --retry-max-time 120 --connect-timeout 20 --max-time 120 --max-filesize 1048576 \
     --output "$farsail_setup/install-farsail-update.sh" \
-    'https://github.com/wanghao9103/farsail/releases/download/coordinator-files-d21b298-online2/install-farsail-update.sh'
-  printf '%s  %s\n' 'fe05a3b49a6c733800f929531c4bb5691f1585b15fddfe9556ab3c5560b96727' \
+    'https://github.com/wanghao9103/farsail/releases/download/coordinator-android-026491f-resume1/install-farsail-update.sh'
+  printf '%s  %s\n' '2557d67da63a7ae4a2560b0a06ac11d15b1de6a2e4fcbfde885d6c769e16d2df' \
     "$farsail_setup/install-farsail-update.sh" | sha256sum -c -
   bash "$farsail_setup/install-farsail-update.sh"
 )
@@ -57,7 +57,9 @@ bash scripts/deploy/update-online.sh --latest /home/data/farsail
 bash scripts/deploy/update-online.sh --latest --check /home/data/farsail
 ```
 
-**当前工具发布：**2026-10-19 的 [online2](https://github.com/wanghao9103/farsail/releases/tag/coordinator-files-d21b298-online2) 恢复下载进度和阶段提示。工具源码 `108d919177a7fc23126b9c7bdeb87bf19b0c0f52`，服务包 `FarSail_coordinator_files_d21b298_online2_linux_amd64.tar.gz` 的 SHA256 为 `25d012117573456335b3ffa0dab72643792f72f8dcbafa9862c8f3e558f02b46`；镜像字节、源码和摘要沿用 online1。六个附件匿名下载、内外校验、公开首次安装命令及真实 `--check` 均通过；安装命令只在临时部署验证，尚未操作生产服务器。旧进程需退出后重新执行，才能显示新进度。
+**当前工具发布：**2026-11-02 的 [resume1](https://github.com/wanghao9103/farsail/releases/tag/coordinator-android-026491f-resume1) 默认启用 4 路分片、约 2 MB 单片、跨重跑续传和可读速度。先停止旧下载，使用上面的安装命令更新约 11 KB 的小工具包，再运行原命令。工具源码 `2723160bfc99ed345a911fc6a9b56157b76789d8`；完整包 SHA256 `4dd8383087235a9142821ff6236caebbd1d0b7d04133ed62f3ac3ebaa04469a7`。镜像源码仍为 `026491f297310659922099795c2a85ced1702a9f`、镜像字节未变，区别仅是工具及打包资料；新完整包也包含这些新工具。10 项真实 HTTPS 下载回归、36 项选择、19 项升级和 5 项安装检查，以及真实隔离镜像升级/自动同镜像免重启验证通过；公开小工具与安装命令在临时部署核验，未操作现网。
+
+**历史工具发布：**2026-10-19 的 [online2](https://github.com/wanghao9103/farsail/releases/tag/coordinator-files-d21b298-online2) 恢复下载进度和阶段提示。工具源码 `108d919177a7fc23126b9c7bdeb87bf19b0c0f52`，服务包 `FarSail_coordinator_files_d21b298_online2_linux_amd64.tar.gz` 的 SHA256 为 `25d012117573456335b3ffa0dab72643792f72f8dcbafa9862c8f3e558f02b46`；镜像字节、源码和摘要沿用 online1。六个附件匿名下载、内外校验、公开首次安装命令及真实 `--check` 均通过；安装命令只在临时部署验证，尚未操作生产服务器。旧进程需退出后重新执行，才能显示新进度。
 
 **发布状态：**2026-10-10 已公开[文件传输与自动升级服务端包](https://github.com/wanghao9103/farsail/releases/tag/coordinator-files-d21b298-online1)，附件 `FarSail_coordinator_files_d21b298_online1_linux_amd64.tar.gz` 的 SHA256 为 `3f78775afff275c6ff8652c5300e759f88e4b3a3a96e17b8f5038081f48f970c`，包括同名校验附件及首次安装工具。镜像源码为 `d21b298d9b4327032c204f852a540c7d4a88f433`，升级工具和发布标签源码为 `fc17a7ce4ef84b5569b791da54534a95ff42a450`。归档字节保持验证时的原值，包内“尚未发布”与 `published: false` 是构建时快照；公开状态以该 Release 为准。尚未执行现网升级。旧地址与校验参数模式仍可用于明确选择的历史版本，见 [Ubuntu/登录升级](UPGRADE_UBUNTU_LOGIN.zh-CN.md)和[邮件升级](EMAIL_VERIFICATION_UPDATE.zh-CN.md)。
 
@@ -85,7 +87,9 @@ bash scripts/deploy/update-online.sh --latest --check /home/data/farsail
 
 升级脚本使用与其他运维命令相同的部署操作锁。在锁内复核所选镜像、已安装源码及成功在线升级记录，拒绝会将 Compose 指向其他镜像或部署的环境变量覆盖，并校验导入的 Linux amd64 镜像配置摘要。
 
-如果运行中的协调服务健康、已使用所选不可变镜像，且元数据一致，直接成功返回，不再次导入镜像、备份数据库或重启。相同标签但不健康或摘要不一致时报告问题，不误报已是最新。
+通过自动入口执行时，如果运行中的协调服务健康、已使用所选不可变镜像，且元数据一致，直接成功返回，不再次导入镜像、备份数据库或重启。相同标签但不健康或摘要不一致时报告问题，不误报已是最新。
+
+手动指定完整包时，已选中同一镜像会拒绝重复升级；仅刷新下载工具应使用小工具安装器。
 
 真正升级时，先确认旧镜像仍可回退，生成私有 PostgreSQL 备份并检查可读取，保存原镜像选择和版本记录；然后只重建协调服务并等待健康。成功后原子写入版本元数据和在线升级记录，包中包含工具时刷新常驻入口。升级或版本记录发布失败时，恢复旧协调服务选择及对应版本记录，再尝试重建旧协调服务。新增数据库迁移保持，不自动用旧数据库覆盖当前用户数据。若仅后续工具安装失败，协调服务保留已健康提交的版本，安装器恢复原工具入口；诊断会明确区分这一情况。
 
