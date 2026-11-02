@@ -1962,6 +1962,47 @@ main > .alert {
 .viewer-fill .remote-screen img {
   object-fit: fill;
 }
+/* Phone navigation owns space below the fitted image, never its pixels. */
+.viewer-phone-navigation {
+  flex: none;
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid #344b5c;
+  background: #202830;
+}
+.viewer-phone-navigation button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 92px;
+  min-height: 42px;
+  padding: 8px 14px;
+  border: 1px solid #465560;
+  border-radius: 6px;
+  background: #27313b;
+  color: #e5efec;
+  font-size: 13px;
+}
+.viewer-phone-navigation button:hover:not(:disabled) {
+  background: #344552;
+}
+.viewer-phone-navigation button:focus-visible {
+  outline: 2px solid #69d8b3;
+  outline-offset: 2px;
+}
+.viewer-phone-navigation button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.viewer-phone-navigation svg {
+  width: 20px;
+  height: 20px;
+  flex: none;
+  fill: currentColor;
+}
 .viewer-fit-settings {
   margin-bottom: 16px;
 }

@@ -1317,6 +1317,7 @@ const fs = require("node:fs");
   );
   await page.evaluate(() => {
     window.fixture.platform = "android";
+    window.fixture.video.supported = false;
     window.fixture.frame(582, 1280);
   });
   await page.waitForFunction(
@@ -1335,9 +1336,26 @@ const fs = require("node:fs");
         c.cmd === "viewer_window_action" && c.args.action === "phone_layout",
     ),
   );
-  await revealToolbar();
-  await page.getByText("更多操作", { exact: true }).click();
   await page.getByRole("group", { name: "手机导航", exact: true }).waitFor();
+  await page.mouse.move(400, 300);
+  await page.locator(".remote-screen").focus();
+  await page.locator(".viewer-toolbar").waitFor({ state: "hidden" });
+  assert(
+    await page.getByRole("button", { name: "主屏幕", exact: true }).isVisible(),
+    "phone home must stay visible with the toolbar hidden",
+  );
+  assert.equal(
+    await page
+      .getByRole("combobox", { name: "画面分辨率", exact: true })
+      .count(),
+    0,
+    "phones without profile switching must not be told to update",
+  );
+  assert.equal(
+    await page.getByRole("button", { name: "传输文件", exact: true }).count(),
+    0,
+    "unsupported phone transfer must not obscure navigation",
+  );
   assert.equal(await switchWindow().count(), 0);
   for (const [label, vk] of [
     ["返回", 0xa6],
@@ -1378,7 +1396,33 @@ const fs = require("node:fs");
   await page.waitForTimeout(900);
   assert.equal(
     await page.getByRole("group", { name: "手机导航", exact: true }).count(),
+    1,
+  );
+  assert.equal(
+    await page.locator(".viewer-phone-navigation button:disabled").count(),
+    3,
+    "view-only phone navigation is visible but unavailable",
+  );
+  const beforeViewNavigation = await page.evaluate(
+    () => window.fixture.calls.length,
+  );
+  await page
+    .getByRole("button", { name: "主屏幕", exact: true })
+    .evaluate((b) =>
+      b.dispatchEvent(new MouseEvent("click", { bubbles: true })),
+    );
+  assert.equal(
+    await page.evaluate(
+      (before) =>
+        window.fixture.calls
+          .slice(before)
+          .filter(
+            (c) => c.cmd === "remote_input" && c.args.input?.kind === "key",
+          ).length,
+      beforeViewNavigation,
+    ),
     0,
+    "view-only cannot dispatch navigation",
   );
   await page.evaluate(() => {
     window.fixture.permission = "control";
@@ -1391,10 +1435,29 @@ const fs = require("node:fs");
   for (const size of [
     { width: 1200, height: 800 },
     { width: 640, height: 900 },
+    { width: 360, height: 640 },
     { width: 1920, height: 1080 },
   ]) {
     await page.setViewportSize(size);
     await verifyFillPixels({ width: 582, height: 1280 });
+    const navigation = await page
+      .getByRole("group", { name: "手机导航", exact: true })
+      .boundingBox();
+    const remoteArea = await page.locator(".remote-screen").boundingBox();
+    assert(
+      navigation.y >= remoteArea.y + remoteArea.height - 1,
+      "navigation reserves space outside the phone pixels",
+    );
+    assert(
+      navigation.y + navigation.height <= size.height + 1,
+      "navigation stays inside small windows",
+    );
+    assert.equal(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth > innerWidth,
+      ),
+      false,
+    );
     const area = await page.getByAltText("远端桌面").boundingBox();
     const scale = Math.min(area.width / 582, area.height / 1280);
     const left = area.x + (area.width - 582 * scale) / 2;
@@ -1442,8 +1505,51 @@ const fs = require("node:fs");
       "portrait clicks use the fitted image rectangle",
     );
   }
+  const beforeKeyboardHome = await page.evaluate(
+    () => window.fixture.calls.length,
+  );
+  await page.getByRole("button", { name: "主屏幕", exact: true }).focus();
+  await page.keyboard.press("Enter");
+  await page.waitForFunction(
+    (before) =>
+      window.fixture.calls
+        .slice(before)
+        .filter((c) => c.cmd === "remote_input" && c.args.input?.kind === "key")
+        .length === 2,
+    beforeKeyboardHome,
+  );
+  const homeKeys = await page.evaluate(
+    (before) =>
+      window.fixture.calls
+        .slice(before)
+        .filter((c) => c.cmd === "remote_input" && c.args.input?.kind === "key")
+        .map((c) => c.args.input.vk),
+    beforeKeyboardHome,
+  );
+  assert.deepEqual(
+    homeKeys,
+    [0xac, 0xac],
+    "keyboard activation cannot leak Enter into the phone",
+  );
+  await revealToolbar();
+  await page.getByText("全屏切换", { exact: true }).click();
+  assert(
+    await page
+      .getByRole("group", { name: "手机导航", exact: true })
+      .isVisible(),
+    "fullscreen keeps phone navigation accessible",
+  );
   await page.screenshot({
-    path: ".local/ui-verification/viewer-android-portrait.png",
+    path: ".local/ui-verification/viewer-phone-navigation-fullscreen.png",
+  });
+  await revealToolbar();
+  await page.getByText("全屏切换", { exact: true }).click();
+  await page.setViewportSize({ width: 640, height: 900 });
+  await page.mouse.move(400, 300);
+  await page.locator(".remote-screen").focus();
+  await page.locator(".viewer-toolbar").waitFor({ state: "hidden" });
+  await page.screenshot({
+    path: ".local/ui-verification/viewer-phone-navigation.png",
   });
   await page.evaluate(() => window.fixture.frame(1280, 582));
   await page.waitForFunction(

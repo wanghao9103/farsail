@@ -42,6 +42,7 @@ import {
   Dismiss16Regular,
   Subtract16Regular,
   Square16Regular,
+  SquareMultiple20Regular,
   ChevronRight16Regular,
   ChevronLeft16Regular,
   ArrowSync20Regular,
@@ -3920,63 +3921,68 @@ function Viewer({
               ))}
             </select>
           </label>
-          <label className="viewer-quality-selector">
-            <span className="sr-only">画面分辨率</span>
-            <select
-              aria-label="画面分辨率"
-              disabled={ended || !status?.video?.supported}
-              value={
-                status?.video?.supported
-                  ? autoQuality
-                    ? -2
-                    : (profileWanted ?? status.video.profile)
-                  : -1
-              }
-              title={
-                !status?.video?.supported ? "被控端需更新后才能切换" : undefined
-              }
-              onChange={(e) => {
-                const profile = Number(e.target.value);
-                setAutoQuality(profile === -2);
-                if (profile !== -2) requestProfile(profile);
-              }}
-            >
-              <option value="-1" disabled>
-                {picture ? "对方需更新" : "等待画面"}
-              </option>
-              <option value="-2">自动适配</option>
-              <option value="0">720p · 省流</option>
-              <option value="1">1080p · 高清</option>
-              <option
-                value="2"
-                disabled={(status?.video?.max_profile ?? 1) < 2}
+          {(status?.platform !== "android" || status.video?.supported) && (
+            <label className="viewer-quality-selector">
+              <span className="sr-only">画面分辨率</span>
+              <select
+                aria-label="画面分辨率"
+                disabled={ended || !status?.video?.supported}
+                value={
+                  status?.video?.supported
+                    ? autoQuality
+                      ? -2
+                      : (profileWanted ?? status.video.profile)
+                    : -1
+                }
+                title={
+                  !status?.video?.supported
+                    ? "被控端需更新后才能切换"
+                    : undefined
+                }
+                onChange={(e) => {
+                  const profile = Number(e.target.value);
+                  setAutoQuality(profile === -2);
+                  if (profile !== -2) requestProfile(profile);
+                }}
               >
-                2K · 超清
-              </option>
-              <option
-                value="3"
-                disabled={(status?.video?.max_profile ?? 1) < 3}
-              >
-                4K · 超清
-              </option>
-            </select>
-          </label>
+                <option value="-1" disabled>
+                  {picture ? "对方需更新" : "等待画面"}
+                </option>
+                <option value="-2">自动适配</option>
+                <option value="0">720p · 省流</option>
+                <option value="1">1080p · 高清</option>
+                <option
+                  value="2"
+                  disabled={(status?.video?.max_profile ?? 1) < 2}
+                >
+                  2K · 超清
+                </option>
+                <option
+                  value="3"
+                  disabled={(status?.video?.max_profile ?? 1) < 3}
+                >
+                  4K · 超清
+                </option>
+              </select>
+            </label>
+          )}
 
           <div className="viewer-toolbar-actions">
-            {status?.permission === "control" && (
-              <button
-                disabled={!control || !status.files?.supported}
-                title={
-                  status.files?.supported
-                    ? undefined
-                    : "需两端更新至支持远控文件传输的版本"
-                }
-                onClick={() => void pasteFiles(true)}
-              >
-                <Folder20Regular aria-hidden="true" />
-                {fileBusy ? "正在传输…" : "传输文件"}
-              </button>
-            )}
+            {status?.permission === "control" &&
+              (status.platform !== "android" || status.files?.supported) && (
+                <button
+                  disabled={!control || !status.files?.supported}
+                  title={
+                    status.files?.supported
+                      ? undefined
+                      : "需两端更新至支持远控文件传输的版本"
+                  }
+                  onClick={() => void pasteFiles(true)}
+                >
+                  <Folder20Regular aria-hidden="true" />
+                  {fileBusy ? "正在传输…" : "传输文件"}
+                </button>
+              )}
             <details
               className="viewer-more"
               onToggle={(e) => setToolsOpen(e.currentTarget.open)}
@@ -4043,34 +4049,6 @@ function Viewer({
                       <button type="button" onClick={recoverMouse}>
                         恢复鼠标控制
                       </button>
-                    )}
-                    {control && status?.platform === "android" && (
-                      <div role="group" aria-label="手机导航">
-                        {(
-                          [
-                            [0xa6, "返回"],
-                            [0xac, "主屏幕"],
-                            [0x5d, "最近任务"],
-                          ] as const
-                        ).map(([vk, label]) => (
-                          <button
-                            type="button"
-                            key={vk}
-                            onClick={() => {
-                              releaseInputs();
-                              send({
-                                kind: "key",
-                                vk,
-                                down: true,
-                                repeat: false,
-                              });
-                              send({ kind: "key", vk, down: false });
-                            }}
-                          >
-                            {label}
-                          </button>
-                        ))}
-                      </div>
                     )}
                     {control && status?.platform !== "android" && (
                       <button type="button" onClick={switchRemoteWindow}>
@@ -4313,6 +4291,38 @@ function Viewer({
             </div>
           )}
         </div>
+        {status?.platform === "android" && (
+          <div
+            className="viewer-phone-navigation"
+            role="group"
+            aria-label="手机导航"
+          >
+            {(
+              [
+                [0xa6, "返回", ChevronLeft16Regular],
+                [0xac, "主屏幕", Home20Regular],
+                [0x5d, "最近任务", SquareMultiple20Regular],
+              ] as const
+            ).map(([vk, label, Icon]) => (
+              <button
+                type="button"
+                key={vk}
+                disabled={!control}
+                title={!control ? "当前无法控制手机" : label}
+                onClick={() => {
+                  if (!controlRef.current || !displayGate.current.canControl())
+                    return;
+                  releaseInputs();
+                  send({ kind: "key", vk, down: true, repeat: false });
+                  send({ kind: "key", vk, down: false });
+                }}
+              >
+                <Icon aria-hidden="true" />
+                <span>{label}</span>
+              </button>
+            ))}
+          </div>
+        )}
       </div>
     </section>
   );
