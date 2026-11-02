@@ -20,7 +20,7 @@ const info=execFileSync(`${process.env.ANDROID_HOME}/build-tools/35.0.0/aapt`,['
 if(!info.includes(`package: name='app.farsail.android' versionCode='${version.versionCode}' versionName='${version.version}'`))throw Error('APK metadata does not match release');
 if(info.includes('application-debuggable'))throw Error('Do not publish a debuggable APK');
 const digest=crypto.createHash('sha256').update(bytes).digest('hex');
-const payload={packageName:'app.farsail.android',version:version.version,versionCode:version.versionCode,url:`https://github.com/${repo}/releases/download/${tag}/${name}`,sha256:digest,size:bytes.length,notes:'登录、注册、邮箱验证与设置独立页面；支持签名更新。'};
+const payload={packageName:'app.farsail.android',version:version.version,versionCode:version.versionCode,url:`https://github.com/${repo}/releases/download/${tag}/${name}`,sha256:digest,size:bytes.length,notes:'明确显示共享状态及失败原因，定位辅助功能授权；同账号电脑无需手机重复确认。服务端需升级安卓共享支持。'};
 const raw=Buffer.from(JSON.stringify(payload));
 const signing=crypto.createPrivateKey(process.env.ANDROID_UPDATE_PRIVATE_KEY||fs.readFileSync('.local/android-signing/updates-private.pem'));
 const publicBytes=crypto.createPublicKey(signing).export({type:'spki',format:'der'}).subarray(-32);

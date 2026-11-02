@@ -20,9 +20,17 @@ class CaptureService : Service() {
     companion object {
         const val STOP = "app.farsail.android.STOP"
         @Volatile var running = false
+        @Volatile var phase = "off"
+        @Volatile var detail = "电脑暂时无法查看这台手机。"
+        fun status(context: Context, next: String, text: String) {
+            phase = next; detail = text
+            android.util.Log.i("FarSailSharing", "State: $next")
+            val app = context.applicationContext as FarSailApp
+            app.main.post { app.observer?.invoke() }
+        }
         @Volatile var screenWidth = 0
         @Volatile var screenHeight = 0
-        fun stop(context: Context) { context.stopService(Intent(context, CaptureService::class.java)) }
+        fun stop(context: Context) { status(context, "off", "共享已停止，电脑无法继续查看。"); context.stopService(Intent(context, CaptureService::class.java)) }
     }
     private val app get() = application as FarSailApp
     private val handler = Handler(Looper.getMainLooper())
@@ -39,7 +47,7 @@ class CaptureService : Service() {
     private var layout = 0L
     private var lastFrame = 0L
     private val callback = object : MediaProjection.Callback() {
-        override fun onStop() { NativeBridge.stopLocal(); handler.post { app.messageScope = "HOME"; app.message = "系统已结束屏幕共享，请重新开启。"; stopSelf() } }
+        override fun onStop() { if (!stopped) { NativeBridge.stopLocal(); handler.post { if (!stopped && phase != "failed") { status(this@CaptureService, "off", "系统已结束屏幕共享，请重新开启。"); stopSelf() } } } }
         override fun onCapturedContentResize(width: Int, height: Int) {
             if (!stopped && width > 0 && height > 0) resize(width, height)
         }
@@ -62,10 +70,11 @@ class CaptureService : Service() {
             .addAction(Notification.Action.Builder(null, "停止共享", stop).build()).build()
     }
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == STOP) { NativeBridge.stopLocal(); ControlService.cancel(); stopSelf(); return START_NOT_STICKY }
+        if (intent?.action == STOP) { status(this, "off", "共享已停止，电脑无法继续查看。"); NativeBridge.stopLocal(); ControlService.cancel(); stopSelf(); return START_NOT_STICKY }
         if (running || intent == null) { if (!running) stopSelf(); return START_NOT_STICKY }
         val data = if (Build.VERSION.SDK_INT >= 33) intent.getParcelableExtra("data", Intent::class.java) else @Suppress("DEPRECATION") intent.getParcelableExtra("data")
         if (data == null || intent.getIntExtra("result", 0) != Activity.RESULT_OK) { stopSelf(); return START_NOT_STICKY }
+        status(this, "starting", "已获得系统授权，正在连接服务器…")
         try {
             if (Build.VERSION.SDK_INT >= 29) startForeground(41, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
             else startForeground(41, notification())
@@ -74,19 +83,33 @@ class CaptureService : Service() {
             projection = getSystemService(MediaProjectionManager::class.java).getMediaProjection(Activity.RESULT_OK, data)
             projection!!.registerCallback(callback, capture)
             running = true
+            app.observer?.invoke()
             val size = dimensions(this)
             capture.post { try { resize(size.first, size.second) } catch (e: Exception) { fail(e) } }
             wake = getSystemService(PowerManager::class.java).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "FarSail:Sharing").apply { acquire(8 * 60 * 60 * 1000L) }
             app.io.execute {
-                try { app.invoke("share", JSONObject().put("epoch", epoch)); app.messageScope = "HOME"; app.message = "等待电脑连接，切到后台后也可继续共享。" }
-                catch (e: Exception) { app.messageScope = "HOME"; app.message = "开启共享失败：${if (e.message?.contains("409") == true) "请确认服务端已升级安卓支持，并重新开启共享。" else app.friendly(e.message ?: "请重试。")}"; handler.post { stopSelf() } }
+                try {
+                    app.invoke("share", JSONObject().put("epoch", epoch))
+                    if (!stopped && running) status(this, "sharing", "电脑现在可以申请连接，切到后台也可继续共享。")
+                } catch (e: Exception) { fail(e, "coordinator") }
                 try { app.refresh() } catch (_: Exception) { }
             }
             handler.post(poll)
         } catch (e: Exception) { fail(e) }
         return START_NOT_STICKY
     }
-    private fun fail(e: Exception) { handler.post { app.messageScope = "HOME"; app.message = "屏幕共享已停止：${e.message}"; stopSelf() } }
+    private fun fail(e: Exception, stage: String = "capture") {
+        NativeBridge.stopLocal()
+        val code = Regex("(?:^|[^0-9])(401|403|409|429|500|502|503)(?:[^0-9]|$)").find(e.message.orEmpty())?.groupValues?.get(1) ?: e.javaClass.simpleName
+        android.util.Log.w("FarSailSharing", "Sharing failed: stage=$stage code=$code")
+        handler.post {
+            if (stopped) return@post
+            val reason = if (stage == "coordinator" && code == "409") "服务器拒绝安卓共享（409）。请升级服务器的安卓共享支持。" else app.friendly(e.message ?: "请重试。")
+            status(this, "failed", reason)
+            app.messageScope = "HOME"; app.message = "开启共享失败：$reason"
+            stopSelf()
+        }
+    }
     private fun resize(w: Int, h: Int) {
         if (stopped || (screenWidth == w && screenHeight == h && display != null)) return
         screenWidth = w; screenHeight = h
@@ -139,7 +162,7 @@ class CaptureService : Service() {
                             if (Build.VERSION.SDK_INT < 33 || checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
                                 getSystemService(NotificationManager::class.java).notify(41, notification())
                             }
-                            if (!app.state.optBoolean("sharing")) { app.messageScope = "HOME"; app.message = "远程连接已停止，请重新开启共享。"; stopSelf() }
+                            if (phase == "sharing" && !app.state.optBoolean("sharing")) { status(this@CaptureService, "failed", "服务器连接已停止，请重新开启共享。"); stopSelf() }
                         }
                         app.observer?.invoke()
                     } }
@@ -150,6 +173,7 @@ class CaptureService : Service() {
     }
     override fun onDestroy() {
         stopped = true; running = false
+        if (phase != "failed") status(this, "off", "共享已停止，电脑无法继续查看。")
         NativeBridge.stopLocal(); ControlService.cancel()
         handler.removeCallbacks(poll)
         capture.post {

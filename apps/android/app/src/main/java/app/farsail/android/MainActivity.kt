@@ -14,7 +14,7 @@ import android.widget.*
 import org.json.JSONObject
 
 class MainActivity : Activity() {
-    private enum class Page { LOGIN, REGISTER, VERIFY, SERVER, SETTINGS, UPDATES, HOME }
+    private enum class Page { LOGIN, REGISTER, VERIFY, SERVER, SETTINGS, UPDATES, CONTROL_SETUP, HOME }
     private val app get() = application as FarSailApp
     private lateinit var ui: MobileUi
     private lateinit var body: LinearLayout
@@ -27,6 +27,10 @@ class MainActivity : Activity() {
     private var email = ""
     private var authEmail: EditText? = null
     private var status: TextView? = null
+    private var sharingDetail: TextView? = null
+    private var controlDetail: TextView? = null
+    private var pendingControlEnable = false
+    private var guideConnected = false
     private var share: Button? = null
     private var control: Switch? = null
     private var requestBox: LinearLayout? = null
@@ -40,6 +44,7 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         ui = MobileUi(this)
         email = savedInstanceState?.getString("email") ?: ""
+        pendingControlEnable = savedInstanceState?.getBoolean("pendingControlEnable") ?: false
         page = savedInstanceState?.getString("page")?.let { runCatching { Page.valueOf(it) }.getOrNull() } ?: Page.LOGIN
         val scroll = ScrollView(this).apply { setBackgroundColor(ui.background); isFillViewport = true }
         body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(ui.dp(24), ui.dp(16), ui.dp(24), ui.dp(24)) }
@@ -54,10 +59,11 @@ class MainActivity : Activity() {
     }
     override fun onResume() { super.onResume(); app.observer = { draw() }; draw(); app.updates.maybeCheck() }
     override fun onPause() { app.observer = null; super.onPause() }
-    override fun onSaveInstanceState(outState: Bundle) { rememberEmail(); outState.putString("email", email); outState.putString("page", page.name); super.onSaveInstanceState(outState) }
+    override fun onSaveInstanceState(outState: Bundle) { rememberEmail(); outState.putString("email", email); outState.putString("page", page.name); outState.putBoolean("pendingControlEnable", pendingControlEnable); super.onSaveInstanceState(outState) }
     @Deprecated("Framework back callback") override fun onBackPressed() { if (!back()) super.onBackPressed() }
     private fun rememberEmail() { authEmail?.let { email = it.text.toString().trim() } }
     private fun go(next: Page, replace: Boolean = false) {
+        if (page == Page.CONTROL_SETUP && next != page) pendingControlEnable = false
         rememberEmail(); authEmail = null
         if (!replace && next != page) history.addLast(page)
         navigationEpoch++; page = next; rendered = null; app.message = ""; draw()
@@ -76,12 +82,19 @@ class MainActivity : Activity() {
     private fun bound() = app.state.optString("deviceId").let { it.isNotBlank() && it != "null" }
     private fun primary(parent: LinearLayout, title: String, action: () -> Unit) = ui.button(parent, title, action = action).also { busyButtons.add(it); it.isEnabled = app.ready && !app.busy }
     private fun draw() {
+        if (pendingControlEnable && ControlService.instance != null && app.ready && signedIn() && bound()) {
+            pendingControlEnable = false
+            setControl(true)
+            page = Page.HOME; rendered = null; history.clear()
+            say("远程控制已开启，同账号电脑无需手机重复确认。")
+        }
+        if (page == Page.CONTROL_SETUP && guideConnected != (ControlService.instance != null)) rendered = null
         if (signedIn() && page in listOf(Page.LOGIN, Page.REGISTER, Page.VERIFY)) { page = Page.HOME; rendered = null; history.clear() }
         if (!signedIn() && page == Page.HOME) { page = Page.LOGIN; rendered = null; history.clear() }
         if (page == Page.HOME && boundWhenBuilt != bound()) rendered = null
         if (rendered != page) {
             rendered = page; body.removeAllViews(); busyButtons.clear(); authEmail = null
-            status = null; share = null; control = null; requestBox = null; updateText = null; updateButton = null; updateProgress = null
+            status = null; sharingDetail = null; controlDetail = null; share = null; control = null; requestBox = null; updateText = null; updateButton = null; updateProgress = null
             header()
             when (page) {
                 Page.LOGIN -> login()
@@ -90,6 +103,7 @@ class MainActivity : Activity() {
                 Page.SERVER -> server()
                 Page.SETTINGS -> settings()
                 Page.UPDATES -> updates()
+                Page.CONTROL_SETUP -> controlSetup()
                 Page.HOME -> home()
             }
         }
@@ -177,6 +191,7 @@ class MainActivity : Activity() {
     private fun settings() {
         title("设置", "连接与应用选项")
         ui.row(body, "服务器设置", if (hasServer()) app.state.optString("server") else "尚未设置") { go(Page.SERVER) }
+        ui.row(body, "远程控制授权", if (ControlService.instance != null) "辅助功能已连接" else "开启 FarSail 远程控制") { go(Page.CONTROL_SETUP) }
         ui.row(body, "软件更新", "当前版本 ${app.updates.currentVersion}") { go(Page.UPDATES) }
         ui.row(body, "后台运行", "管理手机的后台与电池设置") {
             startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, android.net.Uri.parse("package:$packageName")))
@@ -210,23 +225,31 @@ class MainActivity : Activity() {
             val name = ui.field(card, "手机名称", value = "${Build.MANUFACTURER} ${Build.MODEL}")
             primary(card, "添加这台手机") { perform("bind", JSONObject().put("name", name.text.toString().trim()), "") }
         } else {
-            status = ui.text(card, "", 19f, bold = true); ui.gap(card, 8); ui.text(card, "连接请求需要在手机上确认。", 13f, secondary = true); ui.gap(card, 20)
+            status = ui.text(card, "", 21f, bold = true); ui.gap(card, 8); sharingDetail = ui.text(card, "", 14f, secondary = true); ui.gap(card, 20)
             share = ui.button(card, "开启屏幕共享") { if (CaptureService.running) { stop(); draw() } else consent() }
             ui.gap(body, 16); val input = ui.card(body); ui.text(input, "远程控制", 18f, bold = true); ui.gap(input, 8)
-            control = Switch(this).apply { text = "允许已批准的电脑控制"; setPadding(0, ui.dp(12), 0, ui.dp(12)); input.addView(this) }
-            ui.link(input, "打开辅助功能设置") {
-                AlertDialog.Builder(this).setTitle("允许远程控制").setMessage("开启 FarSail 辅助功能后，还需打开控制开关、确认屏幕共享，并逐次批准连接。")
-                    .setPositiveButton("前往设置") { _, _ -> startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }.setNegativeButton("取消", null).show()
-            }
+            controlDetail = ui.text(input, "", 13f, secondary = true)
+            control = Switch(this).apply { text = "允许同账号电脑直接控制"; minHeight = ui.dp(56); setPadding(0, ui.dp(12), 0, ui.dp(12)); input.addView(this) }
+            ui.link(input, "管理远程控制授权") { go(Page.CONTROL_SETUP) }
         }
         ui.gap(body, 16); requestBox = ui.column(body)
     }
     private fun updateHome() {
-        status?.text = when { CaptureService.running && app.state.optBoolean("sharing") -> "屏幕共享中"; CaptureService.running -> "正在建立连接…"; else -> "屏幕共享已关闭" }
-        share?.text = if (CaptureService.running) "停止共享" else "开启屏幕共享"
-        share?.isEnabled = app.ready && (CaptureService.running || !app.busy)
-        control?.apply { setOnCheckedChangeListener(null); isEnabled = ControlService.instance != null; isChecked = app.state.optBoolean("control") && isEnabled
-            setOnCheckedChangeListener { _, checked -> NativeBridge.setControl(checked); ControlService.cancel(); app.io.execute { try { app.refresh() } catch (_: Exception) { } } }
+        val phase = CaptureService.phase
+        status?.text = when (phase) { "consent" -> "等待系统录屏授权"; "starting" -> "正在开启共享…"; "sharing" -> "● 屏幕共享中"; "failed" -> "开启共享失败"; else -> "○ 屏幕共享未开启" }
+        status?.setTextColor(if (phase == "sharing") ui.green else if (phase == "failed") android.graphics.Color.rgb(164, 43, 43) else ui.ink)
+        sharingDetail?.text = CaptureService.detail
+        share?.text = when (phase) { "consent" -> "等待你确认授权…"; "starting" -> if (CaptureService.running) "取消开启" else "正在开启共享…"; "sharing" -> "停止共享"; "failed" -> "重新开启共享"; else -> "开启屏幕共享" }
+        share?.isEnabled = app.ready && phase != "consent" && (CaptureService.running || (phase != "starting" && !app.busy))
+        controlDetail?.text = if (ControlService.instance == null) "点击开关，打开并定位 FarSail 的系统授权。" else "已完成系统授权。开启后，同账号电脑可直接连接，无需手机重复确认。"
+        control?.apply {
+            setOnCheckedChangeListener(null); isEnabled = app.ready; isChecked = app.state.optBoolean("control") && ControlService.instance != null
+            setOnCheckedChangeListener { _, checked ->
+                if (checked && ControlService.instance == null) {
+                    isChecked = false; pendingControlEnable = true; go(Page.CONTROL_SETUP)
+                    if (!ControlSetup.open(this@MainActivity)) { say("请在已下载的应用或已安装的服务中选择「FarSail 远程控制」。"); draw() }
+                } else setControl(checked)
+            }
         }
         val snapshot = app.pending.toString() + app.state.optJSONObject("session").toString()
         if (snapshot == lastRequests) return
@@ -238,15 +261,46 @@ class MainActivity : Activity() {
             ui.button(box, "拒绝", false) { perform("decide", JSONObject().put("id", r.getString("id")).put("approve", false), "已拒绝连接") }
         }
     }
+    private fun setControl(enabled: Boolean) {
+        NativeBridge.setControl(enabled); ControlService.cancel()
+        app.state.put("control", enabled)
+        app.io.execute { try { app.refresh() } catch (_: Exception) { } }
+    }
+    private fun controlSetup() {
+        guideConnected = ControlService.instance != null
+        title("远程控制授权", if (guideConnected) "✓ FarSail 辅助功能已连接" else "只需开启「FarSail 远程控制」这一项。")
+        val card = ui.card(body)
+        ui.text(card, "FarSail 远程控制", 20f, bold = true); ui.gap(card, 12)
+        ui.text(card, if (guideConnected) "授权已完成。开启控制后，同账号电脑无需在手机再次确认；其他账号的请求仍需确认。" else "接下来会打开并定位 FarSail 的系统授权。若看到服务列表，点击「FarSail 远程控制」；再打开使用开关、确认系统提示，返回 App 即可。", 14f)
+        ui.gap(card, 20)
+        if (guideConnected) ui.button(card, if (signedIn() && bound()) "开启远程控制" else "完成") {
+            pendingControlEnable = false
+            if (signedIn() && bound()) setControl(true)
+            if (!back()) go(if (signedIn()) Page.HOME else Page.LOGIN, true)
+        } else ui.button(card, "去开启 FarSail 远程控制") {
+            pendingControlEnable = signedIn() && bound()
+            if (!ControlSetup.open(this)) { say("请在已下载的应用或已安装的服务中选择「FarSail 远程控制」。"); draw() }
+        }
+        ui.gap(body, 16); ui.text(body, "如果系统没有直达：辅助功能 → 已下载的应用 / 已安装的服务 → FarSail 远程控制。", 13f, secondary = true)
+        ui.gap(body, 12); ui.text(body, "如果系统提示受限设置，请先在应用信息中按系统提示允许此应用的受限设置，再返回授权。", 13f, secondary = true)
+        ui.link(body, "打开 FarSail 应用信息") { startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, android.net.Uri.parse("package:$packageName"))) }
+        ui.link(body, "暂不开启") { pendingControlEnable = false; if (!back()) go(if (signedIn()) Page.HOME else Page.LOGIN, true) }
+    }
     private fun stop() { NativeBridge.stopLocal(); ControlService.cancel(); CaptureService.stop(this) }
     private fun consent() {
+        CaptureService.status(this, "consent", "请在系统弹窗中确认共享整个屏幕。")
+        draw()
         val manager = getSystemService(MediaProjectionManager::class.java)
         val intent = if (Build.VERSION.SDK_INT >= 34) manager.createScreenCaptureIntent(MediaProjectionConfig.createConfigForDefaultDisplay()) else manager.createScreenCaptureIntent()
         @Suppress("DEPRECATION") startActivityForResult(intent, 42)
     }
     @Deprecated("Framework result callback") override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == 42 && resultCode == RESULT_OK && data != null) startForegroundService(Intent(this, CaptureService::class.java).putExtra("result", resultCode).putExtra("data", data))
-        else if (requestCode == 42) { say("已取消屏幕共享"); draw() }
+        if (requestCode == 42 && resultCode == RESULT_OK && data != null) {
+            CaptureService.status(this, "starting", "已获得系统授权，正在启动屏幕共享…")
+            try { startForegroundService(Intent(this, CaptureService::class.java).putExtra("result", resultCode).putExtra("data", data)) }
+            catch (e: Exception) { CaptureService.status(this, "failed", app.friendly(e.message ?: "系统无法启动录屏服务。")) }
+            draw()
+        } else if (requestCode == 42) { CaptureService.status(this, "off", "已取消系统录屏授权，屏幕未共享。"); draw() }
     }
 }

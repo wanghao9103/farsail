@@ -75,6 +75,9 @@ impl Host {
     pub fn control(&self, enabled: bool) {
         let mut l = self.local.lock().unwrap();
         l.control = enabled;
+        self.client
+            .set_remote_watch(enabled && l.capture && self.client.hosting_enabled())
+            .ok();
         l.inputs.clear();
         if !enabled
             && l.session
@@ -431,7 +434,28 @@ impl Host {
                     let _ = client.set_host_capability(false).await;
                     return Err("屏幕共享已取消".into());
                 }
+                if result.is_ok() {
+                    let local = self.local.lock().unwrap();
+                    client
+                        .set_remote_watch(local.control && local.capture && local.epoch == epoch)
+                        .ok();
+                }
                 result
+            }
+            "pending" => {
+                {
+                    let local = self.local.lock().unwrap();
+                    client
+                        .set_remote_watch(
+                            local.control && local.capture && client.hosting_enabled(),
+                        )
+                        .ok();
+                }
+                client
+                    .approve_same_account_pending()
+                    .await
+                    .map_err(|e| e.to_string())?;
+                client.call("pending", args).await
             }
             "stop" => {
                 self.stop_local();
@@ -459,8 +483,8 @@ impl Host {
                 }
                 client.call(op, args).await
             }
-            "login" | "logout" | "resume" | "bind" | "pending" | "heartbeat" | "register"
-            | "verify" | "resend" => client.call(op, args).await,
+            "login" | "logout" | "resume" | "bind" | "heartbeat" | "register" | "verify"
+            | "resend" => client.call(op, args).await,
             _ => return Err("unsupported operation".into()),
         };
         result.map_err(|e| e.to_string())

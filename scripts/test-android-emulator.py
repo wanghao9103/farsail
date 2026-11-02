@@ -38,7 +38,7 @@ adb("install", "-r", str(ROOT / "apps/android/app/build/outputs/apk/androidTest/
 adb("shell", "pm", "clear", "app.farsail.android")
 redir = None
 with (OUT / "instrumentation.log").open("wb") as log:
-    test = subprocess.Popen([*ADB, "shell", "am", "instrument", "-w", "-e", "class", "app.farsail.android.NativeSmokeTest", "-e", "realPeer", "true", "-e", "sourceKey", key,
+    test = subprocess.Popen([*ADB, "shell", "am", "instrument", "-w", "-e", "class", "app.farsail.android.NativeSmokeTest#keystoreJniProjectionBackgroundAndStop", "-e", "realPeer", "true", "-e", "sourceKey", key,
                              "app.farsail.android.test/androidx.test.runner.AndroidJUnitRunner"], stdout=log, stderr=subprocess.STDOUT)
     try:
         end = time.monotonic() + 90

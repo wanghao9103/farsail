@@ -243,3 +243,18 @@ async fn projection_stop_invalidates_delayed_enable_and_old_geometry() {
     h.client.stop_transport().await;
     s.abort();
 }
+
+#[tokio::test]
+async fn same_account_auto_approval_stops_with_control_or_capture() {
+    let (h, server) = host(39).await;
+    h.control(true);
+    assert_eq!(h.client.public_state().await["remoteWatch"], true);
+    h.control(false);
+    assert_eq!(h.client.public_state().await["remoteWatch"], false);
+    h.control(true);
+    h.stop_local();
+    assert_eq!(h.client.public_state().await["remoteWatch"], false);
+    h.control(true);
+    assert_eq!(h.client.public_state().await["remoteWatch"], false);
+    server.abort();
+}

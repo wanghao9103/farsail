@@ -14,12 +14,14 @@ Install the APK from an Android release or a local build. The minimum supported 
 
 - Save the desktop HTTPS service address under Settings → Server settings, then return to sign in. Login, registration and email verification use independent pages; verification contains only email and code. Add this phone after signing in.
 - For viewing, tap “开启屏幕共享” and confirm the Android system screen capture dialog. Full screen capture is requested so that remote touch coordinates match the physical screen.
-- For control, enable the FarSail accessibility service in system settings and turn on “允许已批准的电脑控制手机”. Enabling accessibility alone grants no remote connection.
-- On the desktop, select the online phone and request viewing or control. Approve that request on the phone. Both ends show a connection verification code.
+- For control, tap “允许同账号电脑直接控制”. If authorization is missing, the app attempts FarSail details, or locates “FarSail 远程控制” when the system restricts direct access. Confirm the system service switch and return to complete activation. Enabling accessibility alone grants no connection.
+- With control enabled, same-account desktop view/control requests are automatically approved; other accounts still require phone confirmation. Control off, capture stop or accessibility disconnection cancels automatic approval immediately. Both ends show a connection verification code.
 - Mouse clicks map to taps; dragging maps to a bounded swipe after release; the wheel scrolls. Right click and Escape go back. The updated desktop toolbar exposes Back, Home and Recents. Unicode text can be sent to the focused ordinary editable field.
 - Different desktop viewer windows can connect to different phones or computers concurrently. Each has independent frame, input, recovery and close state. The existing native client limit is sixteen transport sessions; a phone accepts one viewer at a time.
 
 Use “停止共享” in the app or notification to stop capture and invalidate queued input immediately. A gesture already accepted by Android can finish within its bounded duration of 1.5 seconds. Password fields, arbitrary desktop shortcuts, multitouch, audio and mobile file transfer are outside this preview.
+
+Home distinguishes off, waiting for system consent, starting, sharing and failed. Sharing is shown only after server acceptance. Failure details survive service cleanup callbacks; Android HTTP 409 from old servers requires the [Android coordinator upgrade](https://github.com/wanghao9103/farsail/releases/tag/coordinator-android-026491f).
 
 ## Background operation
 
