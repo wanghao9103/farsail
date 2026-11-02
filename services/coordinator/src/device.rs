@@ -274,7 +274,7 @@ pub async fn capability(
         return Err(Error::Invalid("no capability supplied"));
     }
     let mut tx = state.pool.begin().await?;
-    let changed = sqlx::query("UPDATE devices SET can_host=COALESCE($2,can_host),can_files=COALESCE($4,can_files) WHERE id=$1 AND generation=$3 AND lease_until>now() AND enabled AND bound AND ($2::boolean IS NULL OR platform='windows' OR NOT $2)")
+    let changed = sqlx::query("UPDATE devices SET can_host=COALESCE($2,can_host),can_files=COALESCE($4,can_files) WHERE id=$1 AND generation=$3 AND lease_until>now() AND enabled AND bound AND ($2::boolean IS NULL OR platform IN ('windows','android') OR NOT $2)")
         .bind(id).bind(input.can_host).bind(input.generation).bind(input.can_files).execute(&mut *tx).await?;
     if changed.rows_affected() != 1 {
         return Err(Error::Conflict);

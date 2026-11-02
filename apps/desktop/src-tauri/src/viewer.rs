@@ -214,7 +214,14 @@ pub fn scoped(window: &tauri::WebviewWindow, id: &str) -> Result<(), String> {
     }
     let windows = window.state::<Windows>();
     let map = windows.0.lock().unwrap();
-    let binding = map.get(window.label()).ok_or("查看窗口已关闭")?;
+    scoped_binding(&map, window.label(), id)
+}
+fn scoped_binding(
+    map: &HashMap<String, Arc<Binding>>,
+    label: &str,
+    id: &str,
+) -> Result<(), String> {
+    let binding = map.get(label).ok_or("查看窗口已关闭")?;
     if binding.cancelled.load(Ordering::SeqCst) || *binding.id.lock().unwrap() != id {
         return Err("此窗口无权操作该会话".into());
     }
@@ -584,6 +591,31 @@ mod tests {
             recovery_allowed: AtomicBool::new(false),
             progress: Mutex::new(RecoveryProgress::default()),
         }
+    }
+    #[test]
+    fn concurrent_windows_keep_session_scope_and_recovery_independent() {
+        let a = Arc::new(binding());
+        let b = Arc::new(binding());
+        *a.id.lock().unwrap() = "phone-a".into();
+        *b.id.lock().unwrap() = "phone-b".into();
+        let map = HashMap::from([
+            ("viewer-a".into(), a.clone()),
+            ("viewer-b".into(), b.clone()),
+        ]);
+        assert_ne!(a.instance, b.instance);
+        assert!(scoped_binding(&map, "viewer-a", "phone-a").is_ok());
+        assert!(scoped_binding(&map, "viewer-b", "phone-b").is_ok());
+        assert!(scoped_binding(&map, "viewer-a", "phone-b").is_err());
+        assert!(scoped_binding(&map, "viewer-b", "phone-a").is_err());
+        a.begin_recovery(false, true).unwrap();
+        *a.id.lock().unwrap() = "phone-a-new".into();
+        assert!(scoped_binding(&map, "viewer-a", "phone-a").is_err());
+        assert!(scoped_binding(&map, "viewer-a", "phone-a-new").is_ok());
+        a.cancel_recovery();
+        assert!(scoped_binding(&map, "viewer-a", "phone-a-new").is_err());
+        assert!(scoped_binding(&map, "viewer-b", "phone-b").is_ok());
+        assert!(b.window_active(true));
+        assert_eq!(b.recovery_status(Instant::now())["phase"], "idle");
     }
     #[test]
     fn window_instance_survives_fresh_session_recovery() {

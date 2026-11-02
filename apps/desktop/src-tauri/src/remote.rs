@@ -275,6 +275,7 @@ struct Live {
     send_permits: Semaphore,
     auto_resume_sending: AtomicBool,
     file_supported: AtomicBool,
+    peer_android: AtomicBool,
     clipboard_serial: AtomicU64,
     clipboard_gate: Mutex<()>,
     clipboard_reply: StdMutex<Option<ClipboardReply>>,
@@ -507,6 +508,7 @@ impl RemoteRuntime {
             send_permits: Semaphore::new(32),
             auto_resume_sending: AtomicBool::new(false),
             file_supported: AtomicBool::new(false),
+            peer_android: AtomicBool::new(false),
             clipboard_serial: AtomicU64::new(0),
             clipboard_gate: Mutex::new(()),
             clipboard_reply: StdMutex::new(None),
@@ -1044,6 +1046,10 @@ impl RemoteRuntime {
                 }
                 continue;
             }
+            if frame.channel == Channel::Media && frame.bytes == b"FSH1android" {
+                live.peer_android.store(true, Ordering::SeqCst);
+                continue;
+            }
             if frame.channel == Channel::Media
                 && frame.bytes == b"FSFC1"
                 && live.session.permission() == RemotePermission::Control
@@ -1344,7 +1350,7 @@ impl RemoteRuntime {
         let discovery = self.client.transport_discovery_state(path).await;
         let profile = *live.video_profile.lock().unwrap();
         Ok(
-            json!({"id":id,"state":path,"rtt_ms":rtt,"discovery":discovery,"permission":live.session.permission(),"sharing":live.host,"verification_code":live.session.verification_code().map_err(|e|e.to_string())?,"displays":*live.displays.lock().unwrap(),"error":*live.error.lock().unwrap(),"input":*live.input_state.lock().unwrap(),"mouse":*live.mouse_state.lock().unwrap(),"files":{"supported":live.file_supported.load(Ordering::SeqCst),"status":self.files.status(Some(id)).ok()},"video":{"profile":profile.profile,"generation":profile.generation,"supported":live.video_supported.load(Ordering::SeqCst),"max_profile":live.video_max_profile.load(Ordering::SeqCst)}}),
+            json!({"id":id,"state":path,"platform":if live.peer_android.load(Ordering::SeqCst) { "android" } else { "desktop" },"rtt_ms":rtt,"discovery":discovery,"permission":live.session.permission(),"sharing":live.host,"verification_code":live.session.verification_code().map_err(|e|e.to_string())?,"displays":*live.displays.lock().unwrap(),"error":*live.error.lock().unwrap(),"input":*live.input_state.lock().unwrap(),"mouse":*live.mouse_state.lock().unwrap(),"files":{"supported":live.file_supported.load(Ordering::SeqCst),"status":self.files.status(Some(id)).ok()},"video":{"profile":profile.profile,"generation":profile.generation,"supported":live.video_supported.load(Ordering::SeqCst),"max_profile":live.video_max_profile.load(Ordering::SeqCst)}}),
         )
     }
     pub async fn next_frame(&self, id: &str, after: u64) -> Result<Vec<u8>, String> {

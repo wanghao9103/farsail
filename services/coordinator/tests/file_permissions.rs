@@ -196,6 +196,90 @@ async fn postgres_files_are_separate_from_screen_capabilities_and_require_approv
     let windows_generation = heartbeat(&app, &windows_token).await;
     let linux_generation = heartbeat(&app, &linux_token).await;
 
+    // Android shares the explicit screen capability/approval policy. It cannot
+    // use a stale heartbeat or accidentally acquire Files with screen sharing.
+    let (android, android_token) = bind(&app, user, "android", false).await;
+    let android_generation = heartbeat(&app, &android_token).await;
+    assert_eq!(
+        request(&app, user, &windows, &android, &windows_token, "view")
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    for (generation, expected) in [
+        (android_generation - 1, StatusCode::CONFLICT),
+        (android_generation, StatusCode::OK),
+    ] {
+        let (status, view) = call(
+            &app,
+            "POST",
+            "/v1/devices/capability",
+            json!({"generation":generation,"can_host":true}),
+            &android_token,
+            None,
+        )
+        .await;
+        assert_eq!(status, expected, "{view}");
+        if status == StatusCode::OK {
+            assert_eq!(view["can_host"], true);
+            assert_eq!(view["can_files"], false);
+        }
+    }
+    assert_eq!(
+        request(&app, user, &windows, &android, &windows_token, "files")
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    let (status, android_request) =
+        request(&app, user, &windows, &android, &windows_token, "control").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(android_request["state"], "pending");
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            &format!(
+                "/v1/remote/{}/decide",
+                android_request["id"].as_str().unwrap()
+            ),
+            json!({"approve":true}),
+            &windows_token,
+            None
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    let android_grant = approve(&app, &android_request, &android_token).await;
+    assert_eq!(
+        inspect(&app, &android_grant, &windows_token).await.0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            "/v1/devices/capability",
+            json!({"generation":android_generation,"can_host":false}),
+            &android_token,
+            None
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        inspect(&app, &android_grant, &windows_token).await.0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        request(&app, user, &windows, &android, &windows_token, "control")
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+
     // An already-bound Ubuntu device can enable Files without rebinding or
     // acquiring any screen/control authority. Stale endpoints cannot enable it.
     assert_eq!(

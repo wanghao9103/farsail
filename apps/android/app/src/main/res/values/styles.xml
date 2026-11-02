@@ -1,0 +1,10 @@
+<resources>
+    <style name="AppTheme" parent="android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:colorAccent">#315C4B</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:statusBarColor">#F4F6F3</item>
+        <item name="android:navigationBarColor">#F4F6F3</item>
+    </style>
+    <string name="control_description">仅在你开启共享并批准电脑连接后，FarSail 才允许对方点击、滑动及向当前输入框输入文字。你可以随时通过常驻通知停止共享。开启此服务不等于允许连接。</string>
+</resources>

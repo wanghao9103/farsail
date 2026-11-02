@@ -1861,6 +1861,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "farsail-android"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "farsail-client",
+ "farsail-core",
+ "farsail-media",
+ "farsail-transport",
+ "hex",
+ "iroh",
+ "jni 0.21.1",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+]
+
+[[package]]
 name = "farsail-client"
 version = "0.1.0"
 dependencies = [

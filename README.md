@@ -8,11 +8,11 @@
 
 # FarSail
 
-FarSail is an open-source remote desktop project with Windows and Ubuntu clients built using Rust, Tauri 2 and React, encrypted peer-to-peer connections, and self-hosted relay support. Bidirectional single-file transfer and an Ubuntu ARM64 client have been available since 0.1.21; version 0.1.22 added an update dialog and interface refinements. The latest public release is [0.1.30](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.30). Older installations need an upgrade for these additions. Mobile clients remain planned.
+FarSail is an open-source remote desktop project with Windows and Ubuntu clients built using Rust, Tauri 2 and React, encrypted peer-to-peer connections, and self-hosted relay support. Bidirectional single-file transfer and an Ubuntu ARM64 client have been available since 0.1.21; version 0.1.22 added an update dialog and interface refinements. The latest public release is [0.1.30](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.30). Older installations need an upgrade for these additions. An [Android host app](docs/ANDROID.md) is available as a local preview; a public mobile release is not yet available.
 
 Version 0.1.23 replaces the separate screen/file receiving switches with **Allow remote connections**: Windows enables both capabilities, while Ubuntu enables files only. Standalone file connections still require approval and a native Save As choice. Since 0.1.28, file paste within remote control shares the session approval. It also keeps the application running in the tray when its main window is closed; Windows requests administrator permission at startup through the system UAC prompt. See [Windows startup](docs/WINDOWS_INSTALL.md) and [file transfer](docs/FILES.md) for the current flow and restart behavior.
 
-The account, device and authorization coordinator is written in Rust. **WI-001 (coordinator), WI-002 (Windows client), WI-003 (authenticated encrypted transport), and WI-004 (Windows remote viewing/input baseline) have been verified locally. WI-008B provides a verified [Windows x64 preview installer](docs/WINDOWS_INSTALL.md).** The iroh data channel supports local direct connections and a self-hosted TLS relay. Windows hosts can enable local sharing and transmit JPEG frames and mouse/keyboard input after per-request approval. Automatic-update packages use the release signing key; Windows publisher certificates are configured separately; public cross-NAT behavior, physical Windows file transfer, HEVC and mobile clients remain unverified or unimplemented. See [file transfer](docs/FILES.md) for usage and the precise verification boundary.
+The account, device and authorization coordinator is written in Rust. **WI-001 (coordinator), WI-002 (Windows client), WI-003 (authenticated encrypted transport), and WI-004 (Windows remote viewing/input baseline) have been verified locally. WI-008B provides a verified [Windows x64 preview installer](docs/WINDOWS_INSTALL.md).** The iroh data channel supports local direct connections and a self-hosted TLS relay. Windows hosts can enable local sharing and transmit JPEG frames and mouse/keyboard input after per-request approval. Automatic-update packages use the release signing key; Windows publisher certificates are configured separately; public cross-NAT behavior, physical Windows file transfer, HEVC and physical-phone/cross-network Android operation remain unverified or unimplemented. See [file transfer](docs/FILES.md) for usage and the precise verification boundary.
 
 ## Documented preview milestones
 
@@ -54,7 +54,7 @@ These are recorded milestones. Local candidate work and its verification limits 
 - Multiple displays, resolution switching, negotiable 4:4:4 quality and adaptive bandwidth.
 - H.265/H.264 video, evaluation of AV1 support, and lossless compression before transfer for suitable data.
 - File-transfer resume, selective compression and configurable combined file/media bandwidth controls beyond the current single-file baseline.
-- Later mobile-host capabilities, verified separately against each platform's public APIs.
+- Extend the Android host preview and later iOS capabilities, verified separately against each platform's public APIs.
 
 <a id="文档与资产"></a>
 
@@ -70,6 +70,7 @@ English is the default documentation language. Use the language links at the top
 - [Windows client](docs/CLIENT.md): how to run it, credential boundaries and implemented screens.
 - [Windows preview installation](docs/WINDOWS_INSTALL.md): x64 installation without development tools, checksums, WebView2 and two-computer testing.
 - [Authenticated transport](docs/TRANSPORT.md): iroh handshake, short leases, data channels and path state.
+- [Android host](docs/ANDROID.md): native APK, background screen sharing, accessibility control and verification boundaries.
 - [Windows remote control](docs/REMOTE.md): DXGI/JPEG, viewer, input permissions and safe shutdown.
 - [Desktop file transfer](docs/FILES.md): separate approval, native file selection, safe save, progress and limits.
 - [Self-hosted relay](deploy/relay/README.md): HTTPS certificates and public-IP configuration examples.

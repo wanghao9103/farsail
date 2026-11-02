@@ -26,6 +26,7 @@ const fs = require("node:fs");
       discovery: "direct",
       retryable: false,
       permission: "control",
+      platform: "desktop",
       inputBlocked: false,
       fileSupport: false,
       pasteFilesResult: true,
@@ -111,6 +112,7 @@ const fs = require("node:fs");
             state: f.closed ? "closed" : f.path,
             discovery: f.discovery,
             permission: f.permission,
+            platform: f.platform,
             files: { supported: f.fileSupport, status: { transfers: [] } },
             video: f.video,
             input: reportedInput,
@@ -1293,6 +1295,54 @@ const fs = require("node:fs");
   assert(
     await page.locator(".viewer-fill").count(),
     "fill preference should survive reconnect/reload",
+  );
+  await page.evaluate(() => {
+    window.fixture.platform = "android";
+  });
+  await revealToolbar();
+  await page.getByText("更多操作", { exact: true }).click();
+  await page.getByRole("group", { name: "手机导航", exact: true }).waitFor();
+  assert.equal(await switchWindow().count(), 0);
+  for (const [label, vk] of [
+    ["返回", 0xa6],
+    ["主屏幕", 0xac],
+    ["最近任务", 0x5d],
+  ]) {
+    const before = await page.evaluate(() => window.fixture.calls.length);
+    await page.getByRole("button", { name: label, exact: true }).click();
+    await page.waitForFunction(
+      (before) =>
+        window.fixture.calls
+          .slice(before)
+          .filter(
+            (c) => c.cmd === "remote_input" && c.args.input?.kind === "key",
+          ).length === 2,
+      before,
+    );
+    assert.deepEqual(
+      await page.evaluate(
+        (before) =>
+          window.fixture.calls
+            .slice(before)
+            .filter(
+              (c) => c.cmd === "remote_input" && c.args.input?.kind === "key",
+            )
+            .map((c) => c.args.input),
+        before,
+      ),
+      [
+        { kind: "key", vk, down: true, repeat: false },
+        { kind: "key", vk, down: false },
+      ],
+    );
+  }
+  await page.evaluate(() => {
+    window.fixture.permission = "view";
+  });
+  await page.waitForTimeout(900);
+  assert.equal(
+    await page.getByRole("group", { name: "手机导航", exact: true }).count(),
+    0,
   );
   assert.deepEqual(errors, []);
   await browser.close();

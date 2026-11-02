@@ -1883,7 +1883,7 @@ function Devices({
     : !device?.enabled
       ? "这台设备已停用。"
       : !device?.online
-        ? "设备离线，请在对方电脑上打开 FarSail 并登录。"
+        ? "设备离线，请在对方设备上打开 FarSail 并登录。"
         : !device?.can_host
           ? "对方尚未允许屏幕连接，请检查对方的远程连接设置。"
           : "";
@@ -2898,6 +2898,7 @@ function Requests({
   );
 }
 type RemoteStatus = {
+  platform?: "android" | "desktop";
   files?: {
     supported: boolean;
     status?: {
@@ -4015,7 +4016,35 @@ function Viewer({
                         恢复鼠标控制
                       </button>
                     )}
-                    {control && (
+                    {control && status?.platform === "android" && (
+                      <div role="group" aria-label="手机导航">
+                        {(
+                          [
+                            [0xa6, "返回"],
+                            [0xac, "主屏幕"],
+                            [0x5d, "最近任务"],
+                          ] as const
+                        ).map(([vk, label]) => (
+                          <button
+                            type="button"
+                            key={vk}
+                            onClick={() => {
+                              releaseInputs();
+                              send({
+                                kind: "key",
+                                vk,
+                                down: true,
+                                repeat: false,
+                              });
+                              send({ kind: "key", vk, down: false });
+                            }}
+                          >
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    {control && status?.platform !== "android" && (
                       <button type="button" onClick={switchRemoteWindow}>
                         切换远端窗口（Alt+Tab）
                       </button>

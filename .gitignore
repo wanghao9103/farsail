@@ -46,3 +46,7 @@ runtime-data/
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# Android local SDK and generated native libraries
+local.properties
+apps/android/app/src/main/jniLibs/

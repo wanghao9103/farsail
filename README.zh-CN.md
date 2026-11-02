@@ -8,11 +8,11 @@
 
 # FarSail · 遥舟
 
-FarSail 是正在开发中的开源远程桌面项目，Windows 与 Ubuntu 客户端采用 Rust、Tauri 2 和 React，支持加密的 P2P 连接及自建中继。自 0.1.21 起提供双向单文件传输与 Ubuntu ARM64 客户端，0.1.22 新增更新弹窗并优化界面，当前公开版本为 [0.1.30](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.30)。旧版需要升级才能获得新增能力；手机端仍属计划能力。
+FarSail 是正在开发中的开源远程桌面项目，Windows 与 Ubuntu 客户端采用 Rust、Tauri 2 和 React，支持加密的 P2P 连接及自建中继。自 0.1.21 起提供双向单文件传输与 Ubuntu ARM64 客户端，0.1.22 新增更新弹窗并优化界面，当前公开版本为 [0.1.30](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.30)。旧版需要升级才能获得新增能力；[安卓被控 App](docs/ANDROID.zh-CN.md)已提供本地预览，手机版尚未公开发布。
 
 0.1.23 将屏幕与文件接收开关统一为**允许远程连接**：Windows 同时开启两项能力，Ubuntu 仅开启文件能力。独立文件连接仍需批准，并由本机选择保存位置；0.1.28 起，远控会话内的文件粘贴共用本次授权。同时支持关闭主窗口后保留托盘运行；Windows 启动时通过系统 UAC 提示申请管理员权限。详情见 [Windows 启动](docs/WINDOWS_INSTALL.zh-CN.md)与[文件传输](docs/FILES.zh-CN.md)。
 
-账号、设备与授权协调服务使用 Rust。**WI-001 协调服务、WI-002 Windows 客户端、WI-003 认证加密传输及 WI-004 Windows 远程查看/输入基线已在本机验证；WI-008B 提供已验收的 [Windows x64 预览安装包](docs/WINDOWS_INSTALL.zh-CN.md)。** iroh 数据通道支持本地直连及自建 TLS relay。Windows 被控端可在本机开启共享，默认逐次批准后传送 JPEG 画面并接受鼠标键盘。自动更新包使用发布密钥签名，Windows 发布者证书另行配置；公网跨 NAT、物理 Windows 文件传输、HEVC 和手机端仍待验证或实现。使用方式与具体验证边界见[文件传输](docs/FILES.zh-CN.md)。
+账号、设备与授权协调服务使用 Rust。**WI-001 协调服务、WI-002 Windows 客户端、WI-003 认证加密传输及 WI-004 Windows 远程查看/输入基线已在本机验证；WI-008B 提供已验收的 [Windows x64 预览安装包](docs/WINDOWS_INSTALL.zh-CN.md)。** iroh 数据通道支持本地直连及自建 TLS relay。Windows 被控端可在本机开启共享，默认逐次批准后传送 JPEG 画面并接受鼠标键盘。自动更新包使用发布密钥签名，Windows 发布者证书另行配置；公网跨 NAT、物理 Windows 文件传输、HEVC 及实体手机/跨网安卓操作仍待验证或实现。使用方式与具体验证边界见[文件传输](docs/FILES.zh-CN.md)。
 
 <a id="documented-preview-milestones"></a>
 
@@ -56,7 +56,7 @@ FarSail 是正在开发中的开源远程桌面项目，Windows 与 Ubuntu 客�
 - 多屏、分辨率切换、可协商的 4:4:4 画质与自适应带宽。
 - H.265/H.264 视频链路、AV1 能力评估，以及适用数据的传输前无损压缩。
 - 当前单文件基线之外的断点续传、选择性压缩和可配置文件/媒体共同带宽控制。
-- 后续扩展手机被控能力，按平台公开接口分别验证。
+- 完善安卓被控预览，后续扩展 iOS 能力，按平台公开接口分别验证。
 
 <a id="documentation-and-assets"></a>
 
@@ -72,6 +72,7 @@ FarSail 是正在开发中的开源远程桌面项目，Windows 与 Ubuntu 客�
 - [Windows 客户端](docs/CLIENT.zh-CN.md)：运行方式、凭据边界与已实现界面。
 - [Windows 预览安装](docs/WINDOWS_INSTALL.zh-CN.md)：无需开发环境的 x64 安装、校验、WebView2 与双机联调。
 - [认证传输](docs/TRANSPORT.zh-CN.md)：iroh 握手、短租约、数据通道和路径状态。
+- [安卓被控端](docs/ANDROID.zh-CN.md)：原生 APK、后台屏幕共享、辅助功能控制和验证边界。
 - [Windows 远控](docs/REMOTE.zh-CN.md)：DXGI/JPEG、viewer、输入权限与安全停止。
 - [桌面文件传输](docs/FILES.zh-CN.md)：独立批准、原生选文件、安全保存、进度与限制。
 - [自建 relay](deploy/relay/README.zh-CN.md)：HTTPS 证书与公网 IP 配置示例。

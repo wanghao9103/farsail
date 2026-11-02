@@ -212,6 +212,16 @@ impl Transport {
                     .map(|c| RelayMode::Custom([c].into_iter().collect()))
                     .unwrap_or(RelayMode::Disabled),
             );
+        #[cfg(target_os = "android")]
+        {
+            // Android userspace network stacks (including emulator UDP redirect)
+            // may not carry segmented UDP sends. Keep QUIC datagrams separate.
+            b = b.transport_config(
+                iroh::endpoint::QuicTransportConfig::builder()
+                    .enable_segmentation_offload(false)
+                    .build(),
+            );
+        }
         if !config.relay_ca_der.is_empty() {
             b = b.ca_tls_config(CaTlsConfig::custom_roots(
                 config.relay_ca_der.into_iter().map(CertificateDer::from),
