@@ -9,3 +9,7 @@ App / 通知停止和取消录屏授权会清除共享意图，退出登录清�
 本地 Kotlin/APK/lint 和专用 API 35 验收通过：相同证书覆盖安装导致真实进程更替、不含凭据的私有偏好保存、原生控制恢复、后台不自动重开录屏 / 不弹授权、前台新的系统弹窗、取消后不循环、主动停止后再覆盖安装、旧恢复 / 授权拒绝、异设备拒绝和登出清除。第 1 阶段在真实共享运行时被有意终止，crash 标记是预期交接，不算 JUnit 通过；正常进程界面与状态由外部核验，独立意图保护测试正常通过。
 
 只读状态 provider 仅在 debug 构建，要求 shell DUMP 权限及模拟器；正式构建不包含，发布前再次检查 manifest。独立尝试出现过 API 36 模拟器 System UI ANR、崩溃 / 强制停止后的辅助功能未绑定，未算作成功验收，也未通过产品改系统权限来绕过。实体厂商后台策略、强制停止后的服务恢复不在已验证范围内。
+
+安卓 android-v0.1.4 / version code 5 已从源码 9375ffa616d76376e905b3d0bfa7b2ab474b30f0 发布。流水线 41433064652 在仅重试发布后成功；4 个不可变附件的 ID、摘要和时间戳保持一致。全部匿名完整下载与 API 摘要、签名元数据及固定更新通道一致。APK SHA-256：f76bac4220ff2bde074667dbca116718d288312d5aef47aa9aec973b7de0602b。原始签名证书、非调试 manifest、manifest / dex 无 debug provider、两种原生 ABI 的 LOAD 对齐和 APK 16 KB 对齐检查均通过。证据：`.local/android-public-0.1.4/final-verification.json`、`native-alignment.json`、`immutable-assets-retry.json`。
+
+实体手机覆盖安装返回 Success，版本及已安装 APK 摘要一致，首次安装时间保留，没有清除应用数据。MainActivity 启动成功。手机仍锁屏，未新增厂商实机偏好恢复或真实账号 UI 验收。前版只在内存保存，首次升级后显式选择一次才建立持久化意图。
