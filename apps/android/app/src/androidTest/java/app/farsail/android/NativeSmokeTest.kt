@@ -20,11 +20,13 @@ class NativeSmokeTest {
         assertTrue("condition timed out", condition())
     }
     private fun shell(command: String): String {
-        val fd = InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand(command)
+        val fd = InstrumentationRegistry.getInstrumentation().getUiAutomation(android.app.UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES).executeShellCommand(command)
         return android.os.ParcelFileDescriptor.AutoCloseInputStream(fd).bufferedReader().use { it.readText().trim() }
     }
     @Before fun prepareOwnedEmulator() {
         org.junit.Assume.assumeTrue("Dedicated emulator only", android.os.Build.MODEL.contains("sdk", ignoreCase = true) || android.os.Build.FINGERPRINT.contains("generic"))
+        Configurator.getInstance().uiAutomationFlags = android.app.UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES
+        RemotePreferences.clear(InstrumentationRegistry.getInstrumentation().targetContext)
         UiDevice.getInstance(InstrumentationRegistry.getInstrumentation()).wakeUp()
         shell("wm dismiss-keyguard")
         val context = InstrumentationRegistry.getInstrumentation().targetContext
@@ -83,7 +85,10 @@ class NativeSmokeTest {
             app.invoke("server", JSONObject().put("url", "http://127.0.0.1:${coordinator.port}"))
             app.invoke("login", JSONObject().put("email", "android-smoke@example.invalid").put("password", "synthetic-password"))
             app.invoke("bind", JSONObject().put("name", "Android lock fixture")); app.refresh()
-            NativeBridge.setControl(true)
+            shell("settings put secure enabled_accessibility_services app.farsail.android/app.farsail.android.ControlService")
+            shell("settings put secure accessibility_enabled 1")
+            await { ControlService.instance != null }
+            RemotePreferences.control(context, app.invoke("state") as JSONObject, true)
             val controlBefore = (app.invoke("state") as JSONObject).optBoolean("control"); assertTrue(controlBefore)
             context.startActivity(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK))
             assertTrue(device.wait(Until.hasObject(By.text("开启屏幕共享")), 10000))
@@ -99,11 +104,10 @@ class NativeSmokeTest {
             check(shell("locksettings clear --old 1234").contains("cleared", ignoreCase = true)); credentialSet = false
             device.wakeUp(); shell("wm dismiss-keyguard")
             context.startActivity(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-            assertTrue(device.wait(Until.hasObject(By.text("屏幕共享已中断")), 10000))
-            assertNotNull(device.findObject(By.text("恢复屏幕共享")))
-            // Recovery must ask for a new system token, never reuse the revoked one.
-            device.findObject(By.text("恢复屏幕共享")).click()
-            val again = device.wait(Until.findObject(By.res("android", "button1")), 10000); assertNotNull(again); again.click()
+            // Foreground restoration opens a fresh system dialog without another
+            // app switch click; a revoked projection token is never replayed.
+            val again = device.wait(Until.findObject(By.res("android", "button1")), 10000); assertNotNull(again)
+            assertTrue(RemotePreferences.wantsSharing(context, app.invoke("state") as JSONObject)); again.click()
             await { CaptureService.running && CaptureService.phase == "sharing" }
         } finally {
             CaptureService.stop(context); await { !CaptureService.running }
@@ -188,7 +192,7 @@ class NativeSmokeTest {
                 automation.executeShellCommand("settings put secure enabled_accessibility_services app.farsail.android/app.farsail.android.ControlService").close()
                 automation.executeShellCommand("settings put secure accessibility_enabled 1").close()
                 await { ControlService.instance != null }
-                NativeBridge.setControl(true)
+                RemotePreferences.control(context, app.invoke("state") as JSONObject, true)
                 coordinator.requestReady.set(true)
                 app.invoke("pending")
                 await { coordinator.approved.get() }

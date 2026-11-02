@@ -12,7 +12,7 @@ import org.json.JSONObject
 /** Input is consumed on the main thread; every delayed action rechecks its live native lease. */
 class ControlService : AccessibilityService() {
     companion object {
-        var instance: ControlService? = null
+        @Volatile var instance: ControlService? = null
             private set
         fun cancel() { instance?.clearGesture() }
     }
@@ -27,6 +27,7 @@ class ControlService : AccessibilityService() {
     private val gestures = java.util.ArrayDeque<Pair<JSONObject, GestureDescription>>()
     override fun onServiceConnected() {
         instance = this
+        (application as FarSailApp).restoreControl()
         handler.post(poll)
         (application as FarSailApp).observer?.invoke()
     }
@@ -90,7 +91,7 @@ class ControlService : AccessibilityService() {
         }
     }
     private fun gesture(c: JSONObject, path: Path, duration: Long) {
-        if (gestures.size >= 16) { NativeBridge.setControl(false); clearGesture(); return }
+        if (gestures.size >= 16) { RemotePreferences.suspendControl(); clearGesture(); return }
         gestures.add(c to GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(path, 0, duration)).build())
         nextGesture()
     }
@@ -154,9 +155,9 @@ class ControlService : AccessibilityService() {
         }
     }
     override fun onAccessibilityEvent(event: AccessibilityEvent?) { }
-    override fun onInterrupt() { NativeBridge.setControl(false); clearGesture() }
+    override fun onInterrupt() { RemotePreferences.suspendControl(); clearGesture() }
     override fun onDestroy() {
-        NativeBridge.setControl(false); clearGesture(); handler.removeCallbacks(poll); instance = null
+        instance = null; RemotePreferences.suspendControl(); clearGesture(); handler.removeCallbacks(poll)
         (application as FarSailApp).observer?.invoke(); super.onDestroy()
     }
 }

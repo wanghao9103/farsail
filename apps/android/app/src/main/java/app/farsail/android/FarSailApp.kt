@@ -18,7 +18,7 @@ class FarSailApp : Application() {
     var busy = false
     var observer: (() -> Unit)? = null
     val updates by lazy { Updates(this) }
-    var ready = false
+    @Volatile var ready = false
     override fun onCreate() {
         super.onCreate()
         main.postDelayed({ updates.maybeCheck() }, 5000)
@@ -28,10 +28,19 @@ class FarSailApp : Application() {
                 ready = true
                 val saved = invoke("state") as JSONObject
                 if (saved.optBoolean("signedIn")) invoke("resume")
+                RemotePreferences.restoreControl(this, invoke("state") as JSONObject, RemotePreferences.ticket())
                 refresh()
             } catch (e: Exception) { message = "初始化失败：${e.message}" }
             try { if (ready) refresh() } catch (_: Exception) { }
             main.post { observer?.invoke() }
+        }
+    }
+    fun restoreControl() {
+        val ticket = RemotePreferences.ticket()
+        io.execute {
+            if (!ready) return@execute
+            try { RemotePreferences.restoreControl(this, invoke("state") as JSONObject, ticket); refresh() }
+            catch (_: Exception) { }
         }
     }
     fun unwrap(raw: String): Any? {
@@ -48,9 +57,14 @@ class FarSailApp : Application() {
     fun act(op: String, args: JSONObject = JSONObject(), success: String = "", scope: String = "HOME", current: () -> Boolean = { true }, after: (() -> Unit)? = null) {
         if (busy || !ready) return
         busy = true; busyScope = scope; observer?.invoke()
+        val restoreTicket = RemotePreferences.ticket()
         io.execute {
             var okay = false
-            val result = try { invoke(op, args); okay = true; success } catch (e: Exception) { friendly(e.message ?: "操作失败") }
+            val result = try {
+                invoke(op, args)
+                if (op in listOf("login", "resume", "bind", "server")) RemotePreferences.restoreControl(this, invoke("state") as JSONObject, restoreTicket)
+                okay = true; success
+            } catch (e: Exception) { friendly(e.message ?: "操作失败") }
             try { refresh() } catch (_: Exception) { }
             main.post {
                 busy = false

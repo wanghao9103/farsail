@@ -19,6 +19,10 @@ class MainActivity : Activity() {
     private lateinit var ui: MobileUi
     private lateinit var body: LinearLayout
     private lateinit var notice: TextView
+    private var foreground = false
+    private var restoreSharingPending = true
+    private var consentOutstanding = false
+    private var consentTicket = 0L
     private var page = Page.LOGIN
     private var navigationEpoch = 0L
     private var rendered: Page? = null
@@ -45,6 +49,8 @@ class MainActivity : Activity() {
         ui = MobileUi(this)
         email = savedInstanceState?.getString("email") ?: ""
         pendingControlEnable = savedInstanceState?.getBoolean("pendingControlEnable") ?: false
+        consentOutstanding = savedInstanceState?.getBoolean("consentOutstanding") ?: false
+        consentTicket = savedInstanceState?.getLong("consentTicket") ?: 0
         page = savedInstanceState?.getString("page")?.let { runCatching { Page.valueOf(it) }.getOrNull() } ?: Page.LOGIN
         val scroll = ScrollView(this).apply { setBackgroundColor(ui.background); isFillViewport = true }
         body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(ui.dp(24), ui.dp(16), ui.dp(24), ui.dp(24)) }
@@ -57,9 +63,13 @@ class MainActivity : Activity() {
         }
         draw()
     }
-    override fun onResume() { super.onResume(); app.observer = { draw() }; draw(); app.updates.maybeCheck() }
-    override fun onPause() { app.observer = null; super.onPause() }
-    override fun onSaveInstanceState(outState: Bundle) { rememberEmail(); outState.putString("email", email); outState.putString("page", page.name); outState.putBoolean("pendingControlEnable", pendingControlEnable); super.onSaveInstanceState(outState) }
+    override fun onResume() {
+        super.onResume(); foreground = true
+        if (!consentOutstanding && CaptureService.phase !in listOf("consent", "starting")) restoreSharingPending = true
+        app.observer = { draw() }; app.restoreControl(); draw(); app.updates.maybeCheck()
+    }
+    override fun onPause() { foreground = false; app.observer = null; super.onPause() }
+    override fun onSaveInstanceState(outState: Bundle) { rememberEmail(); outState.putString("email", email); outState.putString("page", page.name); outState.putBoolean("pendingControlEnable", pendingControlEnable); outState.putBoolean("consentOutstanding", consentOutstanding); outState.putLong("consentTicket", consentTicket); super.onSaveInstanceState(outState) }
     @Deprecated("Framework back callback") override fun onBackPressed() { if (!back()) super.onBackPressed() }
     private fun rememberEmail() { authEmail?.let { email = it.text.toString().trim() } }
     private fun go(next: Page, replace: Boolean = false) {
@@ -112,6 +122,16 @@ class MainActivity : Activity() {
         notice.visibility = if (notice.text.isNullOrEmpty()) View.GONE else View.VISIBLE
         if (page == Page.HOME) updateHome()
         if (page == Page.UPDATES) updateUpdates()
+        maybeRestoreSharing()
+    }
+    private fun maybeRestoreSharing() {
+        if (CaptureService.running) { restoreSharingPending = false; return }
+        if (!foreground || !restoreSharingPending || consentOutstanding || page != Page.HOME || !app.ready || app.busy || CaptureService.running || CaptureService.phase !in listOf("off", "interrupted") || !RemotePreferences.autoRestore(this) || !RemotePreferences.wantsSharing(this, app.state)) return
+        restoreSharingPending = false
+        val token = navigationEpoch
+        app.main.post {
+            if (foreground && !isFinishing && !isDestroyed && token == navigationEpoch && page == Page.HOME && !consentOutstanding && !CaptureService.running && CaptureService.phase in listOf("off", "interrupted") && RemotePreferences.autoRestore(this) && RemotePreferences.wantsSharing(this, app.state)) consent(true)
+        }
     }
     private fun header() {
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = android.view.Gravity.CENTER_VERTICAL }
@@ -196,7 +216,12 @@ class MainActivity : Activity() {
         ui.row(body, "后台运行", "管理手机的后台与电池设置") {
             startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, android.net.Uri.parse("package:$packageName")))
         }
-        if (signedIn()) ui.link(body, "退出登录") { stop(); perform("logout", success = "") { history.clear(); go(Page.LOGIN, true) } }
+        body.addView(Switch(this).apply {
+            text = "打开 App 时恢复上次共享"; minHeight = ui.dp(56); isChecked = RemotePreferences.autoRestore(this@MainActivity)
+            setOnCheckedChangeListener { _, enabled -> RemotePreferences.autoRestore(this@MainActivity, enabled) }
+        })
+        ui.text(body, "记住开启选择。系统录屏授权失效时，打开 App 会显示确认弹窗；在 App 内停止共享或取消授权后不会恢复。", 13f, secondary = true)
+        if (signedIn()) ui.link(body, "退出登录") { stop(); RemotePreferences.clear(this); perform("logout", success = "") { history.clear(); go(Page.LOGIN, true) } }
     }
     private fun updates() {
         title("软件更新", "当前版本 ${app.updates.currentVersion}")
@@ -247,9 +272,9 @@ class MainActivity : Activity() {
         sharingDetail?.text = CaptureService.detail
         share?.text = when (phase) { "consent" -> "等待你确认授权…"; "starting" -> if (CaptureService.running) "取消开启" else "正在开启共享…"; "sharing" -> "停止共享"; "failed" -> "重新开启共享"; "interrupted" -> "恢复屏幕共享"; else -> "开启屏幕共享" }
         share?.isEnabled = app.ready && phase != "consent" && (CaptureService.running || (phase != "starting" && !app.busy))
-        controlDetail?.text = if (ControlService.instance == null) "点击开关，打开并定位 FarSail 的系统授权。" else "已完成系统授权。开启后，同账号电脑可直接连接，无需手机重复确认。"
+        controlDetail?.text = if (ControlService.instance == null) { if (RemotePreferences.wantsControl(this, app.state)) "已记住允许控制，等待系统辅助功能连接。可在下方管理授权。" else "点击开关，打开并定位 FarSail 的系统授权。" } else "已完成系统授权。开启后会记住选择，同账号电脑无需手机重复确认。"
         control?.apply {
-            setOnCheckedChangeListener(null); isEnabled = app.ready; isChecked = app.state.optBoolean("control") && ControlService.instance != null
+            setOnCheckedChangeListener(null); isEnabled = app.ready; isChecked = RemotePreferences.wantsControl(this@MainActivity, app.state)
             setOnCheckedChangeListener { _, checked ->
                 if (checked && ControlService.instance == null) {
                     isChecked = false; pendingControlEnable = true; go(Page.CONTROL_SETUP)
@@ -268,7 +293,7 @@ class MainActivity : Activity() {
         }
     }
     private fun setControl(enabled: Boolean) {
-        NativeBridge.setControl(enabled); ControlService.cancel()
+        RemotePreferences.control(this, app.state, enabled); ControlService.cancel()
         app.state.put("control", enabled)
         app.io.execute { try { app.refresh() } catch (_: Exception) { } }
     }
@@ -293,20 +318,29 @@ class MainActivity : Activity() {
         ui.link(body, "暂不开启") { pendingControlEnable = false; if (!back()) go(if (signedIn()) Page.HOME else Page.LOGIN, true) }
     }
     private fun stop() { NativeBridge.stopLocal(); ControlService.cancel(); CaptureService.stop(this) }
-    private fun consent() {
-        CaptureService.status(this, "consent", "请在系统弹窗中确认共享整个屏幕。")
+    private fun consent(restoring: Boolean = false) {
+        consentTicket = RemotePreferences.beginConsent(this, app.state)
+        if (consentTicket == 0L) return
+        consentOutstanding = true; restoreSharingPending = false
+        CaptureService.status(this, "consent", if (restoring) "正在恢复上次共享，请在系统弹窗中确认共享整个屏幕。" else "请在系统弹窗中确认共享整个屏幕。")
         draw()
         val manager = getSystemService(MediaProjectionManager::class.java)
         val intent = if (Build.VERSION.SDK_INT >= 34) manager.createScreenCaptureIntent(MediaProjectionConfig.createConfigForDefaultDisplay()) else manager.createScreenCaptureIntent()
-        @Suppress("DEPRECATION") startActivityForResult(intent, 42)
+        try { @Suppress("DEPRECATION") startActivityForResult(intent, 42) }
+        catch (e: Exception) { consentOutstanding = false; CaptureService.status(this, "failed", app.friendly(e.message ?: "系统无法打开录屏授权。")); draw() }
     }
     @Deprecated("Framework result callback") override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == 42) {
+            consentOutstanding = false
+            if (!RemotePreferences.currentConsent(this, app.state, consentTicket)) return
+        }
         if (requestCode == 42 && resultCode == RESULT_OK && data != null) {
+            if (!RemotePreferences.sharing(this, app.state, consentTicket)) return
             CaptureService.status(this, "starting", "已获得系统授权，正在启动屏幕共享…")
             try { startForegroundService(Intent(this, CaptureService::class.java).putExtra("result", resultCode).putExtra("data", data)) }
             catch (e: Exception) { CaptureService.status(this, "failed", app.friendly(e.message ?: "系统无法启动录屏服务。")) }
             draw()
-        } else if (requestCode == 42) { CaptureService.status(this, "off", "已取消系统录屏授权，屏幕未共享。"); draw() }
+        } else if (requestCode == 42) { RemotePreferences.stopSharing(this); CaptureService.status(this, "off", "已取消系统录屏授权，屏幕未共享。"); draw() }
     }
 }

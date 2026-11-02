@@ -51,6 +51,8 @@ cd apps/android
 ./gradlew connectedDebugAndroidTest
 ```
 
+For actual process-restart acceptance, build the debug APK and test APK, then run `ANDROID_SERIAL=emulator-5554 python3 scripts/test-android-memory.py` on an owned emulator. It uses a local synthetic coordinator and same-certificate APK replacement, verifies a new process, fresh visible consent, retained control, cancellation, explicit stop and stale/different-device denial. Its shell-permission-protected state probe exists only in debug builds and refuses physical phones. The publication helper rejects a release containing that provider.
+
 Instrumentation tests require a dedicated emulator and skip physical phones to preserve real account state. For the full emulator media/input probe, start an API 35 emulator and build both debug APKs, then run from the repository root:
 
 ```sh
@@ -67,7 +69,9 @@ The host tests use real local encrypted QUIC connections to verify two independe
 
 During an explicitly started share, “Prevent automatic screen timeout while sharing” defaults to on. A screen-dim wake lock is scoped to the projection foreground service so it also applies while another app is visible. It can be turned off immediately; stopping or failing capture releases it. It does not wake or unlock the phone. Screen and CPU wake locks have an eight-hour upper bound. Keeping the display on increases battery use.
 
-Manual locking is different from switching apps. On Android 15 QPR1 and newer, the system ends MediaProjection on lock; the revoked token cannot be reused or restored silently. The app retains the remote-control choice, reports an interrupted share and exposes “Resume screen sharing” to request a fresh system authorization after unlocking. It does not automatically open consent dialogs when the user unlocks, reopen a stopped share, or simulate approval. On older releases, screen-off behavior depends on the system; a live projection is not stopped solely because the screen goes off.
+Manual locking is different from switching apps. On Android 15 QPR1 and newer, the system ends MediaProjection on lock; the revoked token cannot be reused or restored silently. The app remembers control and sharing intent for the current signed-in server/device. A live background share remains active when returning to the app. If capture has ended, opening the home page in the foreground can request fresh system consent directly, once per visit; no capture token is stored. Settings → Restore previous sharing when opening the app can disable this prompt. Merely unlocking into another app does not start capture.
+
+The control choice is restored only after authenticated device recovery and an actual accessibility-service connection. A saved switch is not proof of a live system permission. The app does not enable accessibility settings itself. App/notification Stop, cancellation of a recording request and sign-out cancel the applicable saved intent; system capture termination preserves the choice for a later foreground confirmation. Delayed recording results and queued control restores are fenced by intent generations and server/device identity. On older releases, screen-off behavior depends on the system; a live projection is not stopped solely because the screen goes off.
 
 References: [Android MediaProjection lifecycle and lock auto-stop](https://developer.android.com/media/grow/media-projection), [PowerManager screen-dim wake lock](https://developer.android.com/reference/android/os/PowerManager#SCREEN_DIM_WAKE_LOCK). The latter is deprecated in favor of a visible window flag for ordinary activities; this service needs to cover background sharing across apps and owns its explicit cleanup.
 

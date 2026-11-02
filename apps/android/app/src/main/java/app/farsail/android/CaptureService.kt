@@ -31,7 +31,7 @@ class CaptureService : Service() {
         }
         @Volatile var screenWidth = 0
         @Volatile var screenHeight = 0
-        fun stop(context: Context) { status(context, "off", "共享已停止，电脑无法继续查看。"); context.stopService(Intent(context, CaptureService::class.java)) }
+        fun stop(context: Context) { RemotePreferences.stopSharing(context); status(context, "off", "共享已停止，电脑无法继续查看。"); context.stopService(Intent(context, CaptureService::class.java)) }
     }
     private val app get() = application as FarSailApp
     private val handler = Handler(Looper.getMainLooper())
@@ -82,7 +82,7 @@ class CaptureService : Service() {
             .addAction(Notification.Action.Builder(null, "停止共享", stop).build()).build()
     }
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == STOP) { status(this, "off", "共享已停止，电脑无法继续查看。"); NativeBridge.stopLocal(); ControlService.cancel(); stopSelf(); return START_NOT_STICKY }
+        if (intent?.action == STOP) { RemotePreferences.stopSharing(this); status(this, "off", "共享已停止，电脑无法继续查看。"); NativeBridge.stopLocal(); ControlService.cancel(); stopSelf(); return START_NOT_STICKY }
         if (intent?.action == POWER) {
             if (running) power.keepScreen(SharingPower.enabled(this)) else stopSelf()
             return START_NOT_STICKY
