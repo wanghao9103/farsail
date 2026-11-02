@@ -50,3 +50,6 @@ Desktop.ini
 # Android local SDK and generated native libraries
 local.properties
 apps/android/app/src/main/jniLibs/
+
+# Ignore dependency symlinks as well as directories.
+/node_modules
