@@ -3,12 +3,14 @@ on:
   push:
     paths:
       - 'scripts/deploy/*online*'
+      - 'scripts/deploy/*download*'
       - 'scripts/deploy/*upgrade-coordinator*'
       - 'docs/SERVER_UPDATES*'
       - '.github/workflows/server-updater.yml'
   pull_request:
     paths:
       - 'scripts/deploy/*online*'
+      - 'scripts/deploy/*download*'
       - 'scripts/deploy/*upgrade-coordinator*'
       - 'docs/SERVER_UPDATES*'
       - '.github/workflows/server-updater.yml'
@@ -29,6 +31,8 @@ jobs:
         run: |
           python scripts/deploy/test-update-online.py
           python scripts/deploy/test-update-latest.py
+      - name: Persistent download, parallel ranges and progress
+        run: python scripts/deploy/test-update-download.py
       - name: Upgrade, no-op, locks and rollback
         run: python scripts/deploy/test-upgrade-coordinator.py
       - name: Persistent updater installation

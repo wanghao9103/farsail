@@ -99,10 +99,10 @@ with tempfile.TemporaryDirectory(prefix="farsail-online-test-") as temp:
             try:
                 assert slow_started.wait(5), "slow download did not start"
                 deadline = time.monotonic() + 5
-                while "Dload" not in progress_log.read_text() and time.monotonic() < deadline:
+                while "速度" not in progress_log.read_text() and time.monotonic() < deadline:
                     time.sleep(0.05)
                 live = progress_log.read_text()
-                assert "Downloading coordinator package" in live and "Dload" in live, live
+                assert "Downloading coordinator package" in live and "速度" in live, live
                 assert process.poll() is None and not marker.exists()
             finally:
                 slow_finish.set()
@@ -129,6 +129,9 @@ with tempfile.TemporaryDirectory(prefix="farsail-online-test-") as temp:
         downgrade = run(url.replace("/package.tar.gz", "/redirect"), expected)
         assert downgrade.returncode != 0 and "http" in downgrade.stderr.lower()
         assert not marker.exists()
+        # A fresh transfer, rather than a previously verified cache hit, must reject untrusted TLS.
+        import shutil
+        shutil.rmtree(root / ".local/production/updater-cache")
         untrusted_env = {k: v for k, v in env.items() if k != "CURL_CA_BUNDLE"}
         untrusted = subprocess.run(
             ["bash", str(SCRIPT), url, expected, str(root)],
@@ -137,7 +140,7 @@ with tempfile.TemporaryDirectory(prefix="farsail-online-test-") as temp:
         assert untrusted.returncode != 0 and "certificate" in untrusted.stderr.lower()
         assert not marker.exists()
         assert not list((root / ".local").glob("online-update.*"))
-        print("PASS live curl progress before completion, ordered stages, failed-download stop, trusted HTTPS, SHA256, upgrade dispatch, HTTP/downgrade/untrusted TLS refusal and cleanup; synthetic upgrader only.")
+        print("PASS human-readable live progress before completion, ordered stages, failed-download stop, trusted HTTPS, SHA256, upgrade dispatch, HTTP/downgrade/untrusted TLS refusal and cleanup; synthetic upgrader only.")
     finally:
         server.shutdown()
         server.server_close()

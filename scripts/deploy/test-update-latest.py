@@ -29,7 +29,7 @@ assert args[args.index('--proto-redir')+1]=='=https'
 assert '--max-time' in args and '--retry-max-time' in args
 url=args[-1]
 if url.endswith('.tar.gz'):
-    assert '--silent' not in args, 'package transfer must show real curl progress'
+    assert '--silent' in args and ('--continue-at' in args or '--range' in args), 'package transfer uses resumable curl plus a separate human progress display'
 else:
     assert '--silent' in args, 'small metadata requests should not add meters'
 fixture=Path(os.environ['LATEST_FIXTURE'])
@@ -39,6 +39,10 @@ entry=responses.get(url)
 if entry is None:sys.exit(22)
 content=(fixture/entry).read_bytes()
 if len(content)>int(args[args.index('--max-filesize')+1]):sys.exit(63)
+if '--range' in args:
+    start,end=map(int,args[args.index('--range')+1].split('-'))
+    Path(args[args.index('--dump-header')+1]).write_text(f'HTTP/1.1 206 Partial Content\\r\\nContent-Range: bytes {start}-{end}/{len(content)}\\r\\n\\r\\n')
+    content=content[start:end+1]
 Path(args[args.index('--output')+1]).write_bytes(content)
 '''
 DOCKER = '''#!/usr/bin/env python3
@@ -349,7 +353,7 @@ class LatestTests(unittest.TestCase):
         self.assert_refused('URL or GitHub digest')
 
     def test_downloaded_package_must_match_outer_checksum(self):
-        self.file(DOWNLOAD+TAG+'/'+NAME, b'corrupted package')
+        self.file(DOWNLOAD+TAG+'/'+NAME, b'x' * len(self.package))
         self.assert_refused('Package SHA256 mismatch')
 
     def test_missing_protocol_marker_is_refused(self):

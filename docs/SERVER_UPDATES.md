@@ -71,6 +71,16 @@ The selected identity stays fixed for the entire invocation. HTTPS verification,
 
 New packages declare `online_update_protocol: 1` and the full `source_revision` of the coordinator image in `coordinator-release.json`. A separately refreshed script bundle can record `package_source_revision` without claiming that its unchanged image was rebuilt. Publishing a package requires its checksum companion and the new upgrade/installation scripts; renaming an old package does not make it compatible.
 
+## Resumable downloads, pieces and speed display
+
+The new downloader uses 4 concurrent transfers with pieces of about 2 MB. It retains bytes only when HTTP 206 Content-Range matches the requested interval and total size. Servers without Range support safely fall back to one resumable transfer. A merged archive must still pass full SHA256, archive bounds, internal checksums and version checks before upgrade.
+
+Cache lives under the existing `FARSAIL_STATE_DIR/updater-cache`, isolated by original URL and full SHA256. Disconnects, Ctrl+C and exit preserve complete and partial pieces; rerunning `farsail-update` continues the remaining bytes. Concurrent downloads of the same package are locked; cancellation terminates workers and releases the cache lock. Verified complete archives are reused. Corrupt pieces are cleared and never executed.
+
+Progress reports overall percentage, received/total size, aggregate KB/s or MB/s, estimated remaining time and elapsed time for this run (decimal MB). Cached bytes do not inflate the current speed. Terminals refresh in place every second; logs emit about once per 5 seconds. Each transfer permits 3600 seconds, with retry after 120 seconds below 1024 B/s. Each piece has up to 3 attempts, continuing from its actual new offset rather than discarding the package at the former 600-second deadline.
+
+Stop old processes before installing new tools. Temporary progress already deleted by the old script cannot be recovered; persistence starts with the new downloader. The small installer refreshes only the entry point without restarting services. The new full package contains these same tools so a successful upgrade does not reinstall the old downloader. Use the exact installer command and pinned SHA256 in the release notes.
+
 ## Applying an update and repeated checks
 
 The upgrade script takes the same deployment operation lock as the other maintenance commands. It rechecks the selected image, installed source and successful online-update receipt under that lock, rejects environment overrides that would redirect Compose to another image or deployment, and verifies the loaded Linux amd64 image configuration digest.
