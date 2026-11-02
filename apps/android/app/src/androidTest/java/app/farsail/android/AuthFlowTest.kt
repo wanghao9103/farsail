@@ -11,6 +11,7 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class AuthFlowTest {
     @Test fun loginServerRegistrationAndVerificationHaveSeparateForms() {
+        org.junit.Assume.assumeTrue("Dedicated emulator only", android.os.Build.FINGERPRINT.contains("generic") || android.os.Build.MODEL.contains("sdk", ignoreCase = true))
         Configurator.getInstance().uiAutomationFlags = android.app.UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES
         val inst = InstrumentationRegistry.getInstrumentation(); val context = inst.targetContext
         val app = context.applicationContext as FarSailApp

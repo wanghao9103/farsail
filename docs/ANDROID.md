@@ -49,7 +49,7 @@ cd apps/android
 ./gradlew connectedDebugAndroidTest
 ```
 
-For the full emulator media/input probe, start an API 35 emulator and build both debug APKs, then run from the repository root:
+Instrumentation tests require a dedicated emulator and skip physical phones to preserve real account state. For the full emulator media/input probe, start an API 35 emulator and build both debug APKs, then run from the repository root:
 
 ```sh
 cargo build -p farsail-android --example device_probe
@@ -68,6 +68,8 @@ Settings → Software update separately manages checks, downloads and installati
 The update feed is separate from the account server and fixed to repository `android-updates/latest.json`. Rust verifies its embedded Ed25519 public-key signature and increasing version code. Download verification checks size, SHA-256, package identity, version and the installed APK certificate. Keys remain in Actions secrets, never in committed files. Version APKs belong to immutable `android-v<version>` releases. Separate build and publish jobs allow publication retries to reuse the signed artifact without rebuilding a published version.
 
 For a local signed build set `ANDROID_KEYSTORE_PATH`, `ANDROID_KEYSTORE_PASSWORD` and `ANDROID_KEY_ALIAS`, then run `scripts/build-android.sh :app:assembleRelease :app:lintRelease`. Before publication verify `apps/android/version.json`, certificate and source tag. `scripts/configure-android-updates.mjs` checks key consistency by default; `--apply` configures repository secrets. Keep the original certificate so users can upgrade without uninstalling and losing data.
+
+If the Actions token receives HTTP 403 when creating release entries, preserve the signed artifact, create the version/channel entries with existing release permissions and rerun only failed publication. Do not rebuild or overwrite version assets or copy a personal token into repository secrets to work around this.
 
 ## Code boundaries
 

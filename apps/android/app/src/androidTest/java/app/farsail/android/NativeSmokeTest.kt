@@ -19,6 +19,7 @@ class NativeSmokeTest {
         assertTrue("condition timed out", condition())
     }
     @Test fun keystoreJniProjectionBackgroundAndStop() {
+        org.junit.Assume.assumeTrue("Dedicated emulator only", android.os.Build.FINGERPRINT.contains("generic") || android.os.Build.MODEL.contains("sdk", ignoreCase = true))
         Configurator.getInstance().uiAutomationFlags = android.app.UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES
         val inst = InstrumentationRegistry.getInstrumentation()
         val context = inst.targetContext

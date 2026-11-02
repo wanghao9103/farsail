@@ -49,7 +49,7 @@ cd apps/android
 ./gradlew connectedDebugAndroidTest
 ```
 
-需要完整模拟器媒体/输入探针时，启动 API 35 模拟器并构建两份 debug APK，再从仓库根目录执行：
+设备测试只在专用模拟器运行，实体手机会跳过，避免改动真实账号状态。需要完整模拟器媒体/输入探针时，启动 API 35 模拟器并构建两份 debug APK，再从仓库根目录执行：
 
 ```sh
 cargo build -p farsail-android --example device_probe
@@ -68,6 +68,8 @@ python3 scripts/test-android-emulator.py
 更新清单与账号服务器分离，固定来自仓库 `android-updates/latest.json`。Rust 验证内置 Ed25519 公钥签名及递增版本号；下载还检查大小、SHA-256、包名、版本与已安装 APK 的证书。密钥保存在仓库 Actions secrets；私钥和原始 APK 密钥库不得提交。版本 APK 位于不可变的 `android-v<version>` 发行页。构建与发布分为两个 job，发布重试复用已签名附件，避免重编译覆盖同版本。
 
 本地签名构建设置 `ANDROID_KEYSTORE_PATH`、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_ALIAS` 后运行 `scripts/build-android.sh :app:assembleRelease :app:lintRelease`。发布前须核对 `apps/android/version.json`、APK 证书及源码标签；`scripts/configure-android-updates.mjs` 默认仅核验密钥匹配，`--apply` 配置仓库 secrets。不要轮换首次安装证书而要求用户卸载丢失数据。
+
+如果 Actions token 创建发行入口返回 HTTP 403，保留成功的签名 artifact，通过已有发布权限创建版本与通道入口后，仅重试失败 publish；不要重新构建或覆盖版本附件，也不要为此复制个人令牌到仓库 secrets。
 
 ## 代码边界
 
