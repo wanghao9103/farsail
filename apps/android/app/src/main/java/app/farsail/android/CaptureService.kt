@@ -39,7 +39,7 @@ class CaptureService : Service() {
     private var layout = 0L
     private var lastFrame = 0L
     private val callback = object : MediaProjection.Callback() {
-        override fun onStop() { NativeBridge.stopLocal(); handler.post { app.message = "系统已结束屏幕共享，请重新开启。"; stopSelf() } }
+        override fun onStop() { NativeBridge.stopLocal(); handler.post { app.messageScope = "HOME"; app.message = "系统已结束屏幕共享，请重新开启。"; stopSelf() } }
         override fun onCapturedContentResize(width: Int, height: Int) {
             if (!stopped && width > 0 && height > 0) resize(width, height)
         }
@@ -78,15 +78,15 @@ class CaptureService : Service() {
             capture.post { try { resize(size.first, size.second) } catch (e: Exception) { fail(e) } }
             wake = getSystemService(PowerManager::class.java).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "FarSail:Sharing").apply { acquire(8 * 60 * 60 * 1000L) }
             app.io.execute {
-                try { app.invoke("share", JSONObject().put("epoch", epoch)); app.message = "等待电脑连接，切到后台后也可继续共享。" }
-                catch (e: Exception) { app.message = "开启共享失败：${e.message}"; handler.post { stopSelf() } }
+                try { app.invoke("share", JSONObject().put("epoch", epoch)); app.messageScope = "HOME"; app.message = "等待电脑连接，切到后台后也可继续共享。" }
+                catch (e: Exception) { app.messageScope = "HOME"; app.message = "开启共享失败：${if (e.message?.contains("409") == true) "请确认服务端已升级安卓支持，并重新开启共享。" else app.friendly(e.message ?: "请重试。")}"; handler.post { stopSelf() } }
                 try { app.refresh() } catch (_: Exception) { }
             }
             handler.post(poll)
         } catch (e: Exception) { fail(e) }
         return START_NOT_STICKY
     }
-    private fun fail(e: Exception) { handler.post { app.message = "屏幕共享已停止：${e.message}"; stopSelf() } }
+    private fun fail(e: Exception) { handler.post { app.messageScope = "HOME"; app.message = "屏幕共享已停止：${e.message}"; stopSelf() } }
     private fun resize(w: Int, h: Int) {
         if (stopped || (screenWidth == w && screenHeight == h && display != null)) return
         screenWidth = w; screenHeight = h
@@ -132,14 +132,14 @@ class CaptureService : Service() {
                         val now = SystemClock.elapsedRealtime()
                         if (now - lastHeartbeat >= 15000) { app.invoke("heartbeat"); lastHeartbeat = now }
                         app.refresh()
-                    } catch (e: Exception) { app.message = "连接检查失败：${e.message}" }
+                    } catch (e: Exception) { app.messageScope = "HOME"; app.message = "连接检查失败：${e.message}" }
                     finally { handler.post {
                         polling = false
                         if (!stopped) {
                             if (Build.VERSION.SDK_INT < 33 || checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) == android.content.pm.PackageManager.PERMISSION_GRANTED) {
                                 getSystemService(NotificationManager::class.java).notify(41, notification())
                             }
-                            if (!app.state.optBoolean("sharing")) { app.message = "远程连接已停止，请重新开启共享。"; stopSelf() }
+                            if (!app.state.optBoolean("sharing")) { app.messageScope = "HOME"; app.message = "远程连接已停止，请重新开启共享。"; stopSelf() }
                         }
                         app.observer?.invoke()
                     } }

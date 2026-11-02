@@ -2,6 +2,7 @@
 //! Only the local MediaProjection service can arm capture. No secrets cross the UI.
 mod bridge;
 mod protocol;
+mod updates;
 
 use farsail_client::NativeClient;
 use farsail_core::RemotePermission;

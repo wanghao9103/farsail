@@ -237,3 +237,20 @@ pub extern "system" fn Java_app_farsail_android_NativeBridge_inputValid(
         .unwrap_or(false);
     if valid { JNI_TRUE } else { JNI_FALSE }
 }
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_app_farsail_android_NativeBridge_verifyUpdate(
+    mut env: JNIEnv,
+    _: JObject,
+    envelope: JString,
+    installed: jlong,
+) -> jstring {
+    let result = (|| {
+        let envelope: String = env
+            .get_string(&envelope)
+            .map_err(|_| "更新清单无效。".to_string())?
+            .into();
+        crate::updates::verify(&envelope, installed.max(0) as u64)
+    })();
+    response(&mut env, result)
+}

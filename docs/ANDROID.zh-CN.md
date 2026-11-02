@@ -4,15 +4,15 @@
 
 # 安卓被控端预览
 
-原生安卓 App 支持通过 FarSail 电脑端查看和控制手机。这是本地预览实现，尚未公开发布手机版。复用现有协调服务、Ed25519 设备身份、逐次批准、iroh 加密传输、JPEG 画面及短期授权租约，无需修改协调服务数据库结构。
+原生安卓 App 支持通过 FarSail 电脑端查看和控制手机。手机版通过仓库的 Android 预览发行通道发布。复用现有协调服务、Ed25519 设备身份、逐次批准、iroh 加密传输、JPEG 画面及短期授权租约，无需修改协调服务数据库结构。
 
 ## 安装和连接
 
 使用手机版前，需要用本轮源码升级协调服务：旧协调服务虽然识别安卓设备身份，但在线屏幕共享只允许 Windows，会用 HTTP 409 拒绝安卓开启共享。本次允许 Windows 和 Android 被控端，保留心跳代次、设备在线和批准检查，无需新增数据库迁移。本轮不会自动部署生产服务器。
 
-在安卓手机安装本地构建的 APK。最低支持 Android 8，APK 包含 ARM64 和 x86_64 原生库，不包含旧的纯 32 位手机。
+从 Android 发行页面或本地构建安装 APK。最低支持 Android 8，APK 包含 ARM64 和 x86_64 原生库，不包含旧的纯 32 位手机。
 
-- 输入与电脑端相同的 HTTPS 服务地址，登录后添加这台手机。App 支持注册和邮箱验证。
+- 在“设置 → 服务器设置”保存与电脑端相同的 HTTPS 地址，再返回登录。登录、注册、邮箱验证均为独立页面；验证码页只处理邮箱与验证码。登录后添加这台手机。
 - 仅查看时，点击“开启屏幕共享”，确认 Android 系统录屏授权。请求共享整个屏幕，让远程触摸坐标对应真实屏幕。
 - 需要控制时，在系统设置开启 FarSail 辅助功能，再开启“允许已批准的电脑控制手机”。仅开启辅助功能不会授予远程连接。
 - 在电脑端选择在线手机，申请查看或控制，再在手机批准本次请求。两端均显示连接核对码。
@@ -40,7 +40,7 @@ rustup target add aarch64-linux-android x86_64-linux-android
 scripts/build-android.sh
 ```
 
-输出为 `apps/android/app/build/outputs/apk/debug/app-debug.apk`，使用本机 Android 调试密钥签名。这是可安装的测试包，生产签名和公开发布需要另行处理。脚本为原生库配置 16 KB ELF 对齐，并运行 Android lint 与 JVM 测试。缺少任一原生 ABI 时 Gradle 拒绝打包。参见 [Android 页大小要求](https://developer.android.com/guide/practices/page-sizes)。
+输出为 `apps/android/app/build/outputs/apk/debug/app-debug.apk`，使用本机 Android 调试密钥签名。这是可安装的测试包。正式预览包通过 `android-release.yml` 构建，使用首次安装的同一证书，关闭调试标志；证书必须保留以支持覆盖升级。脚本为原生库配置 16 KB ELF 对齐，并运行 Android lint 与 JVM 测试。缺少任一原生 ABI 时 Gradle 拒绝打包。参见 [Android 页大小要求](https://developer.android.com/guide/practices/page-sizes)。
 
 ```sh
 cargo test -p farsail-android
@@ -60,6 +60,14 @@ python3 scripts/test-android-emulator.py
 脚本清除专用模拟器 App 的合成测试数据，可见地确认系统录屏授权，并检查完整 JPEG 解码及真实鼠标/文字输入。不要用于实体手机。
 
 主机测试使用真实本地加密 QUIC 连接验证两台手机会话互相独立、画面 ACK、有序输入、仅查看拒绝控制、旧布局及已取消的采集开启操作。设备测试使用合成本地协调服务响应，以及真实 Keystore/JNI/录屏前台服务。可选的 `realPeer` 设备测试通过模拟器 UDP 转发连接主机探针，向自建测试输入框发送文字。以上不证明实体手机兼容性、生产账号协调或跨网中继行为。结果与缺口记录在[实现验证](verification/WI-ANDROID-001.zh-CN.md)。
+
+## 软件更新
+
+“设置 → 软件更新”独立管理检查、下载和安装。默认自动检查，每六小时最多一次；自动下载默认关闭，可自行开启。下载完成后仍需点击安装，并在 Android 系统安装器确认。共享期间先停止共享再安装。Android 8 以上首次安装更新需要在系统设置允许 FarSail 安装应用。
+
+更新清单与账号服务器分离，固定来自仓库 `android-updates/latest.json`。Rust 验证内置 Ed25519 公钥签名及递增版本号；下载还检查大小、SHA-256、包名、版本与已安装 APK 的证书。密钥保存在仓库 Actions secrets；私钥和原始 APK 密钥库不得提交。版本 APK 位于不可变的 `android-v<version>` 发行页。构建与发布分为两个 job，发布重试复用已签名附件，避免重编译覆盖同版本。
+
+本地签名构建设置 `ANDROID_KEYSTORE_PATH`、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_ALIAS` 后运行 `scripts/build-android.sh :app:assembleRelease :app:lintRelease`。发布前须核对 `apps/android/version.json`、APK 证书及源码标签；`scripts/configure-android-updates.mjs` 默认仅核验密钥匹配，`--apply` 配置仓库 secrets。不要轮换首次安装证书而要求用户卸载丢失数据。
 
 ## 代码边界
 

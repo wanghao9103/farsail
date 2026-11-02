@@ -1865,6 +1865,8 @@ name = "farsail-android"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64 0.22.1",
+ "ed25519-dalek 2.2.0",
  "farsail-client",
  "farsail-core",
  "farsail-media",
@@ -1872,6 +1874,7 @@ dependencies = [
  "hex",
  "iroh",
  "jni 0.21.1",
+ "serde",
  "serde_json",
  "sha2 0.10.9",
  "tokio",

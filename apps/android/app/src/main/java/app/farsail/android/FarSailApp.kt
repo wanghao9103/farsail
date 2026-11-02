@@ -13,11 +13,15 @@ class FarSailApp : Application() {
     var state = JSONObject()
     var pending = JSONArray()
     var message = ""
+    var messageScope = "LOGIN"
+    var busyScope = ""
     var busy = false
     var observer: (() -> Unit)? = null
+    val updates by lazy { Updates(this) }
     var ready = false
     override fun onCreate() {
         super.onCreate()
+        main.postDelayed({ updates.maybeCheck() }, 5000)
         io.execute {
             try {
                 unwrap(NativeBridge.initialize(CredentialStore(this), this))
@@ -41,17 +45,25 @@ class FarSailApp : Application() {
         val requests = if (next.optBoolean("sharing")) invoke("pending") as? JSONArray ?: JSONArray() else JSONArray()
         main.post { state = next; pending = requests; observer?.invoke() }
     }
-    fun act(op: String, args: JSONObject = JSONObject(), success: String = "", after: (() -> Unit)? = null) {
+    fun act(op: String, args: JSONObject = JSONObject(), success: String = "", scope: String = "HOME", current: () -> Boolean = { true }, after: (() -> Unit)? = null) {
         if (busy || !ready) return
-        busy = true; observer?.invoke()
+        busy = true; busyScope = scope; observer?.invoke()
         io.execute {
             var okay = false
-            try { invoke(op, args); message = success; okay = true } catch (e: Exception) { message = friendly(e.message ?: "操作失败") }
+            val result = try { invoke(op, args); okay = true; success } catch (e: Exception) { friendly(e.message ?: "操作失败") }
             try { refresh() } catch (_: Exception) { }
-            main.post { busy = false; observer?.invoke(); if (okay) after?.invoke() }
+            main.post {
+                busy = false
+                val stillCurrent = current()
+                if (stillCurrent) { message = result; messageScope = scope }
+                observer?.invoke()
+                if (okay && stillCurrent) after?.invoke()
+            }
         }
     }
-    private fun friendly(s: String) = when {
+    fun friendly(s: String) = when {
+        s.contains("invalid server URL", true) || s.contains("use HTTPS", true) || s.contains("server host required", true) -> "请填写有效的 HTTPS 服务地址。"
+        s.contains("409") -> "操作状态已变化，请刷新后重试。"
         s.contains("401") -> "登录已过期或账号密码不正确，请重新登录。"
         s.contains("403") -> "当前操作未获授权，请检查账号或邮箱验证。"
         s.contains("network", true) || s.contains("connect", true) -> "连接失败，请检查网络和服务地址。"

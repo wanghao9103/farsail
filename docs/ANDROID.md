@@ -4,15 +4,15 @@
 
 # Android host preview
 
-The native Android app lets a FarSail desktop client view and control a phone. This is a local preview, not a published mobile release. It reuses the existing coordinator, Ed25519 device identity, explicit approvals, encrypted iroh transport, JPEG frames and expiring authorization leases. No coordinator schema change is required.
+The native Android app lets a FarSail desktop client view and control a phone. Mobile previews are distributed through the repository Android release channel. It reuses the existing coordinator, Ed25519 device identity, explicit approvals, encrypted iroh transport, JPEG frames and expiring authorization leases. No coordinator schema change is required.
 
 ## Install and connect
 
 Upgrade the coordinator from this source before using the phone app: earlier coordinators recognize Android device identities but restrict live screen hosting to Windows and reject Android sharing with HTTP 409. This change permits Windows and Android hosts while retaining generation, live-device and approval checks; no new database migration is needed. This work does not deploy the production server automatically.
 
-Install the locally built APK on an Android phone. The minimum supported system is Android 8; the APK contains ARM64 and x86_64 libraries. Older 32-bit phones are not included.
+Install the APK from an Android release or a local build. The minimum supported system is Android 8; the APK contains ARM64 and x86_64 libraries. Older 32-bit phones are not included.
 
-- Enter the same HTTPS service address used by the desktop client, sign in, and add this phone. Registration and email verification are available in the app.
+- Save the desktop HTTPS service address under Settings → Server settings, then return to sign in. Login, registration and email verification use independent pages; verification contains only email and code. Add this phone after signing in.
 - For viewing, tap “开启屏幕共享” and confirm the Android system screen capture dialog. Full screen capture is requested so that remote touch coordinates match the physical screen.
 - For control, enable the FarSail accessibility service in system settings and turn on “允许已批准的电脑控制手机”. Enabling accessibility alone grants no remote connection.
 - On the desktop, select the online phone and request viewing or control. Approve that request on the phone. Both ends show a connection verification code.
@@ -40,7 +40,7 @@ rustup target add aarch64-linux-android x86_64-linux-android
 scripts/build-android.sh
 ```
 
-The output is `apps/android/app/build/outputs/apk/debug/app-debug.apk`, signed with the local Android debug key. This is an installable testing package; production signing and public distribution are separate work. The script links native libraries with 16 KB ELF alignment and runs Android lint and JVM tests. Gradle refuses to package missing native ABIs. See [Android page size requirements](https://developer.android.com/guide/practices/page-sizes).
+The output is `apps/android/app/build/outputs/apk/debug/app-debug.apk`, signed with the local Android debug key. This is an installable testing package. Public previews are built by `android-release.yml`, signed with the original installed certificate and have debugging disabled. Preserve that certificate for in-place upgrades. The script links native libraries with 16 KB ELF alignment and runs Android lint and JVM tests. Gradle refuses to package missing native ABIs. See [Android page size requirements](https://developer.android.com/guide/practices/page-sizes).
 
 ```sh
 cargo test -p farsail-android
@@ -60,6 +60,14 @@ python3 scripts/test-android-emulator.py
 The driver clears the dedicated emulator app's synthetic test data, confirms the system capture dialog visibly, and checks both complete JPEG decoding and real mouse/text input. Do not use it on a physical phone.
 
 The host tests use real local encrypted QUIC connections to verify two independent phone sessions, frame ACKs, ordered input, view-only denial, stale geometry and cancelled capture activation. Instrumentation uses synthetic local coordinator responses and the real Keystore/JNI/projection foreground service. Optional `realPeer` instrumentation connects a host probe through the emulator UDP redirect and exercises text input into an owned test field. These tests do not prove physical phone compatibility, production account coordination or cross-network relay behavior. Verification results and remaining gaps are recorded in [the implementation evidence](verification/WI-ANDROID-001.md).
+
+## Software updates
+
+Settings → Software update separately manages checks, downloads and installation. Automatic checks default to enabled, throttled to once per six hours; automatic downloads default to disabled. Installing a downloaded update requires a tap and confirmation in the Android package installer. Stop sharing before installation. Android 8 and later require the normal per-app permission to install applications.
+
+The update feed is separate from the account server and fixed to repository `android-updates/latest.json`. Rust verifies its embedded Ed25519 public-key signature and increasing version code. Download verification checks size, SHA-256, package identity, version and the installed APK certificate. Keys remain in Actions secrets, never in committed files. Version APKs belong to immutable `android-v<version>` releases. Separate build and publish jobs allow publication retries to reuse the signed artifact without rebuilding a published version.
+
+For a local signed build set `ANDROID_KEYSTORE_PATH`, `ANDROID_KEYSTORE_PASSWORD` and `ANDROID_KEY_ALIAS`, then run `scripts/build-android.sh :app:assembleRelease :app:lintRelease`. Before publication verify `apps/android/version.json`, certificate and source tag. `scripts/configure-android-updates.mjs` checks key consistency by default; `--apply` configures repository secrets. Keep the original certificate so users can upgrade without uninstalling and losing data.
 
 ## Code boundaries
 

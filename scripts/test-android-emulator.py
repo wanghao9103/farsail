@@ -16,8 +16,16 @@ OUT = ROOT / ".local/android-verification"
 OUT.mkdir(parents=True, exist_ok=True)
 
 
+serial = os.environ.get("ANDROID_SERIAL")
+if not serial:
+    devices = subprocess.check_output(["adb", "devices"], text=True).splitlines()
+    emulators = [line.split()[0] for line in devices if line.startswith("emulator-") and "\tdevice" in line]
+    assert len(emulators) == 1, "Start exactly one dedicated emulator, or set ANDROID_SERIAL"
+    serial = emulators[0]
+ADB = ["adb", "-s", serial]
+
 def adb(*args, check=True):
-    return subprocess.run(["adb", *args], capture_output=True, check=check, timeout=120)
+    return subprocess.run([*ADB, *args], capture_output=True, check=check, timeout=120)
 
 
 assert adb("shell", "getprop", "ro.kernel.qemu").stdout.strip() == b"1", "Use an emulator, never a physical phone"
@@ -30,7 +38,7 @@ adb("install", "-r", str(ROOT / "apps/android/app/build/outputs/apk/androidTest/
 adb("shell", "pm", "clear", "app.farsail.android")
 redir = None
 with (OUT / "instrumentation.log").open("wb") as log:
-    test = subprocess.Popen(["adb", "shell", "am", "instrument", "-w", "-e", "realPeer", "true", "-e", "sourceKey", key,
+    test = subprocess.Popen([*ADB, "shell", "am", "instrument", "-w", "-e", "class", "app.farsail.android.NativeSmokeTest", "-e", "realPeer", "true", "-e", "sourceKey", key,
                              "app.farsail.android.test/androidx.test.runner.AndroidJUnitRunner"], stdout=log, stderr=subprocess.STDOUT)
     try:
         end = time.monotonic() + 90
