@@ -63,6 +63,14 @@ The driver clears the dedicated emulator app's synthetic test data, confirms the
 
 The host tests use real local encrypted QUIC connections to verify two independent phone sessions, frame ACKs, ordered input, view-only denial, stale geometry and cancelled capture activation. Instrumentation uses synthetic local coordinator responses and the real Keystore/JNI/projection foreground service. Optional `realPeer` instrumentation connects a host probe through the emulator UDP redirect and exercises text input into an owned test field. These tests do not prove physical phone compatibility, production account coordination or cross-network relay behavior. Verification results and remaining gaps are recorded in [the implementation evidence](verification/WI-ANDROID-001.md).
 
+## Automatic screen timeout and manual locking
+
+During an explicitly started share, “Prevent automatic screen timeout while sharing” defaults to on. A screen-dim wake lock is scoped to the projection foreground service so it also applies while another app is visible. It can be turned off immediately; stopping or failing capture releases it. It does not wake or unlock the phone. Screen and CPU wake locks have an eight-hour upper bound. Keeping the display on increases battery use.
+
+Manual locking is different from switching apps. On Android 15 QPR1 and newer, the system ends MediaProjection on lock; the revoked token cannot be reused or restored silently. The app retains the remote-control choice, reports an interrupted share and exposes “Resume screen sharing” to request a fresh system authorization after unlocking. It does not automatically open consent dialogs when the user unlocks, reopen a stopped share, or simulate approval. On older releases, screen-off behavior depends on the system; a live projection is not stopped solely because the screen goes off.
+
+References: [Android MediaProjection lifecycle and lock auto-stop](https://developer.android.com/media/grow/media-projection), [PowerManager screen-dim wake lock](https://developer.android.com/reference/android/os/PowerManager#SCREEN_DIM_WAKE_LOCK). The latter is deprecated in favor of a visible window flag for ordinary activities; this service needs to cover background sharing across apps and owns its explicit cleanup.
+
 ## Software updates
 
 Settings → Software update separately manages checks, downloads and installation. Automatic checks default to enabled, throttled to once per six hours; automatic downloads default to disabled. Installing a downloaded update requires a tap and confirmation in the Android package installer. Stop sharing before installation. Android 8 and later require the normal per-app permission to install applications.

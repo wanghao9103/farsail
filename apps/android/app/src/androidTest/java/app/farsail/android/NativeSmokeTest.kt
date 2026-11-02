@@ -7,6 +7,7 @@ import androidx.test.uiautomator.*
 import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Test
+import org.junit.Before
 import org.junit.runner.RunWith
 import java.net.ServerSocket
 import java.util.concurrent.atomic.AtomicBoolean
@@ -17,6 +18,101 @@ class NativeSmokeTest {
         val end = System.currentTimeMillis() + 20000
         while (System.currentTimeMillis() < end) { if (condition()) return; Thread.sleep(100) }
         assertTrue("condition timed out", condition())
+    }
+    private fun shell(command: String): String {
+        val fd = InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand(command)
+        return android.os.ParcelFileDescriptor.AutoCloseInputStream(fd).bufferedReader().use { it.readText().trim() }
+    }
+    @Before fun prepareOwnedEmulator() {
+        org.junit.Assume.assumeTrue("Dedicated emulator only", android.os.Build.MODEL.contains("sdk", ignoreCase = true) || android.os.Build.FINGERPRINT.contains("generic"))
+        UiDevice.getInstance(InstrumentationRegistry.getInstrumentation()).wakeUp()
+        shell("wm dismiss-keyguard")
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        await { context.getSystemService(android.os.PowerManager::class.java).isInteractive && !context.getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked }
+    }
+    private fun activeWakeLocks() = shell("dumpsys power").substringAfter("Wake Locks:").substringBefore("Suspend Blockers:")
+    @Test fun sharingPowerSurvivesIdleButHonorsManualSleepAndReleases() {
+        org.junit.Assume.assumeTrue("Dedicated emulator only", android.os.Build.MODEL.contains("sdk", ignoreCase = true))
+        val inst = InstrumentationRegistry.getInstrumentation(); val context = inst.targetContext
+        val device = UiDevice.getInstance(inst); device.wakeUp(); device.pressHome()
+        val timeout = shell("settings get system screen_off_timeout")
+        val plugged = shell("settings get global stay_on_while_plugged_in")
+        val power = SharingPower(context)
+        try {
+            shell("settings put system screen_off_timeout 1000")
+            shell("settings put global stay_on_while_plugged_in 0")
+            power.start()
+            assertTrue(activeWakeLocks().contains("FarSail:SharingScreen"))
+            Thread.sleep(12000)
+            assertTrue("screen remains interactive after idle in another app", context.getSystemService(android.os.PowerManager::class.java).isInteractive)
+            power.keepScreen(false)
+            assertFalse("preference off releases screen lock", activeWakeLocks().contains("FarSail:SharingScreen"))
+            // Releasing protection after the short idle deadline may immediately
+            // sleep. A preference toggle must not wake a sleeping phone itself.
+            shell("settings put system screen_off_timeout 600000")
+            device.wakeUp(); shell("wm dismiss-keyguard")
+            await { context.getSystemService(android.os.PowerManager::class.java).isInteractive && !context.getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked }
+            power.keepScreen(true)
+            assertTrue(activeWakeLocks().contains("FarSail:SharingScreen"))
+            device.sleep()
+            await { !context.getSystemService(android.os.PowerManager::class.java).isInteractive }
+        } finally {
+            power.close()
+            shell(if (timeout == "null") "settings delete system screen_off_timeout" else "settings put system screen_off_timeout $timeout")
+            shell(if (plugged == "null") "settings delete global stay_on_while_plugged_in" else "settings put global stay_on_while_plugged_in $plugged")
+            device.wakeUp(); device.pressMenu()
+            assertFalse(activeWakeLocks().contains("FarSail:SharingScreen"))
+            assertFalse(activeWakeLocks().contains("FarSail:Sharing"))
+        }
+    }
+    @Test fun lockEndsProjectionWithRecoveryReasonAndKeepsControlPreference() {
+        org.junit.Assume.assumeTrue("Dedicated Android 16+ emulator only", android.os.Build.MODEL.contains("sdk", ignoreCase = true) && android.os.Build.VERSION.SDK_INT >= 36)
+        val inst = InstrumentationRegistry.getInstrumentation(); val context = inst.targetContext
+        val app = context.applicationContext as FarSailApp; await { app.ready }
+        val coordinator = FakeCoordinator(); val device = UiDevice.getInstance(inst)
+        org.junit.Assume.assumeFalse("Dedicated emulator must have no existing credential", context.getSystemService(android.app.KeyguardManager::class.java).isDeviceSecure)
+        val lockDelay = shell("settings get secure lock_screen_lock_after_timeout")
+        var credentialSet = false
+        try {
+            // A blank emulator has no secure keyguard: screen off alone need
+            // not revoke capture. Install a temporary, known fixture credential.
+            check(shell("locksettings set-pin 1234").contains("set", ignoreCase = true)); credentialSet = true
+            shell("settings put secure lock_screen_lock_after_timeout 0")
+            await { context.getSystemService(android.app.KeyguardManager::class.java).isDeviceSecure }
+            device.wakeUp(); device.pressMenu()
+            app.invoke("server", JSONObject().put("url", "http://127.0.0.1:${coordinator.port}"))
+            app.invoke("login", JSONObject().put("email", "android-smoke@example.invalid").put("password", "synthetic-password"))
+            app.invoke("bind", JSONObject().put("name", "Android lock fixture")); app.refresh()
+            NativeBridge.setControl(true)
+            val controlBefore = (app.invoke("state") as JSONObject).optBoolean("control"); assertTrue(controlBefore)
+            context.startActivity(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK))
+            assertTrue(device.wait(Until.hasObject(By.text("开启屏幕共享")), 10000))
+            device.findObject(By.text("开启屏幕共享")).click()
+            val allow = device.wait(Until.findObject(By.res("android", "button1")), 10000); assertNotNull(allow); allow.click()
+            await { CaptureService.phase == "sharing" }
+            device.sleep()
+            await { !CaptureService.running && CaptureService.phase == "interrupted" }
+            assertTrue(CaptureService.detail.contains("手机锁屏"))
+            assertFalse(activeWakeLocks().contains("FarSail:SharingScreen"))
+            await { !coordinator.hosting.get() }
+            assertEquals(controlBefore, (app.invoke("state") as JSONObject).optBoolean("control"))
+            check(shell("locksettings clear --old 1234").contains("cleared", ignoreCase = true)); credentialSet = false
+            device.wakeUp(); shell("wm dismiss-keyguard")
+            context.startActivity(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            assertTrue(device.wait(Until.hasObject(By.text("屏幕共享已中断")), 10000))
+            assertNotNull(device.findObject(By.text("恢复屏幕共享")))
+            // Recovery must ask for a new system token, never reuse the revoked one.
+            device.findObject(By.text("恢复屏幕共享")).click()
+            val again = device.wait(Until.findObject(By.res("android", "button1")), 10000); assertNotNull(again); again.click()
+            await { CaptureService.running && CaptureService.phase == "sharing" }
+        } finally {
+            CaptureService.stop(context); await { !CaptureService.running }
+            NativeBridge.setControl(false)
+            runCatching { app.invoke("logout") }; coordinator.close()
+            if (credentialSet) shell("locksettings clear --old 1234")
+            shell(if (lockDelay == "null") "settings delete secure lock_screen_lock_after_timeout" else "settings put secure lock_screen_lock_after_timeout $lockDelay")
+            device.wakeUp(); shell("wm dismiss-keyguard")
+        }
     }
     @Test fun rejectedSharingKeepsFailureVisibleAfterServiceStops() {
         org.junit.Assume.assumeTrue("Dedicated emulator only", android.os.Build.MODEL.contains("sdk", ignoreCase = true))
@@ -84,6 +180,7 @@ class NativeSmokeTest {
             device.pressHome()
             Thread.sleep(2500)
             assertTrue("foreground projection must survive leaving Activity", CaptureService.running)
+            assertTrue("service holds screen protection in background", activeWakeLocks().contains("FarSail:SharingScreen"))
             assertTrue((app.invoke("state") as JSONObject).optBoolean("sharing"))
             assertFalse(NativeBridge.inputValid("unapproved-session", 0, 1))
             if (realPeer) {
@@ -120,6 +217,7 @@ class NativeSmokeTest {
             await { !CaptureService.running && !(app.invoke("state") as JSONObject).optBoolean("sharing") }
             assertFalse(NativeBridge.inputValid("unapproved-session", 0, 1))
             await { !coordinator.hosting.get() }
+            assertFalse("stopping sharing releases display wake lock", activeWakeLocks().contains("FarSail:SharingScreen"))
             val nm = context.getSystemService(android.app.NotificationManager::class.java)
             await { nm.activeNotifications.none { it.id == 41 } }
         } finally {

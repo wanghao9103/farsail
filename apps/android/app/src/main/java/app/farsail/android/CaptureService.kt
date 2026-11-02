@@ -18,6 +18,7 @@ import kotlin.math.roundToInt
 
 class CaptureService : Service() {
     companion object {
+        const val POWER = "app.farsail.android.POWER"
         const val STOP = "app.farsail.android.STOP"
         @Volatile var running = false
         @Volatile var phase = "off"
@@ -39,7 +40,7 @@ class CaptureService : Service() {
     private var projection: MediaProjection? = null
     private var display: VirtualDisplay? = null
     private var reader: ImageReader? = null
-    private var wake: PowerManager.WakeLock? = null
+    private lateinit var power: SharingPower
     private var epoch = -1L
     private var lastHeartbeat = 0L
     private var polling = false
@@ -47,7 +48,17 @@ class CaptureService : Service() {
     private var layout = 0L
     private var lastFrame = 0L
     private val callback = object : MediaProjection.Callback() {
-        override fun onStop() { if (!stopped) { NativeBridge.stopLocal(); handler.post { if (!stopped && phase != "failed") { status(this@CaptureService, "off", "系统已结束屏幕共享，请重新开启。"); stopSelf() } } } }
+        override fun onStop() {
+            if (stopped) return
+            val locked = getSystemService(KeyguardManager::class.java).isKeyguardLocked || !getSystemService(PowerManager::class.java).isInteractive
+            NativeBridge.stopLocal()
+            handler.post {
+                if (!stopped && phase != "failed") {
+                    status(this@CaptureService, "interrupted", if (locked) "手机锁屏，系统已结束录屏授权。解锁后点「恢复屏幕共享」，并确认系统授权；已保存的远程控制开关无需重设。" else "系统已结束录屏授权。点「恢复屏幕共享」重新授权即可，远程控制设置已保留。")
+                    stopSelf()
+                }
+            }
+        }
         override fun onCapturedContentResize(width: Int, height: Int) {
             if (!stopped && width > 0 && height > 0) resize(width, height)
         }
@@ -55,6 +66,7 @@ class CaptureService : Service() {
     override fun onCreate() {
         super.onCreate()
         worker.start(); capture = Handler(worker.looper)
+        power = SharingPower(this)
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel("sharing", "屏幕共享", NotificationManager.IMPORTANCE_LOW).apply {
             description = "共享期间的状态与停止入口"; setSound(null, null); enableVibration(false); setShowBadge(false)
@@ -71,6 +83,10 @@ class CaptureService : Service() {
     }
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == STOP) { status(this, "off", "共享已停止，电脑无法继续查看。"); NativeBridge.stopLocal(); ControlService.cancel(); stopSelf(); return START_NOT_STICKY }
+        if (intent?.action == POWER) {
+            if (running) power.keepScreen(SharingPower.enabled(this)) else stopSelf()
+            return START_NOT_STICKY
+        }
         if (running || intent == null) { if (!running) stopSelf(); return START_NOT_STICKY }
         val data = if (Build.VERSION.SDK_INT >= 33) intent.getParcelableExtra("data", Intent::class.java) else @Suppress("DEPRECATION") intent.getParcelableExtra("data")
         if (data == null || intent.getIntExtra("result", 0) != Activity.RESULT_OK) { stopSelf(); return START_NOT_STICKY }
@@ -86,7 +102,7 @@ class CaptureService : Service() {
             app.observer?.invoke()
             val size = dimensions(this)
             capture.post { try { resize(size.first, size.second) } catch (e: Exception) { fail(e) } }
-            wake = getSystemService(PowerManager::class.java).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "FarSail:Sharing").apply { acquire(8 * 60 * 60 * 1000L) }
+            power.start()
             app.io.execute {
                 try {
                     app.invoke("share", JSONObject().put("epoch", epoch))
@@ -173,7 +189,7 @@ class CaptureService : Service() {
     }
     override fun onDestroy() {
         stopped = true; running = false
-        if (phase != "failed") status(this, "off", "共享已停止，电脑无法继续查看。")
+        if (phase != "failed" && phase != "interrupted") status(this, "off", "共享已停止，电脑无法继续查看。")
         NativeBridge.stopLocal(); ControlService.cancel()
         handler.removeCallbacks(poll)
         capture.post {
@@ -182,7 +198,7 @@ class CaptureService : Service() {
             projection?.unregisterCallback(callback); projection?.stop(); projection = null
             worker.quitSafely()
         }
-        if (wake?.isHeld == true) wake?.release()
+        power.close()
         app.io.execute { try { app.invoke("stop") } catch (_: Exception) { }; try { app.refresh() } catch (_: Exception) { } }
         stopForeground(STOP_FOREGROUND_REMOVE)
         app.observer?.invoke()

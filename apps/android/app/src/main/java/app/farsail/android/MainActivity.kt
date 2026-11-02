@@ -227,6 +227,12 @@ class MainActivity : Activity() {
         } else {
             status = ui.text(card, "", 21f, bold = true); ui.gap(card, 8); sharingDetail = ui.text(card, "", 14f, secondary = true); ui.gap(card, 20)
             share = ui.button(card, "开启屏幕共享") { if (CaptureService.running) { stop(); draw() } else consent() }
+            ui.gap(card, 12)
+            card.addView(Switch(this).apply {
+                text = "共享期间防止自动熄屏"; minHeight = ui.dp(56); isChecked = SharingPower.enabled(this@MainActivity)
+                setOnCheckedChangeListener { _, enabled -> SharingPower.preference(this@MainActivity, enabled) }
+            })
+            ui.text(card, "开启后屏幕可变暗但不会自动熄屏，切到其他应用也有效，会增加耗电。手动锁屏仍会结束系统录屏授权，解锁后需点恢复共享并确认授权。", 13f, secondary = true)
             ui.gap(body, 16); val input = ui.card(body); ui.text(input, "远程控制", 18f, bold = true); ui.gap(input, 8)
             controlDetail = ui.text(input, "", 13f, secondary = true)
             control = Switch(this).apply { text = "允许同账号电脑直接控制"; minHeight = ui.dp(56); setPadding(0, ui.dp(12), 0, ui.dp(12)); input.addView(this) }
@@ -236,10 +242,10 @@ class MainActivity : Activity() {
     }
     private fun updateHome() {
         val phase = CaptureService.phase
-        status?.text = when (phase) { "consent" -> "等待系统录屏授权"; "starting" -> "正在开启共享…"; "sharing" -> "● 屏幕共享中"; "failed" -> "开启共享失败"; else -> "○ 屏幕共享未开启" }
+        status?.text = when (phase) { "consent" -> "等待系统录屏授权"; "starting" -> "正在开启共享…"; "sharing" -> "● 屏幕共享中"; "failed" -> "开启共享失败"; "interrupted" -> "屏幕共享已中断"; else -> "○ 屏幕共享未开启" }
         status?.setTextColor(if (phase == "sharing") ui.green else if (phase == "failed") android.graphics.Color.rgb(164, 43, 43) else ui.ink)
         sharingDetail?.text = CaptureService.detail
-        share?.text = when (phase) { "consent" -> "等待你确认授权…"; "starting" -> if (CaptureService.running) "取消开启" else "正在开启共享…"; "sharing" -> "停止共享"; "failed" -> "重新开启共享"; else -> "开启屏幕共享" }
+        share?.text = when (phase) { "consent" -> "等待你确认授权…"; "starting" -> if (CaptureService.running) "取消开启" else "正在开启共享…"; "sharing" -> "停止共享"; "failed" -> "重新开启共享"; "interrupted" -> "恢复屏幕共享"; else -> "开启屏幕共享" }
         share?.isEnabled = app.ready && phase != "consent" && (CaptureService.running || (phase != "starting" && !app.busy))
         controlDetail?.text = if (ControlService.instance == null) "点击开关，打开并定位 FarSail 的系统授权。" else "已完成系统授权。开启后，同账号电脑可直接连接，无需手机重复确认。"
         control?.apply {

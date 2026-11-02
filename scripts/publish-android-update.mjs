@@ -20,7 +20,7 @@ const info=execFileSync(`${process.env.ANDROID_HOME}/build-tools/35.0.0/aapt`,['
 if(!info.includes(`package: name='app.farsail.android' versionCode='${version.versionCode}' versionName='${version.version}'`))throw Error('APK metadata does not match release');
 if(info.includes('application-debuggable'))throw Error('Do not publish a debuggable APK');
 const digest=crypto.createHash('sha256').update(bytes).digest('hex');
-const payload={packageName:'app.farsail.android',version:version.version,versionCode:version.versionCode,url:`https://github.com/${repo}/releases/download/${tag}/${name}`,sha256:digest,size:bytes.length,notes:'明确显示共享状态及失败原因，定位辅助功能授权；同账号电脑无需手机重复确认。服务端需升级安卓共享支持。'};
+const payload={packageName:'app.farsail.android',version:version.version,versionCode:version.versionCode,url:`https://github.com/${repo}/releases/download/${tag}/${name}`,sha256:digest,size:bytes.length,notes:'共享期间默认防止自动熄屏，可随时关闭。锁屏结束录屏授权时保留原因和恢复入口；远程控制设置无需重开，恢复录屏仍需系统确认。'};
 const raw=Buffer.from(JSON.stringify(payload));
 const signing=crypto.createPrivateKey(process.env.ANDROID_UPDATE_PRIVATE_KEY||fs.readFileSync('.local/android-signing/updates-private.pem'));
 const publicBytes=crypto.createPublicKey(signing).export({type:'spki',format:'der'}).subarray(-32);
@@ -37,7 +37,7 @@ let channel=getRelease('android-updates');const old=channel?.assets.find(a=>a.na
 if(old){previous=await readPublic(old.browser_download_url);const current=verify(previous);if(current.versionCode>version.versionCode)throw Error('Android channel cannot go backwards');if(current.versionCode===version.versionCode){if(previous.equals(envelope)){console.log('Exact Android release already published');process.exit(0)}throw Error('Cannot replace published Android version with different bytes')}}
 try{let ref=api(`git/ref/tags/${tag}`).object;while(ref.type==='tag')ref=api(`git/tags/${ref.sha}`).object;if(ref.sha!==source)throw Error('Existing Android tag refers to another source')}catch(e){if(!String(e.stderr).includes('404'))throw e}
 let release=getRelease(tag);
-if(!release){fs.writeFileSync(`${dir}/release-notes.txt`,`Native Android host with independent account/settings pages and authenticated updates. Built from ${source}. Installation requires normal Android system confirmation. Server must include Android host capability support.`);gh('release','create',tag,'-R',repo,'--target',source,'--prerelease','--title',`FarSail Android ${version.version}`,'--notes-file',`${dir}/release-notes.txt`);release=getRelease(tag)}
+if(!release){fs.writeFileSync(`${dir}/release-notes.txt`,`Prevents automatic screen timeout during an explicit share, with an optional switch. Lock-ended capture retains its reason and offers a recovery action requesting fresh system consent; remote-control preferences are retained. Manual locking on Android 15 QPR1 and newer still ends capture by system policy. Built from ${source}. Installation requires normal Android system confirmation.`);gh('release','create',tag,'-R',repo,'--target',source,'--prerelease','--title',`FarSail Android ${version.version}`,'--notes-file',`${dir}/release-notes.txt`);release=getRelease(tag)}
 for(const filename of [name,`${name}.sha256`,'latest.json','verification.json']){
  const file=`${dir}/${filename}`,data=fs.readFileSync(file);let asset=release.assets.find(a=>a.name===filename);
  if(!asset){gh('release','upload',tag,file,'-R',repo);release=getRelease(tag);asset=release.assets.find(a=>a.name===filename)}

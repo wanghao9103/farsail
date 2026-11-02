@@ -1,3 +1,5 @@
+**English** | [简体中文](WI-ANDROID-VIEWER-032.zh-CN.md)
+
 # Android viewer aspect ratio — 0.1.32
 
 The inherited desktop fill preference stretched portrait Android frames across a wide window. Android now has an independent display preference, defaulting to contain. Desktop preferences are retained. Rendering and pointer coordinates use the same existing fit geometry, including rejection of new clicks in letterboxes and input release on fit changes.
