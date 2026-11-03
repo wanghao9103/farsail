@@ -25,7 +25,7 @@ jobs:
         run: |
           git diff --exit-code android-v0.1.8 HEAD -- crates Cargo.toml Cargo.lock .cargo scripts/build-android.sh
           git diff c3ec9a5^ c3ec9a5 -- apps/android/app/src/main/java/app/farsail/android/CaptureService.kt apps/android/app/src/androidTest/java/app/farsail/android/NativeSmokeTest.kt > "$RUNNER_TEMP/rotation.patch"
-          git checkout android-v0.1.8 -- apps/android
+          git checkout --no-overlay android-v0.1.8 -- apps/android
           git apply --check "$RUNNER_TEMP/rotation.patch"
           git apply "$RUNNER_TEMP/rotation.patch"
       - name: Reuse checksum-verified unchanged official native libraries
