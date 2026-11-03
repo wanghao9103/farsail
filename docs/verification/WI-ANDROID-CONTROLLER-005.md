@@ -1,6 +1,6 @@
 **English** | [简体中文](WI-ANDROID-CONTROLLER-005.zh-CN.md)
 
-# Android controller — 0.1.5
+# Android controller — 0.1.6
 
 The phone app now has an independent My devices entry and a foreground remote viewer for Windows computers and Android phones. Controller use requires sign-in and a bound device, but no local capture or accessibility permission. Host approval, authenticated device identity, short leases and view/control permissions are reused. No coordinator change is introduced.
 
@@ -9,3 +9,5 @@ The viewer supports fitted direct touch/drag, scroll mode, right click, text and
 Host and controller own separate sessions and capture permission; they reuse one authenticated endpoint. Incoming host subscription ignores outgoing sessions, and stopping local capture no longer tears down an outgoing viewer. Identity changes cancel it. A phone controller owns one foreground viewer; existing desktop multiwindow behavior is unchanged.
 
 Twelve Rust tests passed, including real authenticated QUIC and synthetic coordinator flows for both peer capability types, ACKs, ordered input, paused input, stale geometry/generation denial, view-only display selection, request cancellation, and independent host stop. The controller fixture records synthetic input and never injects into the host OS. Kotlin geometry tests cover all rotations, fitted bands and clamped drags. API 35 owned-emulator UI acceptance passed through real JNI and authenticated QUIC to synthetic desktop and phone peers: actual touch/drag, scroll, text, Android navigation, rotated touch, view-only refusal, background close and pending cancellation. Two Kotlin geometry tests, debug APK/lint and the four-test native host regression completed successfully (the API 36 secure-lock case is skipped on API 35). Evidence: `.local/android-controller-verification/verification.json`, `.local/android-controller-host-regression.log`, `.local/android-viewer-rust-tests.log`. Official packaging is pending; this record does not claim a physical Windows/phone pair or cross-NAT acceptance.
+
+The final 0.1.6 UI exposes desktop shortcuts only for computer peers; Android offers text, Enter, Backspace, Select all and Back. Scroll mode shows an active label and highlight. The owned-emulator regression passed with Android-menu exclusion, Select all key delivery and selected scroll-state assertions. A separate boot-time attempt was blocked by a captured System UI ANR; that failed attempt is retained and is not counted as acceptance.

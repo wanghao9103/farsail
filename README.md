@@ -8,7 +8,7 @@
 
 # FarSail
 
-FarSail is an open-source remote desktop project with Windows and Ubuntu clients built using Rust, Tauri 2 and React, encrypted peer-to-peer connections, and self-hosted relay support. Bidirectional single-file transfer and an Ubuntu ARM64 client have been available since 0.1.21; version 0.1.22 added an update dialog and interface refinements. The latest public release is [0.1.31](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.31). Older installations need an upgrade for these additions. The native [Android host app](docs/ANDROID.md) is published as [0.1.2](https://github.com/wanghao9103/farsail/releases/tag/android-v0.1.2), with independent account/settings pages and signed app updates.
+FarSail is an open-source remote desktop project with Windows and Ubuntu clients built using Rust, Tauri 2 and React, encrypted peer-to-peer connections, and self-hosted relay support. Bidirectional single-file transfer and an Ubuntu ARM64 client have been available since 0.1.21; version 0.1.22 added an update dialog and interface refinements. The latest public release is [0.1.34](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.34). Older installations need an upgrade for these additions. The native [Android app](docs/ANDROID.md) is published as [0.1.6](https://github.com/wanghao9103/farsail/releases/tag/android-v0.1.6), with computer/phone control, background sharing, independent account/settings pages and signed app updates.
 
 Version 0.1.23 replaces the separate screen/file receiving switches with **Allow remote connections**: Windows enables both capabilities, while Ubuntu enables files only. Standalone file connections still require approval and a native Save As choice. Since 0.1.28, file paste within remote control shares the session approval. It also keeps the application running in the tray when its main window is closed; Windows requests administrator permission at startup through the system UAC prompt. See [Windows startup](docs/WINDOWS_INSTALL.md) and [file transfer](docs/FILES.md) for the current flow and restart behavior.
 
@@ -54,7 +54,7 @@ These are recorded milestones. Local candidate work and its verification limits 
 - Multiple displays, resolution switching, negotiable 4:4:4 quality and adaptive bandwidth.
 - H.265/H.264 video, evaluation of AV1 support, and lossless compression before transfer for suitable data.
 - File-transfer resume, selective compression and configurable combined file/media bandwidth controls beyond the current single-file baseline.
-- Extend the Android host preview and later iOS capabilities, verified separately against each platform's public APIs.
+- Extend the Android controller/host preview and later iOS capabilities, verified separately against each platform's public APIs.
 
 <a id="文档与资产"></a>
 
@@ -70,7 +70,7 @@ English is the default documentation language. Use the language links at the top
 - [Windows client](docs/CLIENT.md): how to run it, credential boundaries and implemented screens.
 - [Windows preview installation](docs/WINDOWS_INSTALL.md): x64 installation without development tools, checksums, WebView2 and two-computer testing.
 - [Authenticated transport](docs/TRANSPORT.md): iroh handshake, short leases, data channels and path state.
-- [Android host](docs/ANDROID.md): native APK, background screen sharing, accessibility control and verification boundaries.
+- [Android app](docs/ANDROID.md): native controller/host APK, background screen sharing, accessibility control and verification boundaries.
 - [Windows remote control](docs/REMOTE.md): DXGI/JPEG, viewer, input permissions and safe shutdown.
 - [Desktop file transfer](docs/FILES.md): separate approval, native file selection, safe save, progress and limits.
 - [Self-hosted relay](deploy/relay/README.md): HTTPS certificates and public-IP configuration examples.

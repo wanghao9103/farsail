@@ -73,7 +73,7 @@ class ControllerSmokeTest {
             val p = point(640,360,0,.25f,.75f); device.click(p.first,p.second)
             val q = point(640,360,0,.75f,.25f); device.swipe(p.first,p.second,q.first,q.second,15)
             await { inputs(false).count { it.optString("kind") == "button" } >= 4 && inputs(false).any { it.optString("kind") == "move" } }
-            text("滚动模式").click(); device.swipe(p.first,p.second,q.first,q.second,15)
+            text("滚动模式").click(); assertTrue(text("滚动中").isSelected); device.swipe(p.first,p.second,q.first,q.second,15)
             await { inputs(false).any { it.optString("kind") == "wheel" } }
             text("键盘").click(); text("输入文字").click()
             device.wait(Until.findObject(By.clazz(android.widget.EditText::class.java)),5000).text = "mobile fixture"
@@ -81,6 +81,11 @@ class ControllerSmokeTest {
             await { !device.hasObject(By.text("发送文字")) }; device.waitForIdle(); Thread.sleep(300)
             device.takeScreenshot(java.io.File(context.filesDir,"controller-desktop.png"))
             text("退出").click(); choose("Synthetic phone")
+            text("键盘").click()
+            assertFalse(device.hasObject(By.text("Ctrl+V")))
+            assertFalse(device.hasObject(By.text("Windows 键")))
+            text("全选").click()
+            await { inputs(true).any { it.optInt("vk") == 65 && it.optBoolean("down") } }
             for (label in listOf("返回","主屏幕","最近任务")) text(label).click()
             await { inputs(true).filter { it.optString("kind") == "key" && it.optBoolean("down") }.map { it.optInt("vk") }.containsAll(listOf(166,172,93)) }
             text("旋转画面").click()

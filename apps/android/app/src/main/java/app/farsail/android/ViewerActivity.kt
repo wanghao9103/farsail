@@ -67,7 +67,12 @@ class ViewerActivity : Activity() {
         val scroller = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
         val actions = LinearLayout(this).apply { setPadding(ui.dp(6), ui.dp(5), ui.dp(6), ui.dp(5)) }
         scroller.addView(actions); body.addView(scroller)
-        scroll = small(actions, "滚动模式") { val enabled = canvas.scrollMode(); scroll.text = if (enabled) "点击/拖动" else "滚动模式" }.also(controls::add)
+        scroll = small(actions, "滚动模式") {
+            val enabled = canvas.scrollMode()
+            scroll.text = if (enabled) "滚动中" else "滚动模式"
+            scroll.isSelected = enabled
+            scroll.backgroundTintList = android.content.res.ColorStateList.valueOf(if (enabled) ui.green else Color.rgb(44, 62, 66))
+        }.also(controls::add)
         rightClick = small(actions, "右键") { canvas.rightClick() }.also(controls::add)
         small(actions, "键盘") { keyboard() }.also(controls::add)
         small(actions, "旋转画面") { send(null); canvas.rotate() }
@@ -188,10 +193,12 @@ class ViewerActivity : Activity() {
     private fun keyboard() {
         if (!canvas.control) return
         canvas.release()
-        val labels = arrayOf("输入文字", "回车", "退格", "Tab", "Esc", "Ctrl+C", "Ctrl+V", "Windows 键")
+        val labels = if (remote.optString("platform") == "android")
+            arrayOf("输入文字", "回车", "退格", "全选", "返回")
+        else arrayOf("输入文字", "回车", "退格", "Tab", "Esc", "Ctrl+C", "Ctrl+V", "Windows 键")
         AlertDialog.Builder(this).setTitle("键盘操作").setItems(labels) { _, which ->
-            when (which) {
-                0 -> {
+            when (labels[which]) {
+                "输入文字" -> {
                     val input = EditText(this).apply { inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE; isSaveEnabled = false; setAutofillHints(null); hint = "输入要发送的文字" }
                     AlertDialog.Builder(this).setTitle("发送文字").setView(input).setNegativeButton("取消", null).setPositiveButton("发送") { _, _ ->
                         val text = input.text.toString()
@@ -200,9 +207,13 @@ class ViewerActivity : Activity() {
                         input.text.clear()
                     }.show()
                 }
-                1 -> key(13); 2 -> key(8); 3 -> key(9); 4 -> key(27)
-                5, 6 -> { send(JSONObject().put("kind", "key").put("vk", 17).put("down", true)); key(if (which == 5) 67 else 86); send(JSONObject().put("kind", "key").put("vk", 17).put("down", false)) }
-                7 -> key(91)
+                "回车" -> key(13); "退格" -> key(8); "Tab" -> key(9); "Esc", "返回" -> key(27)
+                "Ctrl+C", "Ctrl+V", "全选" -> {
+                    send(JSONObject().put("kind", "key").put("vk", 17).put("down", true))
+                    key(when (labels[which]) { "Ctrl+C" -> 67; "Ctrl+V" -> 86; else -> 65 })
+                    send(JSONObject().put("kind", "key").put("vk", 17).put("down", false))
+                }
+                "Windows 键" -> key(91)
             }
         }.show()
     }
