@@ -1,6 +1,7 @@
 //! Android host reuses device proofs, approval, authenticated QUIC and short leases.
 //! Only the local MediaProjection service can arm capture. No secrets cross the UI.
 mod bridge;
+mod capture;
 mod protocol;
 mod updates;
 mod viewer;

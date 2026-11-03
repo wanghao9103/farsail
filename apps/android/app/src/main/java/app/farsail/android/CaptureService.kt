@@ -3,7 +3,6 @@ package app.farsail.android
 import android.app.*
 import android.content.*
 import android.content.pm.ServiceInfo
-import android.graphics.Bitmap
 import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
@@ -14,7 +13,6 @@ import android.os.*
 import android.view.Display
 import android.view.WindowManager
 import org.json.JSONObject
-import java.io.ByteArrayOutputStream
 import kotlin.math.roundToInt
 
 class CaptureService : Service() {
@@ -166,15 +164,8 @@ class CaptureService : Service() {
                 if (stopped || now - lastFrame < 100 || source !== reader) return@setOnImageAvailableListener
                 lastFrame = now
                 val plane = image.planes[0]
-                val strideWidth = plane.rowStride / plane.pixelStride
-                val padded = Bitmap.createBitmap(strideWidth, height, Bitmap.Config.ARGB_8888)
-                padded.copyPixelsFromBuffer(plane.buffer)
-                val bitmap = Bitmap.createBitmap(padded, 0, 0, width, height)
-                val output = ByteArrayOutputStream()
-                bitmap.compress(Bitmap.CompressFormat.JPEG, 90, output)
-                NativeBridge.publish(output.toByteArray(), width, height, geometry)
-                if (bitmap !== padded) bitmap.recycle()
-                padded.recycle()
+                check(plane.pixelStride == 4) { "不支持的录屏像素格式" }
+                NativeBridge.publishRgba(plane.buffer.slice(), width, height, plane.rowStride, geometry)
             } catch (e: Exception) { fail(e) } finally { image.close() }
         }, capture)
         if (display == null) {

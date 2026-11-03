@@ -10,6 +10,7 @@ object NativeBridge {
     external fun setControl(enabled: Boolean)
     external fun geometry(width: Int, height: Int): Long
     external fun publish(jpeg: ByteArray, width: Int, height: Int, layout: Long): Boolean
+    external fun publishRgba(buffer: java.nio.ByteBuffer, width: Int, height: Int, rowStride: Int, layout: Long): Boolean
     external fun drain(): String
     external fun inputValid(session: String, epoch: Long, layout: Long): Boolean
     external fun viewerBegin(): Long

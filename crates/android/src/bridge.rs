@@ -2,7 +2,7 @@ use crate::Host;
 use farsail_client::{Error, NativeClient, SecureStore};
 use jni::{
     JNIEnv, JavaVM,
-    objects::{GlobalRef, JByteArray, JObject, JString, JValue},
+    objects::{GlobalRef, JByteArray, JByteBuffer, JObject, JString, JValue},
     sys::{JNI_FALSE, JNI_TRUE, jboolean, jbyteArray, jint, jlong, jstring},
 };
 use serde_json::{Value, json};
@@ -236,6 +236,35 @@ pub extern "system" fn Java_app_farsail_android_NativeBridge_publish(
             h as u32,
             layout as u64,
         ))
+    })()
+    .unwrap_or(false);
+    if accepted { JNI_TRUE } else { JNI_FALSE }
+}
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_app_farsail_android_NativeBridge_publishRgba(
+    env: JNIEnv,
+    _: JObject,
+    buffer: JByteBuffer,
+    w: jint,
+    h: jint,
+    row_stride: jint,
+    layout: jlong,
+) -> jboolean {
+    let accepted = (|| {
+        let hst = host().ok()?;
+        let (width, height) = (u32::try_from(w).ok()?, u32::try_from(h).ok()?);
+        let stride = usize::try_from(row_stride).ok()?;
+        let span = crate::capture::rgba_span(width, height, stride, 4)?;
+        if layout < 0 || span > env.get_direct_buffer_capacity(&buffer).ok()? {
+            return None;
+        }
+        let pointer = env.get_direct_buffer_address(&buffer).ok()?;
+        // The direct buffer is borrowed only for this synchronous JNI call.
+        // Kotlin keeps the acquired Image open until this function returns;
+        // the checked span excludes final-row padding not mapped by ImageReader.
+        let bytes = unsafe { std::slice::from_raw_parts(pointer, span) };
+        let image = crate::capture::encode_rgba(bytes, width, height, stride, layout as u64)?;
+        Some(hst.publish(image.jpeg, width, height, layout as u64))
     })()
     .unwrap_or(false);
     if accepted { JNI_TRUE } else { JNI_FALSE }
