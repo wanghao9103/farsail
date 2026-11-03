@@ -42,6 +42,8 @@ class ControllerSmokeTest {
         return node ?: error("Missing controller UI: $label")
     }
     private fun choose(name: String, permission: String = "control") {
+        assertNotNull("Device list has finished refreshing", device.wait(Until.findObject(By.text("刷新设备").enabled(true)), 10000))
+        device.waitForIdle()
         val title = text(name)
         title.parent.findObject(By.text(if (permission == "control") "控制设备" else "仅查看")).click()
         await { device.hasObject(By.textStartsWith("已连接")) && (device.findObject(By.textStartsWith("已连接"))?.text?.contains(if (permission == "control") "可控制" else "仅查看") == true) }

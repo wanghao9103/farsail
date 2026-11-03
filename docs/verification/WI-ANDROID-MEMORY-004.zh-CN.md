@@ -21,3 +21,5 @@ App / 通知停止和取消录屏授权会清除共享意图，退出登录清�
 专用 API 35 模拟器的选择驱动已通过：授权前保存控制、无权限时实际相同证书覆盖包更替进程、辅助功能连接后自动启用控制、真实成功录屏授权等待账号就绪、主动停止拒绝延后的授权。证据：`.local/android-choice-verification/attempt-1793679415645304676/verification.json`。早期尝试出现测试手势时序及模拟器 attach 失败，不计为产品验收。进程更替交接仍为预期 instrumentation 终止，由新进程状态独立验证。
 
 0.1.8 的既有正常进程记忆回归也已通过：替换前真实共享、恢复控制、前台新授权、取消后不循环、主动停止后再次重启、迟到代次拒绝、设备范围与退出清理。证据：`.local/android-memory-verification/attempt-1793679626021029139/verification.json`。测试 fixture 现在等待辅助功能真实解绑再重新绑定，并将控件滚动到稳定视口；不修改生产系统权限。Debug 构建、Kotlin 单元测试与 lint 已通过。
+
+被控端 NativeSmokeTest 返回 OK（4 tests），其中 API 36 专属安全锁屏项在 API 35 上跳过。真实 JNI/QUIC 手机控制端对合成电脑/手机的回归也通过，涵盖静止画面控制、旋转触点、文字、仅查看拒绝输入、后台关闭和待批准取消。证据：`.local/android-choice-native-regression.log` 与 `.local/android-controller-verification/attempt-1793679803317677371/verification.json`。测试等待设备列表刷新后再取控件，首次旧辅助功能节点异常属于测试同步问题，不算产品行为验收。
