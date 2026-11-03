@@ -19,6 +19,7 @@ node_modules/
 dist/
 build/
 .gradle/
+.kotlin/
 .vite/
 .cache/
 __pycache__/

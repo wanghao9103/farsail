@@ -50,7 +50,7 @@ class RememberedAccessTest {
         app.invoke("server", JSONObject().put("url", url))
         app.invoke("login", JSONObject().put("email", "memory-fixture@example.invalid").put("password", "synthetic-test-password"))
         app.invoke("bind", JSONObject().put("name", "Owned memory fixture")); app.refresh()
-        open()
+        open(); openSharingSettings(device)
         shell("settings put secure enabled_accessibility_services app.farsail.android/app.farsail.android.ControlService")
         shell("settings put secure accessibility_enabled 1"); await { ControlService.instance != null }
         val toggle = text("允许同账号设备直接控制").visibleBounds

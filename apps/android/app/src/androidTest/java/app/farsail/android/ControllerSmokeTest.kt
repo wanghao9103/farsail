@@ -69,7 +69,7 @@ class ControllerSmokeTest {
             app.invoke("bind",JSONObject().put("name","Owned mobile controller")); app.refresh()
             await { app.state.optBoolean("signedIn") && app.state.optString("deviceId") != "null" }
             context.startActivity(Intent(context,MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK))
-            text("打开我的设备").click(); choose("Synthetic desktop")
+            text("我的设备"); choose("Synthetic desktop")
             assertFalse("Controller does not start local screen sharing",CaptureService.running)
             assertFalse((app.invoke("state") as JSONObject).optBoolean("sharing"))
             val p = point(640,360,0,.25f,.75f); device.click(p.first,p.second)

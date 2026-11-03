@@ -91,6 +91,7 @@ class NativeSmokeTest {
             RemotePreferences.control(context, app.invoke("state") as JSONObject, true)
             val controlBefore = (app.invoke("state") as JSONObject).optBoolean("control"); assertTrue(controlBefore)
             context.startActivity(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK))
+            openSharingSettings(device)
             assertTrue(device.wait(Until.hasObject(By.text("开启屏幕共享")), 10000))
             device.findObject(By.text("开启屏幕共享")).click()
             val allow = device.wait(Until.findObject(By.res("android", "button1")), 10000); assertNotNull(allow); allow.click()
@@ -131,6 +132,7 @@ class NativeSmokeTest {
             app.invoke("bind", JSONObject().put("name", "Android failure fixture")); app.refresh()
             context.startActivity(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK))
             val device = UiDevice.getInstance(inst)
+            openSharingSettings(device)
             assertTrue(device.wait(Until.hasObject(By.text("开启屏幕共享")), 10000)); device.findObject(By.text("开启屏幕共享")).click()
             val allow = device.wait(Until.findObject(By.res("android", "button1")), 10000); assertNotNull(allow); allow.click()
             await { CaptureService.phase == "failed" && !CaptureService.running }
@@ -170,6 +172,7 @@ class NativeSmokeTest {
             app.refresh()
             context.startActivity(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             val device = UiDevice.getInstance(inst)
+            openSharingSettings(device)
             assertTrue(device.wait(Until.hasObject(By.text("开启屏幕共享")), 10000))
             assertTrue(device.wait(Until.hasObject(By.text("○ 屏幕共享未开启")), 5000))
             device.findObject(By.text("开启屏幕共享")).click()
@@ -216,7 +219,8 @@ class NativeSmokeTest {
             assertTrue("projection survives Activity task removal", CaptureService.running)
             inst.runOnMainSync { app.observer = null }
             context.startActivity(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-            device.wait(Until.hasObject(By.text("停止共享")), 5000)
+            openSharingSettings(device)
+            assertTrue(device.wait(Until.hasObject(By.text("停止共享")), 5000))
             device.findObject(By.text("停止共享")).click()
             await { !CaptureService.running && !(app.invoke("state") as JSONObject).optBoolean("sharing") }
             assertFalse(NativeBridge.inputValid("unapproved-session", 0, 1))
@@ -233,7 +237,7 @@ class NativeSmokeTest {
 }
 
 /** Synthetic coordination responses only. The transport/media host is the real JNI library. */
-private class FakeCoordinator(private val rejectSharing: Boolean = false) : java.io.Closeable {
+internal class FakeCoordinator(private val rejectSharing: Boolean = false) : java.io.Closeable {
     private val socket = ServerSocket(0, 20, java.net.InetAddress.getByName("127.0.0.1"))
     val port get() = socket.localPort
     val androidBound = AtomicBoolean(false)
@@ -266,6 +270,7 @@ private class FakeCoordinator(private val rejectSharing: Boolean = false) : java
                         "/v1/devices/challenge" -> """{"challenge_id":"30000000-0000-4000-8000-000000000001","message":"synthetic-binding-challenge"}"""
                         "/v1/devices/bind" -> { androidBound.set(body.optString("platform") == "android" && body.optString("signature").length == 128); """{"id":"40000000-0000-4000-8000-000000000001","device_token":"synthetic-device"}""" }
                         "/v1/devices/heartbeat" -> """{"generation":1,"expires_in":60}"""
+                        "/v1/devices" -> "[]"
                         "/v1/devices/capability" -> if (rejectSharing && body.optBoolean("can_host")) { status = 409; """{"error":"conflict"}""" } else { hosting.set(body.optBoolean("can_host")); "{}" }
                         "/v1/devices/endpoint-address" -> { endpoint.set(body.getJSONObject("endpoint_addr")); "{}" }
                         "/v1/remote/pending" -> if (requestReady.get()) """[{"id":"50000000-0000-4000-8000-000000000002","permission":"control","requester_id":"20000000-0000-4000-8000-000000000002","requester_email":"foreign@example.invalid"},{"id":"50000000-0000-4000-8000-000000000001","permission":"control","requester_id":"20000000-0000-4000-8000-000000000001","requester_email":"smoke@example.invalid","source_device_name":"Synthetic desktop"}]""" else "[]"

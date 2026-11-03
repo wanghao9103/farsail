@@ -3,16 +3,28 @@ package app.farsail.android
 import android.app.Activity
 import android.content.Intent
 import android.os.Bundle
-import android.view.View
-import android.view.WindowInsets
 import android.widget.*
 import org.json.JSONArray
 import java.util.concurrent.Executors
 
 /** Controller discovery is separate from local sharing and its system permissions. */
 class DeviceListActivity : Activity() {
-    private val app get() = application as FarSailApp
-    private lateinit var ui: MobileUi
+    private lateinit var devices: DeviceListContent
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        val ui = MobileUi(this); val body = ui.screen()
+        ui.link(body, "返回") { finish() }
+        ui.text(body, "我的设备", 28f, bold = true); ui.gap(body, 16)
+        devices = DeviceListContent(this, ui, body)
+    }
+    override fun onResume() { super.onResume(); devices.resume() }
+    override fun onPause() { devices.pause(); super.onPause() }
+    override fun onDestroy() { devices.close(); super.onDestroy() }
+}
+
+/** The home screen and standalone discovery screen share one device list. */
+class DeviceListContent(private val activity: Activity, private val ui: MobileUi, body: LinearLayout) {
+    private val app get() = activity.application as FarSailApp
     private lateinit var list: LinearLayout
     private lateinit var message: TextView
     private lateinit var refresh: Button
@@ -20,26 +32,14 @@ class DeviceListActivity : Activity() {
     private var generation = 0
     private var foreground = false
     private var loading = false
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState); ui = MobileUi(this)
-        val scroll = ScrollView(this).apply { setBackgroundColor(ui.background); isFillViewport = true }
-        val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(ui.dp(20), ui.dp(20), ui.dp(20), ui.dp(20)) }
-        scroll.addView(body); setContentView(scroll)
-        body.setOnApplyWindowInsetsListener { _, insets ->
-            if (android.os.Build.VERSION.SDK_INT >= 30) {
-                val bars = insets.getInsets(WindowInsets.Type.systemBars()); body.setPadding(ui.dp(20), bars.top + ui.dp(12), ui.dp(20), bars.bottom + ui.dp(20))
-            }; insets
-        }
-        ui.link(body, "返回") { finish() }
-        ui.text(body, "我的设备", 28f, bold = true); ui.gap(body, 8)
-        ui.text(body, "选择要控制的电脑或安卓手机。被控设备需在线并开启共享，控制权限沿用对方的授权设置。", 14f, secondary = true)
-        ui.gap(body, 20); refresh = ui.button(body, "刷新设备") { load() }
+    init {
+        refresh = ui.button(body, "刷新设备", false) { load() }
         message = ui.text(body, "", 14f, secondary = true); ui.gap(body, 12)
         list = ui.column(body)
     }
-    override fun onResume() { super.onResume(); foreground = true; load() }
-    override fun onPause() { foreground = false; generation++; loading = false; super.onPause() }
-    override fun onDestroy() { generation++; worker.shutdownNow(); super.onDestroy() }
+    fun resume() { foreground = true; load() }
+    fun pause() { foreground = false; generation++; loading = false }
+    fun close() { pause(); worker.shutdownNow() }
     private fun load() {
         if (loading || !foreground) return
         if (!app.ready) { message.text = "正在初始化，请稍后刷新。"; return }
@@ -51,8 +51,8 @@ class DeviceListActivity : Activity() {
                 check(state.optBoolean("signedIn")) { "请返回首页登录。" }
                 val own = state.optString("deviceId"); check(own.isNotBlank() && own != "null") { "请返回首页添加这台手机。" }
                 val devices = app.invoke("devices") as JSONArray
-                app.main.post { if (foreground && ticket == generation && !isFinishing) { loading = false; refresh.isEnabled = true; show(devices, own) } }
-            } catch (e: Exception) { app.main.post { if (foreground && ticket == generation && !isFinishing) { loading = false; refresh.isEnabled = true; message.text = app.friendly(e.message ?: "设备读取失败") } } }
+                app.main.post { if (foreground && ticket == generation && !activity.isFinishing && !activity.isDestroyed) { loading = false; refresh.isEnabled = true; show(devices, own) } }
+            } catch (e: Exception) { app.main.post { if (foreground && ticket == generation && !activity.isFinishing && !activity.isDestroyed) { loading = false; refresh.isEnabled = true; message.text = app.friendly(e.message ?: "设备读取失败") } } }
         }
     }
     private fun show(devices: JSONArray, own: String) {
@@ -67,7 +67,7 @@ class DeviceListActivity : Activity() {
             ui.text(card, "$platform · $reason", 14f, secondary = true); ui.gap(card, 16)
             for ((label, permission) in listOf("控制设备" to "control", "仅查看" to "view")) {
                 ui.button(card, label, permission == "control") {
-                    startActivity(Intent(this, ViewerActivity::class.java).putExtra("target", device.getString("id")).putExtra("name", device.optString("name")).putExtra("permission", permission))
+                    activity.startActivity(Intent(activity, ViewerActivity::class.java).putExtra("target", device.getString("id")).putExtra("name", device.optString("name")).putExtra("permission", permission))
                 }.apply { isEnabled = available; alpha = if (available) 1f else .45f }
             }
             ui.gap(list, 14)

@@ -19,7 +19,7 @@ class Coordinator(http.server.BaseHTTPRequestHandler):
         elif path=='/v1/devices/bind':assert body['platform']=='android';v=dict(id='40000000-0000-4000-8000-000000000001',device_token='synthetic-device')
         elif path.endswith('/40000000-0000-4000-8000-000000000001'):v=dict(id='40000000-0000-4000-8000-000000000001',enabled=True,bound=True,name='Owned choice fixture',platform='android')
         elif path=='/v1/devices/heartbeat':v=dict(generation=1,expires_in=60)
-        elif path in ['/v1/remote/pending','/v1/remote/sessions']:v=[]
+        elif path in ['/v1/devices','/v1/remote/pending','/v1/remote/sessions']:v=[]
         else:v={}
         raw=json.dumps(v).encode();self.send_response(200);self.send_header('Content-Type','application/json');self.send_header('Content-Length',str(len(raw)));self.end_headers();self.wfile.write(raw)
     do_GET=answer

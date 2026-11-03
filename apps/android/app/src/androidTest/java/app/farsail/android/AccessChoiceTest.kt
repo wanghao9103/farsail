@@ -39,7 +39,7 @@ class AccessChoiceTest {
         app.invoke("bind",JSONObject().put("name","Owned choice fixture")); app.refresh()
         await { app.state.optBoolean("signedIn") && app.state.optString("deviceId").let { it.isNotBlank() && it != "null" } }
         context.startActivity(Intent(context,MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK))
-        assertTrue(device.wait(Until.hasObject(By.text("打开我的设备")),10000))
+        openSharingSettings(device)
     }
     private fun text(value: String): UiObject2 {
         val scroll = UiScrollable(UiSelector().scrollable(true))

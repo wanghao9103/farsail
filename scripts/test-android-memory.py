@@ -43,7 +43,7 @@ class Coordinator(http.server.BaseHTTPRequestHandler):
         elif path == '/v1/devices/40000000-0000-4000-8000-000000000001':
             data = dict(id='40000000-0000-4000-8000-000000000001', enabled=True, bound=True, name='Owned memory fixture', platform='android')
         elif path == '/v1/devices/heartbeat': data = dict(generation=1, expires_in=60)
-        elif path in ('/v1/remote/pending', '/v1/remote/sessions'): data = []
+        elif path in ('/v1/devices', '/v1/remote/pending', '/v1/remote/sessions'): data = []
         else: data = {}
         raw = json.dumps(data).encode()
         self.send_response(200); self.send_header('Content-Type', 'application/json'); self.send_header('Content-Length', str(len(raw))); self.end_headers(); self.wfile.write(raw)

@@ -9,6 +9,9 @@ import android.text.InputType
 import android.view.View
 import android.view.inputmethod.EditorInfo
 import android.widget.*
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
 
 class MobileUi(private val activity: Activity) {
     val ink = Color.rgb(31, 49, 40)
@@ -17,6 +20,39 @@ class MobileUi(private val activity: Activity) {
     val line = Color.rgb(215, 224, 217)
     val background = Color.rgb(244, 247, 244)
     fun dp(n: Int) = (n * activity.resources.displayMetrics.density).toInt()
+    fun screen(): LinearLayout {
+        WindowCompat.setDecorFitsSystemWindows(activity.window, false)
+        val scroll = ScrollView(activity).apply {
+            setBackgroundColor(this@MobileUi.background); isFillViewport = true; clipToPadding = true
+        }
+        val body = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL; setPadding(dp(20), dp(12), dp(20), dp(24))
+        }
+        scroll.addView(body)
+        // Insets belong to the viewport. Padding on the body scrolls away and
+        // lets text draw underneath the transparent Android 15 status bar.
+        ViewCompat.setOnApplyWindowInsetsListener(scroll) { view, insets ->
+            val safe = insets.getInsets(WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout() or WindowInsetsCompat.Type.ime())
+            view.setPadding(safe.left, safe.top, safe.right, safe.bottom)
+            insets
+        }
+        activity.setContentView(scroll)
+        WindowCompat.getInsetsController(activity.window, scroll).apply {
+            isAppearanceLightStatusBars = true; isAppearanceLightNavigationBars = true
+        }
+        ViewCompat.requestApplyInsets(scroll)
+        return body
+    }
+    fun divider(parent: LinearLayout) {
+        parent.addView(View(activity).apply { setBackgroundColor(line) }, LinearLayout.LayoutParams(-1, dp(1)).apply {
+            topMargin = dp(16); bottomMargin = dp(16)
+        })
+    }
+    fun toggle(parent: LinearLayout, label: String, checked: Boolean = false) = Switch(activity).apply {
+        text = label; textSize = 15f; setTextColor(ink); minHeight = dp(52)
+        switchPadding = dp(12); isChecked = checked
+        parent.addView(this, LinearLayout.LayoutParams(-1, -2))
+    }
     fun column(parent: LinearLayout, padding: Int = 0) = LinearLayout(activity).apply {
         orientation = LinearLayout.VERTICAL; setPadding(dp(padding), dp(padding), dp(padding), dp(padding)); parent.addView(this, LinearLayout.LayoutParams(-1, -2))
     }
