@@ -3,6 +3,7 @@
 mod bridge;
 mod protocol;
 mod updates;
+mod viewer;
 
 use farsail_client::NativeClient;
 use farsail_core::RemotePermission;
@@ -33,11 +34,15 @@ pub struct Host {
     client: Arc<NativeClient>,
     local: Mutex<Local>,
     frames: watch::Sender<Option<Arc<Vec<u8>>>>,
+    viewer: Arc<viewer::Viewer>,
+    endpoint: tokio::sync::Mutex<()>,
 }
 impl Host {
     pub fn new(client: Arc<NativeClient>) -> Arc<Self> {
         let (frames, _) = watch::channel(None);
         Arc::new(Self {
+            viewer: viewer::Viewer::new(client.clone()),
+            endpoint: tokio::sync::Mutex::new(()),
             client,
             frames,
             local: Mutex::new(Local {
@@ -200,8 +205,13 @@ impl Host {
                             s.close();
                         }
                     }
-                    Ok((s, _)) => s.close(),
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => owner.stop_local(),
+                    // Outgoing sessions belong to the independent mobile viewer.
+                    Ok((_, false)) => (),
+                    Ok((s, true)) => s.close(),
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        owner.stop_local();
+                        owner.viewer.cancel();
+                    }
                     Err(_) => break,
                 }
             }
@@ -383,8 +393,81 @@ impl Host {
         }
         session.close();
     }
+    async fn ensure_transport(&self) -> Result<(), String> {
+        let _guard = self.endpoint.lock().await;
+        self.client
+            .call("heartbeat", json!({}))
+            .await
+            .map_err(|e| e.to_string())?;
+        if self.client.transport_running().await {
+            return Ok(());
+        }
+        let state = self.client.public_state().await;
+        let relay = state["defaultRelay"]
+            .as_str()
+            .map(str::parse)
+            .transpose()
+            .map_err(|_| "invalid relay")?;
+        self.client
+            .start_transport(farsail_transport::Config {
+                bind: "0.0.0.0:0".parse().unwrap(),
+                relay,
+                ..Default::default()
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
     async fn call(self: &Arc<Self>, op: &str, args: Value) -> Result<Value, String> {
         let client = &self.client;
+        if matches!(op, "logout" | "server" | "login" | "bind") {
+            self.viewer.cancel();
+        }
+        if op.starts_with("viewer_") {
+            let ticket = args["ticket"].as_u64().ok_or("连接编号无效")?;
+            return match op {
+                "viewer_state" => Ok(self.viewer.status(ticket)),
+                "viewer_connect" => {
+                    if !self.viewer.current(ticket) {
+                        return Err("连接已取消".into());
+                    }
+                    self.ensure_transport().await?;
+                    let permission = match args["permission"].as_str() {
+                        Some("control") => RemotePermission::Control,
+                        Some("view") => RemotePermission::View,
+                        _ => return Err("连接权限无效".into()),
+                    };
+                    self.viewer
+                        .connect(
+                            ticket,
+                            args["target"].as_str().ok_or("目标设备无效")?,
+                            permission,
+                        )
+                        .await
+                }
+                "viewer_input" => {
+                    self.viewer
+                        .input(
+                            ticket,
+                            args["input"].clone(),
+                            args["generation"].as_u64().unwrap_or(0),
+                        )
+                        .await
+                }
+                "viewer_select" => {
+                    self.viewer
+                        .select(
+                            ticket,
+                            args["display"]
+                                .as_u64()
+                                .and_then(|n| u32::try_from(n).ok())
+                                .ok_or("屏幕编号无效")?,
+                        )
+                        .await
+                }
+                _ => Err("unsupported viewer operation".into()),
+            };
+        }
         let result = match op {
             "state" => {
                 let mut state = client.public_state().await;
@@ -406,26 +489,8 @@ impl Host {
                 if !self.current(epoch) {
                     return Err("屏幕共享已取消".into());
                 }
-                client
-                    .call("heartbeat", json!({}))
-                    .await
-                    .map_err(|e| e.to_string())?;
-                let state = client.public_state().await;
-                let relay = state["defaultRelay"]
-                    .as_str()
-                    .map(str::parse)
-                    .transpose()
-                    .map_err(|_| "invalid relay")?;
-                client
-                    .start_transport(farsail_transport::Config {
-                        bind: "0.0.0.0:0".parse().unwrap(),
-                        relay,
-                        ..Default::default()
-                    })
-                    .await
-                    .map_err(|e| e.to_string())?;
+                self.ensure_transport().await?;
                 if !self.current(epoch) {
-                    client.stop_transport().await;
                     return Err("屏幕共享已取消".into());
                 }
                 let result = client.set_host_capability(true).await;
@@ -461,7 +526,6 @@ impl Host {
                 self.stop_local();
                 let result = client.set_host_capability(false).await;
                 let _ = client.revoke_host_approvals().await;
-                client.stop_transport().await;
                 result
             }
             "decide" => {
@@ -484,7 +548,7 @@ impl Host {
                 client.call(op, args).await
             }
             "login" | "logout" | "resume" | "bind" | "heartbeat" | "register" | "verify"
-            | "resend" => client.call(op, args).await,
+            | "resend" | "devices" => client.call(op, args).await,
             _ => return Err("unsupported operation".into()),
         };
         result.map_err(|e| e.to_string())
@@ -493,3 +557,5 @@ impl Host {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod viewer_tests;

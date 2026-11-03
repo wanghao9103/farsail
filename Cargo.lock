@@ -1871,6 +1871,7 @@ dependencies = [
  "farsail-core",
  "farsail-media",
  "farsail-transport",
+ "farsail-windows",
  "hex",
  "iroh",
  "jni 0.21.1",

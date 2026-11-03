@@ -1,0 +1,5 @@
+<resources>
+    <style name="ViewerTheme" parent="ViewerBaseTheme">
+        <item name="android:windowLightNavigationBar">false</item>
+    </style>
+</resources>

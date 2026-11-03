@@ -2,9 +2,9 @@
 
 <a id="android-host"></a>
 
-# Android host preview
+# Android app preview
 
-The native Android app lets a FarSail desktop client view and control a phone. Mobile previews are distributed through the repository Android release channel. It reuses the existing coordinator, Ed25519 device identity, explicit approvals, encrypted iroh transport, JPEG frames and expiring authorization leases. No coordinator schema change is required.
+The native Android app can control a computer or another Android phone, and can share its own screen with a FarSail computer or phone controller. Mobile previews are distributed through the repository Android release channel. It reuses the existing coordinator, Ed25519 device identity, explicit approvals, encrypted iroh transport, JPEG frames and expiring authorization leases. No coordinator schema change is required.
 
 ## Install and connect
 
@@ -14,14 +14,22 @@ Install the APK from an Android release or a local build. The minimum supported 
 
 - Save the desktop HTTPS service address under Settings → Server settings, then return to sign in. Login, registration and email verification use independent pages; verification contains only email and code. Add this phone after signing in.
 - For viewing, tap “开启屏幕共享” and confirm the Android system screen capture dialog. Full screen capture is requested so that remote touch coordinates match the physical screen.
-- For control, tap “允许同账号电脑直接控制”. If authorization is missing, the app attempts FarSail details, or locates “FarSail 远程控制” when the system restricts direct access. Confirm the system service switch and return to complete activation. Enabling accessibility alone grants no connection.
-- With control enabled, same-account desktop view/control requests are automatically approved; other accounts still require phone confirmation. Control off, capture stop or accessibility disconnection cancels automatic approval immediately. Both ends show a connection verification code.
+- For control, tap “允许同账号设备直接控制”. If authorization is missing, the app attempts FarSail details, or locates “FarSail 远程控制” when the system restricts direct access. Confirm the system service switch and return to complete activation. Enabling accessibility alone grants no connection.
+- With control enabled, same-account computer/phone view/control requests are automatically approved; other accounts still require phone confirmation. Control off, capture stop or accessibility disconnection cancels automatic approval immediately. Both ends show a connection verification code.
 - Mouse clicks map to taps; dragging maps to a bounded swipe after release; the wheel scrolls. Right click and Escape go back. The updated desktop toolbar exposes Back, Home and Recents. Unicode text can be sent to the focused ordinary editable field.
 - Different desktop viewer windows can connect to different phones or computers concurrently. Each has independent frame, input, recovery and close state. The existing native client limit is sixteen transport sessions; a phone accepts one viewer at a time.
 
 Use “停止共享” in the app or notification to stop capture and invalidate queued input immediately. A gesture already accepted by Android can finish within its bounded duration of 1.5 seconds. Password fields, arbitrary desktop shortcuts, multitouch, audio and mobile file transfer are outside this preview.
 
 Home distinguishes off, waiting for system consent, starting, sharing and failed. Sharing is shown only after server acceptance. Failure details survive service cleanup callbacks; Android HTTP 409 from old servers requires the [Android coordinator upgrade](https://github.com/wanghao9103/farsail/releases/tag/coordinator-android-026491f).
+
+## Control another device from your phone
+
+After sign-in and binding, choose “打开我的设备” on Home. Online devices with screen sharing enabled offer Control and View only. The phone acting as controller needs neither screen capture consent nor accessibility permission; those belong to the controlled device. Existing same-account approval choices and per-connection permissions remain in force. This controller feature requires no additional coordinator change.
+
+The remote view fits the source without stretching. Touch to click or drag; enable scrolling mode to scroll, use right click or Keyboard for text, Enter, Backspace, Tab, Escape and common shortcuts. Android peers additionally expose Back, Home and Recents. Rotate view changes only the controller's displayed image and inverse touch coordinates, not the controlled device's orientation. Multiple source displays can be selected when advertised.
+
+A phone controller owns one foreground connection. Exit, background, cancellation and sign-out close it and invalidate queued input; a stopped connection requires an explicit reconnect. View-only grants never send input. Frames use a latest-value slot; input is bounded, ordered, checked against the displayed layout, active lease and current input generation. Local screen sharing and an outgoing controller share the authenticated endpoint without sharing capture authorization. Stopping local sharing does not end the outgoing controller.
 
 ## Background operation
 

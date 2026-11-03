@@ -51,7 +51,7 @@ class RememberedAccessTest {
         open()
         shell("settings put secure enabled_accessibility_services app.farsail.android/app.farsail.android.ControlService")
         shell("settings put secure accessibility_enabled 1"); await { ControlService.instance != null }
-        text("允许同账号电脑直接控制").click()
+        text("允许同账号设备直接控制").click()
         await { (app.invoke("state") as JSONObject).optBoolean("control") }
         text("开启屏幕共享").click()
         val allow = device.wait(Until.findObject(By.res("android", "button1")), 12000); assertNotNull(allow)

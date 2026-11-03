@@ -12,4 +12,7 @@ object NativeBridge {
     external fun publish(jpeg: ByteArray, width: Int, height: Int, layout: Long): Boolean
     external fun drain(): String
     external fun inputValid(session: String, epoch: Long, layout: Long): Boolean
+    external fun viewerBegin(): Long
+    external fun viewerClose(ticket: Long)
+    external fun viewerFrame(ticket: Long): ByteArray?
 }

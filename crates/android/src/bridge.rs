@@ -3,7 +3,7 @@ use farsail_client::{Error, NativeClient, SecureStore};
 use jni::{
     JNIEnv, JavaVM,
     objects::{GlobalRef, JByteArray, JObject, JString, JValue},
-    sys::{JNI_FALSE, JNI_TRUE, jboolean, jint, jlong, jstring},
+    sys::{JNI_FALSE, JNI_TRUE, jboolean, jbyteArray, jint, jlong, jstring},
 };
 use serde_json::{Value, json};
 use std::sync::{Arc, OnceLock};
@@ -91,6 +91,35 @@ fn response(env: &mut JNIEnv, value: Result<Value, String>) -> jstring {
 fn host() -> Result<&'static Arc<Host>, String> {
     HOST.get()
         .ok_or_else(|| "native host not initialized".into())
+}
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_app_farsail_android_NativeBridge_viewerBegin(
+    _: JNIEnv,
+    _: JObject,
+) -> jlong {
+    host().map_or(-1, |h| h.viewer.begin() as jlong)
+}
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_app_farsail_android_NativeBridge_viewerClose(
+    _: JNIEnv,
+    _: JObject,
+    ticket: jlong,
+) {
+    if let Ok(h) = host() {
+        h.viewer.close(ticket as u64);
+    }
+}
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_app_farsail_android_NativeBridge_viewerFrame(
+    env: JNIEnv,
+    _: JObject,
+    ticket: jlong,
+) -> jbyteArray {
+    host()
+        .ok()
+        .and_then(|h| h.viewer.frame(ticket as u64))
+        .and_then(|bytes| env.byte_array_from_slice(&bytes).ok())
+        .map_or(std::ptr::null_mut(), |bytes| bytes.into_raw())
 }
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_app_farsail_android_NativeBridge_initialize(

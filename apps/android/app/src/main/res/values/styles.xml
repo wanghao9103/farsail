@@ -6,5 +6,12 @@
         <item name="android:statusBarColor">#F4F6F3</item>
         <item name="android:navigationBarColor">#F4F6F3</item>
     </style>
-    <string name="control_description">仅在你开启共享并批准电脑连接后，FarSail 才允许对方点击、滑动及向当前输入框输入文字。你可以随时在 App 中停止共享。开启此服务不等于允许连接。</string>
+    <style name="ViewerBaseTheme" parent="AppTheme">
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:statusBarColor">#182327</item>
+        <item name="android:navigationBarColor">#182327</item>
+        <item name="android:windowBackground">#182327</item>
+    </style>
+    <style name="ViewerTheme" parent="ViewerBaseTheme" />
+    <string name="control_description">仅在你开启共享并批准设备连接后，FarSail 才允许对方点击、滑动及向当前输入框输入文字。你可以随时在 App 中停止共享。开启此服务不等于允许连接。</string>
 </resources>

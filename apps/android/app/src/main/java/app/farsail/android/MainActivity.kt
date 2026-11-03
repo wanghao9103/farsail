@@ -96,7 +96,7 @@ class MainActivity : Activity() {
             pendingControlEnable = false
             setControl(true)
             page = Page.HOME; rendered = null; history.clear()
-            say("远程控制已开启，同账号电脑无需手机重复确认。")
+            say("远程控制已开启，同账号设备无需手机重复确认。")
         }
         if (page == Page.CONTROL_SETUP && guideConnected != (ControlService.instance != null)) rendered = null
         if (signedIn() && page in listOf(Page.LOGIN, Page.REGISTER, Page.VERIFY)) { page = Page.HOME; rendered = null; history.clear() }
@@ -151,7 +151,7 @@ class MainActivity : Activity() {
     private fun emailField(parent: LinearLayout): EditText = ui.field(parent, "邮箱", "name@example.com", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS, email).also { authEmail = it; it.setAutofillHints(View.AUTOFILL_HINT_EMAIL_ADDRESS) }
     private fun passwordField(parent: LinearLayout, label: String = "密码") = ui.field(parent, label, "请输入密码", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD).apply { isSaveEnabled = false; setAutofillHints(View.AUTOFILL_HINT_PASSWORD) }
     private fun login() {
-        title("登录", "登录后，让电脑连接这台手机。")
+        title("登录", "登录后，控制电脑或手机，也可共享这台手机。")
         val card = ui.card(body); val mail = emailField(card); val password = passwordField(card)
         val submit = primary(card, "登录") {
             rememberEmail()
@@ -244,7 +244,15 @@ class MainActivity : Activity() {
     }
     private fun home() {
         boundWhenBuilt = bound(); lastRequests = ""
-        title("这台手机", "在电脑端登录同一账号，选择这台手机连接。")
+        title("这台手机", "控制其他设备，或开启共享让电脑、手机连接本机。")
+        val outgoing = ui.card(body)
+        ui.text(outgoing, "控制其他设备", 20f, bold = true); ui.gap(outgoing, 8)
+        ui.text(outgoing, "连接同账号的电脑或安卓手机。控制端无需开启屏幕共享或辅助功能。", 14f, secondary = true); ui.gap(outgoing, 16)
+        ui.button(outgoing, "打开我的设备") {
+            if (!bound()) { say("请先在下方添加这台手机，再连接其他设备。"); draw() }
+            else startActivity(Intent(this, DeviceListActivity::class.java))
+        }
+        ui.gap(body, 16)
         val card = ui.card(body)
         if (!bound()) {
             val name = ui.field(card, "手机名称", value = "${Build.MANUFACTURER} ${Build.MODEL}")
@@ -260,7 +268,7 @@ class MainActivity : Activity() {
             ui.text(card, "开启后屏幕可变暗但不会自动熄屏，切到其他应用也有效，会增加耗电。手动锁屏仍会结束系统录屏授权，解锁后需点恢复共享并确认授权。", 13f, secondary = true)
             ui.gap(body, 16); val input = ui.card(body); ui.text(input, "远程控制", 18f, bold = true); ui.gap(input, 8)
             controlDetail = ui.text(input, "", 13f, secondary = true)
-            control = Switch(this).apply { text = "允许同账号电脑直接控制"; minHeight = ui.dp(56); setPadding(0, ui.dp(12), 0, ui.dp(12)); input.addView(this) }
+            control = Switch(this).apply { text = "允许同账号设备直接控制"; minHeight = ui.dp(56); setPadding(0, ui.dp(12), 0, ui.dp(12)); input.addView(this) }
             ui.link(input, "管理远程控制授权") { go(Page.CONTROL_SETUP) }
         }
         ui.gap(body, 16); requestBox = ui.column(body)
@@ -272,7 +280,7 @@ class MainActivity : Activity() {
         sharingDetail?.text = CaptureService.detail
         share?.text = when (phase) { "consent" -> "等待你确认授权…"; "starting" -> if (CaptureService.running) "取消开启" else "正在开启共享…"; "sharing" -> "停止共享"; "failed" -> "重新开启共享"; "interrupted" -> "恢复屏幕共享"; else -> "开启屏幕共享" }
         share?.isEnabled = app.ready && phase != "consent" && (CaptureService.running || (phase != "starting" && !app.busy))
-        controlDetail?.text = if (ControlService.instance == null) { if (RemotePreferences.wantsControl(this, app.state)) "已记住允许控制，等待系统辅助功能连接。可在下方管理授权。" else "点击开关，打开并定位 FarSail 的系统授权。" } else "已完成系统授权。开启后会记住选择，同账号电脑无需手机重复确认。"
+        controlDetail?.text = if (ControlService.instance == null) { if (RemotePreferences.wantsControl(this, app.state)) "已记住允许控制，等待系统辅助功能连接。可在下方管理授权。" else "点击开关，打开并定位 FarSail 的系统授权。" } else "已完成系统授权。开启后会记住选择，同账号设备无需手机重复确认。"
         control?.apply {
             setOnCheckedChangeListener(null); isEnabled = app.ready; isChecked = RemotePreferences.wantsControl(this@MainActivity, app.state)
             setOnCheckedChangeListener { _, checked ->
@@ -302,7 +310,7 @@ class MainActivity : Activity() {
         title("远程控制授权", if (guideConnected) "✓ FarSail 辅助功能已连接" else "只需开启「FarSail 远程控制」这一项。")
         val card = ui.card(body)
         ui.text(card, "FarSail 远程控制", 20f, bold = true); ui.gap(card, 12)
-        ui.text(card, if (guideConnected) "授权已完成。开启控制后，同账号电脑无需在手机再次确认；其他账号的请求仍需确认。" else "接下来会打开并定位 FarSail 的系统授权。若看到服务列表，点击「FarSail 远程控制」；再打开使用开关、确认系统提示，返回 App 即可。", 14f)
+        ui.text(card, if (guideConnected) "授权已完成。开启控制后，同账号设备无需在手机再次确认；其他账号的请求仍需确认。" else "接下来会打开并定位 FarSail 的系统授权。若看到服务列表，点击「FarSail 远程控制」；再打开使用开关、确认系统提示，返回 App 即可。", 14f)
         ui.gap(card, 20)
         if (guideConnected) ui.button(card, if (signedIn() && bound()) "开启远程控制" else "完成") {
             pendingControlEnable = false
