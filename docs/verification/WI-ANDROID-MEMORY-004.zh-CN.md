@@ -13,3 +13,11 @@ App / 通知停止和取消录屏授权会清除共享意图，退出登录清�
 安卓 android-v0.1.4 / version code 5 已从源码 9375ffa616d76376e905b3d0bfa7b2ab474b30f0 发布。流水线 41433064652 在仅重试发布后成功；4 个不可变附件的 ID、摘要和时间戳保持一致。全部匿名完整下载与 API 摘要、签名元数据及固定更新通道一致。APK SHA-256：f76bac4220ff2bde074667dbca116718d288312d5aef47aa9aec973b7de0602b。原始签名证书、非调试 manifest、manifest / dex 无 debug provider、两种原生 ABI 的 LOAD 对齐和 APK 16 KB 对齐检查均通过。证据：`.local/android-public-0.1.4/final-verification.json`、`native-alignment.json`、`immutable-assets-retry.json`。
 
 实体手机覆盖安装返回 Success，版本及已安装 APK 摘要一致，首次安装时间保留，没有清除应用数据。MainActivity 启动成功。手机仍锁屏，未新增厂商实机偏好恢复或真实账号 UI 验收。前版只在内存保存，首次升级后显式选择一次才建立持久化意图。
+
+## 授权期间的选择持久化 — 0.1.8
+
+此前控制选择直到辅助功能连接后才保存。首次开启跳转系统设置期间若进程消失，选择可能丢失；已成功保存的选择原本已能保留。现在开关与授权引导操作均先保存意图，再离开 App；共享选择也在请求系统录屏授权前保存。初始化同时发布已认证状态与就绪标记；成功录屏结果在 Activity 内等待该状态就绪，继续核对请求代次与身份。取消、停止和退出登录仍撤销对应选择。主页明确区分记住选择后的待恢复状态与实际录屏中。
+
+专用 API 35 模拟器的选择驱动已通过：授权前保存控制、无权限时实际相同证书覆盖包更替进程、辅助功能连接后自动启用控制、真实成功录屏授权等待账号就绪、主动停止拒绝延后的授权。证据：`.local/android-choice-verification/attempt-1793679415645304676/verification.json`。早期尝试出现测试手势时序及模拟器 attach 失败，不计为产品验收。进程更替交接仍为预期 instrumentation 终止，由新进程状态独立验证。
+
+0.1.8 的既有正常进程记忆回归也已通过：替换前真实共享、恢复控制、前台新授权、取消后不循环、主动停止后再次重启、迟到代次拒绝、设备范围与退出清理。证据：`.local/android-memory-verification/attempt-1793679626021029139/verification.json`。测试 fixture 现在等待辅助功能真实解绑再重新绑定，并将控件滚动到稳定视口；不修改生产系统权限。Debug 构建、Kotlin 单元测试与 lint 已通过。

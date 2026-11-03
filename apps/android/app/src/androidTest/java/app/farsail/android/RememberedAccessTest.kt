@@ -30,10 +30,12 @@ class RememberedAccessTest {
     }
     private fun open() { context.startActivity(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)) }
     private fun text(value: String): UiObject2 {
-        val visible = device.wait(Until.findObject(By.text(value)), 5000)
-        if (visible != null && !visible.visibleBounds.isEmpty) return visible
         val scroll = UiScrollable(UiSelector().scrollable(true))
-        if (scroll.exists()) scroll.scrollIntoView(UiSelector().text(value))
+        if (scroll.exists()) {
+            scroll.scrollToBeginning(10)
+            scroll.scrollIntoView(UiSelector().text(value))
+        }
+        device.waitForIdle(); Thread.sleep(300)
         return device.wait(Until.findObject(By.text(value)), 10000) ?: error("Missing UI: $value")
     }
     private fun grant() {
@@ -51,7 +53,8 @@ class RememberedAccessTest {
         open()
         shell("settings put secure enabled_accessibility_services app.farsail.android/app.farsail.android.ControlService")
         shell("settings put secure accessibility_enabled 1"); await { ControlService.instance != null }
-        text("允许同账号设备直接控制").click()
+        val toggle = text("允许同账号设备直接控制").visibleBounds
+        device.click(toggle.right - 50, toggle.centerY())
         await { (app.invoke("state") as JSONObject).optBoolean("control") }
         text("开启屏幕共享").click()
         val allow = device.wait(Until.findObject(By.res("android", "button1")), 12000); assertNotNull(allow)
@@ -80,6 +83,8 @@ class RememberedAccessTest {
             // Instrumentation replaces the app class loader; explicitly rebind
             // this fixture. Normal-process restoration is tested by the provider.
             shell("settings put secure enabled_accessibility_services ''")
+            shell("settings put secure accessibility_enabled 0")
+            Thread.sleep(700); await { ControlService.instance == null }
             shell("settings put secure enabled_accessibility_services app.farsail.android/app.farsail.android.ControlService")
             shell("settings put secure accessibility_enabled 1"); await { ControlService.instance != null }
             val current = app.invoke("state") as JSONObject

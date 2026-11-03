@@ -19,26 +19,34 @@ class FarSailApp : Application() {
     var observer: (() -> Unit)? = null
     val updates by lazy { Updates(this) }
     @Volatile var ready = false
+    @Volatile private var nativeReady = false
     override fun onCreate() {
         super.onCreate()
         main.postDelayed({ updates.maybeCheck() }, 5000)
         io.execute {
             try {
                 unwrap(NativeBridge.initialize(CredentialStore(this), this))
-                ready = true
+                nativeReady = true
                 val saved = invoke("state") as JSONObject
                 if (saved.optBoolean("signedIn")) invoke("resume")
-                RemotePreferences.restoreControl(this, invoke("state") as JSONObject, RemotePreferences.ticket())
-                refresh()
             } catch (e: Exception) { message = "初始化失败：${e.message}" }
-            try { if (ready) refresh() } catch (_: Exception) { }
-            main.post { observer?.invoke() }
+            // Publish restored identity and readiness together. Permission results
+            // can arrive before credential restoration has filled the UI snapshot.
+            val restored = if (nativeReady) try {
+                RemotePreferences.restoreControl(this, invoke("state") as JSONObject, RemotePreferences.ticket())
+                invoke("state") as JSONObject
+            } catch (e: Exception) { message = "设置恢复失败：${e.message}"; null } else null
+            main.post {
+                if (restored != null) state = restored
+                ready = nativeReady && restored != null
+                observer?.invoke()
+            }
         }
     }
     fun restoreControl() {
         val ticket = RemotePreferences.ticket()
         io.execute {
-            if (!ready) return@execute
+            if (!nativeReady) return@execute
             try { RemotePreferences.restoreControl(this, invoke("state") as JSONObject, ticket); refresh() }
             catch (_: Exception) { }
         }

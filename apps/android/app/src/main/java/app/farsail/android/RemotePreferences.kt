@@ -47,11 +47,20 @@ object RemotePreferences {
         val key = scope(state) ?: return 0
         val p = prefs(context); val edit = p.edit()
         if (p.getString("scope", null) != key) edit.putString("scope", key).putBoolean("control", false).putBoolean("sharing", false)
-        val ticket = nextConsent(context); edit.putLong("consent", ticket).commit(); return ticket
+        val ticket = nextConsent(context)
+        // Save the user's choice before leaving for the system permission UI.
+        // This does not authorize capture; a fresh successful result is still required.
+        edit.putBoolean("sharing", true).putLong("consent", ticket).commit(); return ticket
+    }
+    @Synchronized fun pendingConsent(context: Context, ticket: Long) = ticket > 0 && prefs(context).getLong("consent", 0) == ticket
+    @Synchronized fun abandonConsent(context: Context, ticket: Long): Boolean {
+        if (!pendingConsent(context, ticket)) return false
+        prefs(context).edit().putLong("consent", nextConsent(context)).commit()
+        return true
     }
     @Synchronized fun currentConsent(context: Context, state: JSONObject, ticket: Long): Boolean {
         val key = scope(state) ?: return false
-        return ticket > 0 && prefs(context).getLong("consent", 0) == ticket && prefs(context).getString("scope", null) == key
+        return pendingConsent(context, ticket) && prefs(context).getString("scope", null) == key
     }
     @Synchronized fun sharing(context: Context, state: JSONObject, ticket: Long): Boolean {
         if (!currentConsent(context, state, ticket)) return false
