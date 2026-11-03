@@ -1946,6 +1946,7 @@ main > .alert {
   background: transparent;
 }
 .viewer-window .remote-screen {
+  position: relative;
   flex: 1;
   min-height: 0;
   height: auto;
@@ -1966,6 +1967,7 @@ main > .alert {
 .viewer-phone-navigation {
   flex: none;
   display: flex;
+  flex-wrap: wrap;
   justify-content: center;
   gap: 8px;
   padding: 8px 12px;
@@ -1977,9 +1979,9 @@ main > .alert {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  min-width: 92px;
+  min-width: 72px;
   min-height: 42px;
-  padding: 8px 14px;
+  padding: 8px 10px;
   border: 1px solid #465560;
   border-radius: 6px;
   background: #27313b;
@@ -2002,6 +2004,20 @@ main > .alert {
   height: 20px;
   flex: none;
   fill: currentColor;
+}
+@media (max-width: 540px) {
+  .viewer-phone-navigation {
+    gap: 6px;
+    padding: 6px 8px;
+  }
+  .viewer-phone-navigation button {
+    flex: 1;
+    min-width: 0;
+    flex-direction: column;
+    gap: 3px;
+    padding: 5px 3px;
+    font-size: 12px;
+  }
 }
 .viewer-fit-settings {
   margin-bottom: 16px;

@@ -477,7 +477,7 @@ const fs = require("node:fs");
   );
   assert(await page.getByAltText("远端桌面").isVisible());
   await page.evaluate(() => (window.fixture.heartbeat = true));
-  const verifyFillPixels = async (source = null) => {
+  const verifyFillPixels = async (source = null, turns = 0) => {
     // This assertion measures a static frame. Avoid revoking its blob URL while img.decode() is pending.
     await page.evaluate(() => (window.fixture.heartbeat = false));
     await page.mouse.move(400, 300);
@@ -534,9 +534,15 @@ const fs = require("node:fs");
       [227, 185, 79],
       [160, 95, 211],
     ];
+    const order = [
+      [0, 1, 2, 3],
+      [2, 0, 3, 1],
+      [3, 2, 1, 0],
+      [1, 3, 0, 2],
+    ][turns];
     pixels.forEach((rgb, i) =>
       assert(
-        rgb.every((v, j) => Math.abs(v - expected[i][j]) < 20),
+        rgb.every((v, j) => Math.abs(v - expected[order[i]][j]) < 20),
         "all source corners must reach viewport corners without blank bands or cropping",
       ),
     );
@@ -1395,6 +1401,13 @@ const fs = require("node:fs");
   });
   await page.waitForTimeout(900);
   assert.equal(
+    await page
+      .getByRole("button", { name: "旋转画面", exact: true })
+      .isEnabled(),
+    true,
+    "local rotation remains available in view-only mode",
+  );
+  assert.equal(
     await page.getByRole("group", { name: "手机导航", exact: true }).count(),
     1,
   );
@@ -1505,6 +1518,242 @@ const fs = require("node:fs");
       "portrait clicks use the fitted image rectangle",
     );
   }
+  // Local rotation changes pixels and inverse pointer/wheel geometry together.
+  // It must never ask Android to change its orientation or require input permission.
+  for (const size of [
+    { width: 360, height: 640 },
+    { width: 1200, height: 800 },
+  ]) {
+    await page.setViewportSize(size);
+    for (let turns = 1; turns <= 4; turns++) {
+      const rotation = turns % 4;
+      await page.getByRole("button", { name: "旋转画面", exact: true }).hover();
+      await page.waitForTimeout(100);
+      const beforeRotate = await page.evaluate(
+        () => window.fixture.calls.length,
+      );
+      await page.getByRole("button", { name: "旋转画面", exact: true }).click();
+      await page.waitForTimeout(100);
+      assert.equal(
+        await page.evaluate(
+          (before) =>
+            window.fixture.calls
+              .slice(before)
+              .filter((c) => c.cmd === "remote_input" && c.args.input != null)
+              .length,
+          beforeRotate,
+        ),
+        0,
+        "rotating the view sends no device input",
+      );
+      await verifyFillPixels(
+        rotation % 2
+          ? { width: 1280, height: 582 }
+          : { width: 582, height: 1280 },
+        rotation,
+      );
+      const rect = await page.locator(".remote-screen").boundingBox();
+      const width = rotation % 2 ? 1280 : 582,
+        height = rotation % 2 ? 582 : 1280;
+      const scale = Math.min(rect.width / width, rect.height / height);
+      const bounds = {
+        x: rect.x + (rect.width - width * scale) / 2,
+        y: rect.y + (rect.height - height * scale) / 2,
+        width: width * scale,
+        height: height * scale,
+      };
+      const beforeClick = await page.evaluate(
+        () => window.fixture.calls.length,
+      );
+      await page.mouse.click(
+        bounds.x + bounds.width * 0.25,
+        bounds.y + bounds.height * 0.75,
+      );
+      await page.waitForFunction(
+        (before) =>
+          window.fixture.calls
+            .slice(before)
+            .filter(
+              (c) =>
+                c.cmd === "remote_input" && c.args.input?.kind === "button",
+            ).length === 2,
+        beforeClick,
+      );
+      const inputs = await page.evaluate(
+        (before) =>
+          window.fixture.calls
+            .slice(before)
+            .filter(
+              (c) =>
+                c.cmd === "remote_input" && c.args.input?.kind === "button",
+            )
+            .map((c) => c.args.input),
+        beforeClick,
+      );
+      const expected = [
+        [0.25, 0.75],
+        [0.75, 0.75],
+        [0.75, 0.25],
+        [0.25, 0.25],
+      ][rotation];
+      assert(
+        inputs.every(
+          (p) =>
+            Math.abs(p.x - expected[0]) < 0.006 &&
+            Math.abs(p.y - expected[1]) < 0.006,
+        ),
+        "rotated clicks map back to unrotated phone coordinates",
+      );
+      const beforeDrag = await page.evaluate(() => window.fixture.calls.length);
+      await page.mouse.down();
+      await page.mouse.move(
+        bounds.x + bounds.width * 0.75,
+        bounds.y + bounds.height * 0.25,
+        { steps: 3 },
+      );
+      await page.mouse.up();
+      await page.waitForFunction(
+        (before) =>
+          window.fixture.calls
+            .slice(before)
+            .filter(
+              (c) =>
+                c.cmd === "remote_input" && c.args.input?.kind === "button",
+            ).length === 2,
+        beforeDrag,
+      );
+      const dragEnd = await page.evaluate(
+        (before) =>
+          window.fixture.calls
+            .slice(before)
+            .filter(
+              (c) =>
+                c.cmd === "remote_input" && c.args.input?.kind === "button",
+            )
+            .at(-1).args.input,
+        beforeDrag,
+      );
+      const expectedEnd = [
+        [0.75, 0.25],
+        [0.25, 0.25],
+        [0.25, 0.75],
+        [0.75, 0.75],
+      ][rotation];
+      assert(
+        Math.abs(dragEnd.x - expectedEnd[0]) < 0.006 &&
+          Math.abs(dragEnd.y - expectedEnd[1]) < 0.006,
+        "rotated drags finish at the corresponding unrotated source point",
+      );
+      const beforeWheel = await page.evaluate(
+        () => window.fixture.calls.length,
+      );
+      await page.mouse.wheel(20, 120);
+      await page.waitForFunction(
+        (before) =>
+          window.fixture.calls
+            .slice(before)
+            .some(
+              (c) => c.cmd === "remote_input" && c.args.input?.kind === "wheel",
+            ),
+        beforeWheel,
+      );
+      const wheel = await page.evaluate(
+        (before) =>
+          window.fixture.calls
+            .slice(before)
+            .find(
+              (c) => c.cmd === "remote_input" && c.args.input?.kind === "wheel",
+            ).args.input,
+        beforeWheel,
+      );
+      const expectedWheel = [
+        [20, -120],
+        [120, 20],
+        [-20, 120],
+        [-120, -20],
+      ][rotation];
+      assert.deepEqual([wheel.horizontal, wheel.vertical], expectedWheel);
+      // Test the black bands along whichever axis is not filled.
+      const beforeBand = await page.evaluate(() => window.fixture.calls.length);
+      await page.mouse.click(
+        bounds.x > rect.x + 2 ? rect.x + 1 : rect.x + rect.width / 2,
+        bounds.x > rect.x + 2 ? rect.y + rect.height / 2 : rect.y + 1,
+      );
+      await page.waitForTimeout(100);
+      assert.equal(
+        await page.evaluate(
+          (before) =>
+            window.fixture.calls
+              .slice(before)
+              .filter(
+                (c) =>
+                  c.cmd === "remote_input" && c.args.input?.kind === "button",
+              ).length,
+          beforeBand,
+        ),
+        0,
+        "rotated letterbox bars reject clicks",
+      );
+      assert.equal(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth > innerWidth,
+        ),
+        false,
+      );
+      if (rotation === 1 && size.width === 1200)
+        await page.screenshot({
+          path: ".local/ui-verification/viewer-phone-rotated.png",
+        });
+    }
+  }
+  await page.getByRole("button", { name: "旋转画面", exact: true }).click();
+  await revealToolbar();
+  await page.getByText("更多操作", { exact: true }).click();
+  await page.getByRole("button", { name: "铺满窗口", exact: true }).click();
+  await page.getByText("更多操作", { exact: true }).click();
+  await verifyFillPixels(null, 1);
+  await revealToolbar();
+  await page.getByText("更多操作", { exact: true }).click();
+  await page.getByRole("button", { name: "还原画面方向", exact: true }).click();
+  await page.getByRole("button", { name: "保持比例", exact: true }).click();
+  await page.getByText("更多操作", { exact: true }).click();
+  await verifyFillPixels({ width: 582, height: 1280 });
+  await page.evaluate(() => {
+    window.fixture.inputBlocked = true;
+    window.fixture.inputGeneration++;
+  });
+  await page.getByRole("button", { name: "主屏幕", exact: true }).waitFor();
+  await page.waitForFunction(
+    () => document.querySelector(".viewer-phone-navigation button")?.disabled,
+  );
+  const beforePausedNavigation = await page.evaluate(
+    () => window.fixture.calls.length,
+  );
+  await page
+    .getByRole("button", { name: "主屏幕", exact: true })
+    .evaluate((b) =>
+      b.dispatchEvent(new MouseEvent("click", { bubbles: true })),
+    );
+  assert.equal(
+    await page.evaluate(
+      (before) =>
+        window.fixture.calls
+          .slice(before)
+          .filter(
+            (c) => c.cmd === "remote_input" && c.args.input?.kind === "key",
+          ).length,
+      beforePausedNavigation,
+    ),
+    0,
+    "paused input cannot use phone navigation",
+  );
+  await page.evaluate(() => {
+    window.fixture.inputBlocked = false;
+    window.fixture.inputGeneration++;
+  });
+  await page.waitForFunction(
+    () => !document.querySelector(".viewer-phone-navigation button")?.disabled,
+  );
   const beforeKeyboardHome = await page.evaluate(
     () => window.fixture.calls.length,
   );
@@ -1567,6 +1816,33 @@ const fs = require("node:fs");
     ),
     1,
     "rotation and polling must not reset a user-resized phone window",
+  );
+  await page.evaluate(() => {
+    window.fixture.closed = true;
+  });
+  await page.waitForFunction(
+    () => document.querySelector(".viewer-phone-navigation button")?.disabled,
+  );
+  const beforeEndedNavigation = await page.evaluate(
+    () => window.fixture.calls.length,
+  );
+  await page
+    .getByRole("button", { name: "主屏幕", exact: true })
+    .evaluate((b) =>
+      b.dispatchEvent(new MouseEvent("click", { bubbles: true })),
+    );
+  assert.equal(
+    await page.evaluate(
+      (before) =>
+        window.fixture.calls
+          .slice(before)
+          .filter(
+            (c) => c.cmd === "remote_input" && c.args.input?.kind === "key",
+          ).length,
+      beforeEndedNavigation,
+    ),
+    0,
+    "ended sessions cannot use phone navigation",
   );
   assert.deepEqual(errors, []);
   await browser.close();

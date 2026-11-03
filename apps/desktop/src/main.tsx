@@ -46,6 +46,7 @@ import {
   ChevronRight16Regular,
   ChevronLeft16Regular,
   ArrowSync20Regular,
+  ArrowRotateClockwise20Regular,
 } from "@fluentui/react-icons";
 
 type Tab =
@@ -3092,6 +3093,10 @@ function Viewer({
   const [profilePending, setProfilePending] = useState<number | null>(null);
   const [autoQuality, setAutoQuality] = useState(true);
   const [viewportEdge, setViewportEdge] = useState(0);
+  const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
+  // Display-only and owned by this viewer, so other phones/windows are unaffected.
+  const [phoneTurns, setPhoneTurns] = useState(0);
+  const displayTurns = status?.platform === "android" ? phoneTurns : 0;
   const [fullscreen, setFullscreen] = useState(false);
   // Phone and desktop choices are independent: the legacy desktop fill
   // preference must never stretch a newly connected portrait phone.
@@ -3199,6 +3204,8 @@ function Viewer({
     if (!node) return;
     let timer: number;
     const measure = () => {
+      const rect = node.getBoundingClientRect();
+      setViewportSize({ width: rect.width, height: rect.height });
       window.clearTimeout(timer);
       timer = window.setTimeout(() => {
         const rect = node.getBoundingClientRect();
@@ -3722,17 +3729,29 @@ function Viewer({
   const point = (e: { clientX: number; clientY: number }, clamp = false) => {
     if (!picture || !image.current) return null;
     const rect = image.current.getBoundingClientRect();
+    const sourceWidth = displayTurns % 2 ? picture.height : picture.width;
+    const sourceHeight = displayTurns % 2 ? picture.width : picture.height;
     const scale = Math.min(
-      rect.width / picture.width,
-      rect.height / picture.height,
+      rect.width / sourceWidth,
+      rect.height / sourceHeight,
     );
-    const w = fitMode === "fill" ? rect.width : picture.width * scale,
-      h = fitMode === "fill" ? rect.height : picture.height * scale;
+    const w = fitMode === "fill" ? rect.width : sourceWidth * scale,
+      h = fitMode === "fill" ? rect.height : sourceHeight * scale;
     const x = (e.clientX - rect.left - (rect.width - w) / 2) / w;
     const y = (e.clientY - rect.top - (rect.height - h) / 2) / h;
-    if (clamp)
-      return { x: Math.max(0, Math.min(1, x)), y: Math.max(0, Math.min(1, y)) };
-    return x >= 0 && x <= 1 && y >= 0 && y <= 1 ? { x, y } : null;
+    if (!clamp && (x < 0 || x > 1 || y < 0 || y > 1)) return null;
+    const u = Math.max(0, Math.min(1, x)),
+      v = Math.max(0, Math.min(1, y));
+    switch (displayTurns) {
+      case 1:
+        return { x: v, y: 1 - u };
+      case 2:
+        return { x: 1 - u, y: 1 - v };
+      case 3:
+        return { x: 1 - v, y: u };
+      default:
+        return { x: u, y: v };
+    }
   };
   const pointerInput = (e: React.PointerEvent<HTMLImageElement>) => {
     if (!controlRef.current || !picture || e.pointerType !== "mouse") return;
@@ -4024,6 +4043,18 @@ function Viewer({
                       </button>
                     ))}
                   </div>
+                  {status?.platform === "android" && (
+                    <button
+                      type="button"
+                      disabled={phoneTurns === 0}
+                      onClick={() => {
+                        releaseInputs();
+                        setPhoneTurns(0);
+                      }}
+                    >
+                      还原画面方向
+                    </button>
+                  )}
                 </div>
                 <div className="viewer-connection-info">
                   <strong>连接信息</strong>
@@ -4223,7 +4254,25 @@ function Viewer({
               ref={image}
               src={picture.url}
               alt="远端桌面"
-              style={{ cursor: inputBlocked ? "not-allowed" : "default" }}
+              style={{
+                cursor: inputBlocked ? "not-allowed" : "default",
+                ...(displayTurns
+                  ? {
+                      position: "absolute",
+                      left: "50%",
+                      top: "50%",
+                      width:
+                        displayTurns % 2
+                          ? viewportSize.height
+                          : viewportSize.width,
+                      height:
+                        displayTurns % 2
+                          ? viewportSize.width
+                          : viewportSize.height,
+                      transform: `translate(-50%, -50%) rotate(${displayTurns * 90}deg)`,
+                    }
+                  : {}),
+              }}
               draggable={false}
               onPointerDown={pointerInput}
               onPointerMove={pointerInput}
@@ -4246,20 +4295,27 @@ function Viewer({
               onWheel={(e) => {
                 e.preventDefault();
                 const p = point(e);
+                const horizontal = Math.max(
+                  -1200,
+                  Math.min(1200, Math.round(e.deltaX)),
+                );
+                const vertical = Math.max(
+                  -1200,
+                  Math.min(1200, Math.round(-e.deltaY)),
+                );
+                const wheel = [
+                  { horizontal, vertical },
+                  { horizontal: -vertical, vertical: horizontal },
+                  { horizontal: -horizontal, vertical: -vertical },
+                  { horizontal: vertical, vertical: -horizontal },
+                ][displayTurns];
                 if (p)
                   send({
                     kind: "wheel",
                     display: picture.display,
                     layout: picture.layout,
                     ...p,
-                    vertical: Math.max(
-                      -1200,
-                      Math.min(1200, Math.round(-e.deltaY)),
-                    ),
-                    horizontal: Math.max(
-                      -1200,
-                      Math.min(1200, Math.round(e.deltaX)),
-                    ),
+                    ...wheel,
                   });
               }}
             />
@@ -4321,6 +4377,18 @@ function Viewer({
                 <span>{label}</span>
               </button>
             ))}
+            <button
+              type="button"
+              aria-label="旋转画面"
+              title={`顺时针旋转 90°（当前 ${phoneTurns * 90}°），仅改变电脑显示，手机方向不变`}
+              onClick={() => {
+                releaseInputs();
+                setPhoneTurns((turns) => (turns + 1) % 4);
+              }}
+            >
+              <ArrowRotateClockwise20Regular aria-hidden="true" />
+              <span>旋转画面</span>
+            </button>
           </div>
         )}
       </div>
