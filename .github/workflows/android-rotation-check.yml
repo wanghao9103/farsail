@@ -24,7 +24,8 @@ jobs:
       - name: Apply only the rotation fix to the installed version
         run: |
           git diff --exit-code android-v0.1.8 HEAD -- crates Cargo.toml Cargo.lock .cargo scripts/build-android.sh
-          git diff c3ec9a5^ c3ec9a5 -- apps/android/app/src/main/java/app/farsail/android/CaptureService.kt apps/android/app/src/androidTest/java/app/farsail/android/NativeSmokeTest.kt > "$RUNNER_TEMP/rotation.patch"
+          git diff android-v0.1.8 HEAD -- apps/android/app/src/main/java/app/farsail/android/CaptureService.kt > "$RUNNER_TEMP/rotation.patch"
+          git diff c10e01e HEAD -- apps/android/app/src/androidTest/java/app/farsail/android/NativeSmokeTest.kt >> "$RUNNER_TEMP/rotation.patch"
           git checkout --no-overlay android-v0.1.8 -- apps/android
           git apply --check "$RUNNER_TEMP/rotation.patch"
           git apply "$RUNNER_TEMP/rotation.patch"
@@ -49,7 +50,7 @@ jobs:
           ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/farsail-installed.jks
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_APK_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: androiddebugkey
-        run: ./gradlew --no-daemon -PfarsailVersionCode=9 -PfarsailVersionName=0.1.8-rotation :app:assembleRelease :app:testDebugUnitTest :app:lintRelease :app:compileDebugAndroidTestKotlin
+        run: ./gradlew --no-daemon -PfarsailVersionCode=9 -PfarsailVersionName=0.1.8-clear :app:assembleRelease :app:testDebugUnitTest :app:lintRelease :app:compileDebugAndroidTestKotlin
       - uses: actions/upload-artifact@v4
         with:
           name: Android-signed-apk

@@ -150,7 +150,8 @@ class CaptureService : Service() {
     private fun resize(w: Int, h: Int) {
         if (stopped || (screenWidth == w && screenHeight == h && display != null)) return
         screenWidth = w; screenHeight = h
-        val scale = minOf(1.0, 1280.0 / maxOf(w, h))
+        // Preserve native phone text detail, while keeping large displays bounded.
+        val scale = minOf(1.0, 2560.0 / maxOf(w, h))
         val width = (w * scale).roundToInt().coerceAtLeast(1)
         val height = (h * scale).roundToInt().coerceAtLeast(1)
         layout = NativeBridge.geometry(width, height)
@@ -170,7 +171,7 @@ class CaptureService : Service() {
                 padded.copyPixelsFromBuffer(plane.buffer)
                 val bitmap = Bitmap.createBitmap(padded, 0, 0, width, height)
                 val output = ByteArrayOutputStream()
-                bitmap.compress(Bitmap.CompressFormat.JPEG, 65, output)
+                bitmap.compress(Bitmap.CompressFormat.JPEG, 90, output)
                 NativeBridge.publish(output.toByteArray(), width, height, geometry)
                 if (bitmap !== padded) bitmap.recycle()
                 padded.recycle()
