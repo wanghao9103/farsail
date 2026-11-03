@@ -11,6 +11,7 @@ import android.media.ImageReader
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.*
+import android.view.Display
 import android.view.WindowManager
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
@@ -47,6 +48,19 @@ class CaptureService : Service() {
     @Volatile private var stopped = false
     private var layout = 0L
     private var lastFrame = 0L
+    // onCapturedContentResize is only delivered on Android 14+. Older phones
+    // must resize the capture surface when the physical display rotates too.
+    private val displayListener = object : DisplayManager.DisplayListener {
+        override fun onDisplayAdded(displayId: Int) { }
+        override fun onDisplayRemoved(displayId: Int) { }
+        override fun onDisplayChanged(displayId: Int) {
+            if (displayId != Display.DEFAULT_DISPLAY || stopped || !running || projection == null) return
+            try {
+                val (width, height) = dimensions(this@CaptureService)
+                resize(width, height)
+            } catch (e: Exception) { fail(e) }
+        }
+    }
     private val callback = object : MediaProjection.Callback() {
         override fun onStop() {
             if (stopped) return
@@ -100,8 +114,15 @@ class CaptureService : Service() {
             projection!!.registerCallback(callback, capture)
             running = true
             app.observer?.invoke()
-            val size = dimensions(this)
-            capture.post { try { resize(size.first, size.second) } catch (e: Exception) { fail(e) } }
+            if (Build.VERSION.SDK_INT < 34) {
+                getSystemService(DisplayManager::class.java).registerDisplayListener(displayListener, capture)
+            }
+            capture.post {
+                try {
+                    val (width, height) = dimensions(this)
+                    resize(width, height)
+                } catch (e: Exception) { fail(e) }
+            }
             power.start()
             app.io.execute {
                 try {
@@ -189,6 +210,7 @@ class CaptureService : Service() {
     }
     override fun onDestroy() {
         stopped = true; running = false
+        getSystemService(DisplayManager::class.java).unregisterDisplayListener(displayListener)
         if (phase != "failed" && phase != "interrupted") status(this, "off", "共享已停止，电脑无法继续查看。")
         NativeBridge.stopLocal(); ControlService.cancel()
         handler.removeCallbacks(poll)

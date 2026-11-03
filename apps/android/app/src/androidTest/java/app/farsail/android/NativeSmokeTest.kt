@@ -190,6 +190,22 @@ class NativeSmokeTest {
             assertTrue("service holds screen protection in background", activeWakeLocks().contains("FarSail:SharingScreen"))
             assertTrue((app.invoke("state") as JSONObject).optBoolean("sharing"))
             assertFalse(NativeBridge.inputValid("unapproved-session", 0, 1))
+            // Exercise both the pre-14 DisplayListener and the Android 14+
+            // projection callback with the sharing Activity in the background.
+            try {
+                device.setOrientationLeft()
+                await {
+                    val (width, height) = dimensions(context)
+                    width > height && CaptureService.screenWidth == width && CaptureService.screenHeight == height
+                }
+                assertTrue("rotation must preserve the authorized share", CaptureService.running)
+                assertTrue((app.invoke("state") as JSONObject).optBoolean("sharing"))
+                device.setOrientationNatural()
+                await {
+                    val (width, height) = dimensions(context)
+                    width < height && CaptureService.screenWidth == width && CaptureService.screenHeight == height
+                }
+            } finally { device.unfreezeRotation() }
             if (realPeer) {
                 val automation = inst.getUiAutomation(android.app.UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES)
                 automation.executeShellCommand("settings put secure enabled_accessibility_services app.farsail.android/app.farsail.android.ControlService").close()
