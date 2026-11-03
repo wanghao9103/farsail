@@ -198,7 +198,7 @@ async fn run(f: Arc<Fixture>, s: Session) {
                 break;
             }
             let seq = sent_clone.load(Ordering::SeqCst);
-            if seq - acked.load(Ordering::SeqCst) < 2 {
+            if (!phone || seq == 0) && seq - acked.load(Ordering::SeqCst) < 2 {
                 let mut image = image.clone();
                 image.meta.sequence = seq + 1;
                 sent_clone.store(seq + 1, Ordering::SeqCst);

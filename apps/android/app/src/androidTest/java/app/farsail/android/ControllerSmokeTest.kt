@@ -81,6 +81,9 @@ class ControllerSmokeTest {
             await { !device.hasObject(By.text("发送文字")) }; device.waitForIdle(); Thread.sleep(300)
             device.takeScreenshot(java.io.File(context.filesDir,"controller-desktop.png"))
             text("退出").click(); choose("Synthetic phone")
+            // The phone peer sends one frame only; control must outlive an idle image.
+            Thread.sleep(6200)
+            assertTrue(device.findObject(By.textStartsWith("已连接")).text.contains("可控制"))
             text("键盘").click()
             assertFalse(device.hasObject(By.text("Ctrl+V")))
             assertFalse(device.hasObject(By.text("Windows 键")))
@@ -101,7 +104,7 @@ class ControllerSmokeTest {
             val pending = text("Pending phone"); pending.parent.findObject(By.text("控制设备")).click()
             await { device.hasObject(By.textStartsWith("等待对方批准")) }
             text("取消连接").click(); await { report().any { !it.optBoolean("approved") && it.optBoolean("revoked") } }
-            java.io.File(context.filesDir,"controller-result.json").writeText(JSONObject().put("desktopControl",true).put("phoneControl",true).put("viewDeniedInput",true).put("rotatedTouch",true).put("backgroundClosed",true).put("pendingCancelled",true).put("localSharingStarted",false).toString())
+            java.io.File(context.filesDir,"controller-result.json").writeText(JSONObject().put("desktopControl",true).put("phoneControl",true).put("staticFrameControl",true).put("viewDeniedInput",true).put("rotatedTouch",true).put("backgroundClosed",true).put("pendingCancelled",true).put("localSharingStarted",false).toString())
         } catch (e: Throwable) {
             device.takeScreenshot(java.io.File(context.filesDir,"controller-failure.png"))
             device.dumpWindowHierarchy(java.io.File(context.filesDir,"controller-failure.xml"))

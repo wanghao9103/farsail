@@ -209,6 +209,14 @@ async fn mobile_controller_connects_android_and_desktop_without_local_sharing_an
         packet(&peer, Channel::Media, list).await;
         image(&peer, 1, 55, display).await;
         wait(|| h.viewer.status(ticket)["control"] == true).await;
+        if android {
+            tokio::time::sleep(Duration::from_secs(6)).await;
+            assert_eq!(
+                h.viewer.status(ticket)["control"],
+                true,
+                "a valid connection with an unchanged screen must remain controllable"
+            );
+        }
         assert_eq!(
             h.viewer.status(ticket)["platform"],
             if android { "android" } else { "desktop" }

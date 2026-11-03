@@ -24,7 +24,6 @@ struct Image {
     display: u32,
     layout: u64,
     sequence: u64,
-    at: Instant,
 }
 struct State {
     phase: String,
@@ -125,12 +124,12 @@ impl Viewer {
         let s = self.state.lock().unwrap();
         let session = live.as_ref().map(|l| &l.session);
         let open = session.is_some_and(Session::is_open_now);
+        // Static screens may send no new pixels. The live lease and layout,
+        // rather than image age, govern input authorization.
         let control = open
             && session.is_some_and(|s| s.permission() == RemotePermission::Control)
             && !s.input.blocked
-            && s.image
-                .as_ref()
-                .is_some_and(|i| i.at.elapsed() < Duration::from_secs(5));
+            && s.image.is_some();
         let path = session.map(Session::path);
         json!({"phase":if session.is_some() && !open { "closed" } else { &s.phase },"error":s.error,
             "platform":if s.android {"android"} else {"desktop"},"control":control,"input":s.input,
@@ -303,7 +302,6 @@ impl Viewer {
                         display: image.meta.monitor,
                         layout: image.meta.layout,
                         sequence,
-                        at: Instant::now(),
                     });
                     s.latest = Some(frame.bytes);
                 }
@@ -358,12 +356,7 @@ impl Viewer {
         } else {
             let input: Input = serde_json::from_value(value).map_err(|_| "输入无效")?;
             let s = self.state.lock().unwrap();
-            if s.input.blocked
-                || s.input.generation != observed
-                || s.image
-                    .as_ref()
-                    .is_none_or(|i| i.at.elapsed() >= Duration::from_secs(5))
-            {
+            if s.input.blocked || s.input.generation != observed || s.image.is_none() {
                 return Ok(Value::Null);
             }
             let valid = match &input {

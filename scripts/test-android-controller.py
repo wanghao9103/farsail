@@ -46,13 +46,14 @@ try:
         peers = json.load(response)
     (OUT/'synthetic-peers.json').write_text(json.dumps(peers,indent=2)+'\n')
     accepted = json.loads((OUT/'controller-result.json').read_text())
-    assert all(accepted[x] for x in ['desktopControl','phoneControl','viewDeniedInput','rotatedTouch','backgroundClosed','pendingCancelled'])
+    assert all(accepted[x] for x in ['desktopControl','phoneControl','staticFrameControl','viewDeniedInput','rotatedTouch','backgroundClosed','pendingCancelled'])
+    assert all(row['acks'] == 1 for row in peers['requests'] if row['phone'] and row['approved']), 'Phone fixture must stay on its single unchanged frame'
     assert not accepted['localSharingStarted']
     assert all(not row['open'] for row in peers['requests'])
     summary = dict(verification='passed',realMobileUi=True,realJni=True,authenticatedQuic=True,syntheticPeers=True,hostOsInjection=False,productionTouched=False,acceptance=accepted,evidence=str(OUT.relative_to(ROOT)))
     (OUT/'verification.json').write_text(json.dumps(summary,indent=2)+'\n')
     (OUT.parent/'verification.json').write_text(json.dumps(summary,indent=2)+'\n')
-    print('PASS: mobile desktop/phone control, actual touch/drag/wheel/text, view-only denial, local rotated touch, background close and pending cancellation')
+    print('PASS: mobile desktop/phone control, static phone frame beyond six seconds, actual touch/drag/wheel/text, view-only denial, local rotated touch, background close and pending cancellation')
 finally:
     if test is not None and test.poll() is None:
         test.terminate()
