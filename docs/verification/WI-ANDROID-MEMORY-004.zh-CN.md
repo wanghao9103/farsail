@@ -23,3 +23,7 @@ App / 通知停止和取消录屏授权会清除共享意图，退出登录清�
 0.1.8 的既有正常进程记忆回归也已通过：替换前真实共享、恢复控制、前台新授权、取消后不循环、主动停止后再次重启、迟到代次拒绝、设备范围与退出清理。证据：`.local/android-memory-verification/attempt-1793679626021029139/verification.json`。测试 fixture 现在等待辅助功能真实解绑再重新绑定，并将控件滚动到稳定视口；不修改生产系统权限。Debug 构建、Kotlin 单元测试与 lint 已通过。
 
 被控端 NativeSmokeTest 返回 OK（4 tests），其中 API 36 专属安全锁屏项在 API 35 上跳过。真实 JNI/QUIC 手机控制端对合成电脑/手机的回归也通过，涵盖静止画面控制、旋转触点、文字、仅查看拒绝输入、后台关闭和待批准取消。证据：`.local/android-choice-native-regression.log` 与 `.local/android-controller-verification/attempt-1793679803317677371/verification.json`。测试等待设备列表刷新后再取控件，首次旧辅助功能节点异常属于测试同步问题，不算产品行为验收。
+
+安卓 android-v0.1.8 / code 9 已从源码 79a522cd10e0649a9566f8a54e2ecb3e8c25854b 正式公开发布。流水线 41577963983 在固定通道缓存收敛后仅重试发布成功，四个版本附件的 ID、摘要与时间戳均未变化。匿名下载、源码来源、更新签名、固定通道、原安装证书、非调试 manifest、无 debug 探针及双 ABI / ZIP 16 KB 对齐均通过。APK SHA-256：afea5fa1d34d9700dcbb355d03beb790ec667c671775bf91369f4b56526fb3b9。证据：`.local/android-public-0.1.8/final-verification.json`、`native-alignment.json`、`immutable-assets-retry.json` 与 `local-regressions.json`。
+
+正式 APK 校验完成时，实体手机已未连接 USB。本次未对实体手机执行安装或清除数据，厂商系统上的恢复效果仍未验收。已验证交付包为 `.local/deliverables/FarSail_Android_0.1.8_universal.apk`。此前未保存的选择，升级后需明确开启一次；记住意图不替代新的系统录屏确认。
