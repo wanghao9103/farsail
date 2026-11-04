@@ -485,6 +485,18 @@ impl Host {
                     .set_server(args["url"].as_str().ok_or("server required")?)
                     .await
             }
+            "presence" => {
+                self.ensure_transport().await?;
+                client
+                    .refresh_transport_address()
+                    .await
+                    .map_err(|e| e.to_string())?;
+                client
+                    .clear_stale_host_capability()
+                    .await
+                    .map_err(|e| e.to_string())?;
+                return Ok(client.public_state().await);
+            }
             "share" => {
                 let epoch = args["epoch"].as_u64().ok_or("capture consent required")?;
                 if !self.current(epoch) {

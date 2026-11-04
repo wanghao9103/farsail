@@ -182,7 +182,7 @@ class CaptureService : Service() {
                 app.io.execute {
                     try {
                         val now = SystemClock.elapsedRealtime()
-                        if (now - lastHeartbeat >= 15000) { app.invoke("heartbeat"); lastHeartbeat = now }
+                        if (!ConnectionService.running && now - lastHeartbeat >= 15000) { app.invoke("heartbeat"); lastHeartbeat = now }
                         app.refresh()
                     } catch (e: Exception) { app.messageScope = "HOME"; app.message = "连接检查失败：${e.message}" }
                     finally { handler.post {

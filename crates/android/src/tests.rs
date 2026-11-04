@@ -258,3 +258,29 @@ async fn same_account_auto_approval_stops_with_control_or_capture() {
     assert_eq!(h.client.public_state().await["remoteWatch"], false);
     server.abort();
 }
+
+#[tokio::test]
+async fn presence_keeps_endpoint_without_restoring_capture_or_approval() {
+    let (h, server) = host(40).await;
+    h.stop_local();
+    h.control(false);
+    for _ in 0..2 {
+        let state = h.call("presence", json!({})).await.unwrap();
+        assert_eq!(state["transportRunning"], true);
+        assert_eq!(state["sharing"], false);
+        assert_eq!(state["remoteWatch"], false);
+        assert!(!h.local.lock().unwrap().capture);
+    }
+    assert!(h.call("share", json!({"epoch": 0})).await.is_err());
+    h.client.stop_transport().await;
+    server.abort();
+}
+
+#[tokio::test]
+async fn presence_without_device_credentials_cannot_start_an_endpoint() {
+    let client = Arc::new(NativeClient::new(Arc::new(Memory(Mutex::new(HashMap::new())))).unwrap());
+    let h = Host::new(client);
+    assert!(h.call("presence", json!({})).await.is_err());
+    assert!(!h.client.transport_running().await);
+    assert!(!h.local.lock().unwrap().capture);
+}

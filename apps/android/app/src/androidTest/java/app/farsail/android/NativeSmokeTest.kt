@@ -72,6 +72,9 @@ class NativeSmokeTest {
         val inst = InstrumentationRegistry.getInstrumentation(); val context = inst.targetContext
         val app = context.applicationContext as FarSailApp; await { app.ready }
         val coordinator = FakeCoordinator(); val device = UiDevice.getInstance(inst)
+        val oldKeepOnline = ConnectionService.enabled(context)
+        val oldAccessibility = shell("settings get secure enabled_accessibility_services")
+        val oldAccessibilityEnabled = shell("settings get secure accessibility_enabled")
         org.junit.Assume.assumeFalse("Dedicated emulator must have no existing credential", context.getSystemService(android.app.KeyguardManager::class.java).isDeviceSecure)
         val lockDelay = shell("settings get secure lock_screen_lock_after_timeout")
         var credentialSet = false
@@ -85,10 +88,16 @@ class NativeSmokeTest {
             app.invoke("server", JSONObject().put("url", "http://127.0.0.1:${coordinator.port}"))
             app.invoke("login", JSONObject().put("email", "android-smoke@example.invalid").put("password", "synthetic-password"))
             app.invoke("bind", JSONObject().put("name", "Android lock fixture")); app.refresh()
+            // A previous instrumentation process can leave an enabled but dead
+            // binding. Wait for actual disable before requesting a fresh bind.
+            shell("settings put secure enabled_accessibility_services ''")
+            shell("settings put secure accessibility_enabled 0")
+            await { !ControlSetup.enabled(context) && ControlService.instance == null }
             shell("settings put secure enabled_accessibility_services app.farsail.android/app.farsail.android.ControlService")
             shell("settings put secure accessibility_enabled 1")
-            await { ControlService.instance != null }
+            await { ControlSetup.connected(context) }
             RemotePreferences.control(context, app.invoke("state") as JSONObject, true)
+            inst.runOnMainSync { ConnectionService.preference(context, true) }
             val controlBefore = (app.invoke("state") as JSONObject).optBoolean("control"); assertTrue(controlBefore)
             context.startActivity(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK))
             openSharingSettings(device)
@@ -96,11 +105,15 @@ class NativeSmokeTest {
             device.findObject(By.text("开启屏幕共享")).click()
             val allow = device.wait(Until.findObject(By.res("android", "button1")), 10000); assertNotNull(allow); allow.click()
             await { CaptureService.phase == "sharing" }
+            await { ConnectionService.running && ConnectionService.lastHeartbeat > 0 }
             device.sleep()
             await { !CaptureService.running && CaptureService.phase == "interrupted" }
             assertTrue(CaptureService.detail.contains("手机锁屏"))
             assertFalse(activeWakeLocks().contains("FarSail:SharingScreen"))
             await { !coordinator.hosting.get() }
+            val beatsAfterLock = coordinator.heartbeats.get()
+            await { coordinator.heartbeats.get() > beatsAfterLock }
+            assertTrue("secure lock ends recording but preserves device presence", ConnectionService.running)
             assertEquals(controlBefore, (app.invoke("state") as JSONObject).optBoolean("control"))
             check(shell("locksettings clear --old 1234").contains("cleared", ignoreCase = true)); credentialSet = false
             device.wakeUp(); shell("wm dismiss-keyguard")
@@ -112,8 +125,13 @@ class NativeSmokeTest {
             await { CaptureService.running && CaptureService.phase == "sharing" }
         } finally {
             CaptureService.stop(context); await { !CaptureService.running }
+            inst.runOnMainSync { ConnectionService.preference(context, false) }
             NativeBridge.setControl(false)
-            runCatching { app.invoke("logout") }; coordinator.close()
+            runCatching { app.invoke("logout") }; app.refresh()
+            inst.runOnMainSync { ConnectionService.preference(context, oldKeepOnline) }
+            coordinator.close()
+            shell(if (oldAccessibility == "null") "settings delete secure enabled_accessibility_services" else "settings put secure enabled_accessibility_services '$oldAccessibility'")
+            shell(if (oldAccessibilityEnabled == "null") "settings delete secure accessibility_enabled" else "settings put secure accessibility_enabled '$oldAccessibilityEnabled'")
             if (credentialSet) shell("locksettings clear --old 1234")
             shell(if (lockDelay == "null") "settings delete secure lock_screen_lock_after_timeout" else "settings put secure lock_screen_lock_after_timeout $lockDelay")
             device.wakeUp(); shell("wm dismiss-keyguard")
@@ -263,6 +281,8 @@ internal class FakeCoordinator(private val rejectSharing: Boolean = false) : jav
     val port get() = socket.localPort
     val androidBound = AtomicBoolean(false)
     val hosting = AtomicBoolean(false)
+    val heartbeats = java.util.concurrent.atomic.AtomicInteger(0)
+    val rejectHeartbeats = AtomicBoolean(false)
     val requestReady = AtomicBoolean(false)
     val approved = AtomicBoolean(false)
     val foreignApproved = AtomicBoolean(false)
@@ -290,7 +310,11 @@ internal class FakeCoordinator(private val rejectSharing: Boolean = false) : jav
                         "/v1/me" -> """{"id":"20000000-0000-4000-8000-000000000001","email":"android-smoke@example.invalid","email_verified":true,"role":"user"}"""
                         "/v1/devices/challenge" -> """{"challenge_id":"30000000-0000-4000-8000-000000000001","message":"synthetic-binding-challenge"}"""
                         "/v1/devices/bind" -> { androidBound.set(body.optString("platform") == "android" && body.optString("signature").length == 128); """{"id":"40000000-0000-4000-8000-000000000001","device_token":"synthetic-device"}""" }
-                        "/v1/devices/heartbeat" -> """{"generation":1,"expires_in":60}"""
+                        "/v1/devices/heartbeat" -> {
+                            heartbeats.incrementAndGet()
+                            if (rejectHeartbeats.get()) { status = 403; """{"error":"forbidden"}""" }
+                            else """{"generation":1,"expires_in":60}"""
+                        }
                         "/v1/devices" -> "[]"
                         "/v1/devices/capability" -> if (rejectSharing && body.optBoolean("can_host")) { status = 409; """{"error":"conflict"}""" } else { hosting.set(body.optBoolean("can_host")); "{}" }
                         "/v1/devices/endpoint-address" -> { endpoint.set(body.getJSONObject("endpoint_addr")); "{}" }

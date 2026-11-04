@@ -1,8 +1,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
@@ -14,6 +16,7 @@
         <activity android:name=".DeviceListActivity" android:exported="false" />
         <activity android:name=".ViewerActivity" android:exported="false" android:theme="@style/ViewerTheme" android:configChanges="orientation|screenSize|keyboardHidden" android:windowSoftInputMode="adjustResize" />
         <service android:name=".CaptureService" android:exported="false" android:foregroundServiceType="mediaProjection" android:stopWithTask="false" />
+        <service android:name=".ConnectionService" android:exported="false" android:foregroundServiceType="connectedDevice" android:stopWithTask="false" />
         <service android:name=".ControlService" android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE" android:exported="true" android:label="FarSail 远程控制">
             <intent-filter><action android:name="android.accessibilityservice.AccessibilityService" /></intent-filter>
             <meta-data android:name="android.accessibilityservice" android:resource="@xml/control_service" />

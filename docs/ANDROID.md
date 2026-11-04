@@ -75,6 +75,12 @@ The driver clears the dedicated emulator app's synthetic test data, confirms the
 
 The host tests use real local encrypted QUIC connections to verify two independent phone sessions, frame ACKs, ordered input, view-only denial, stale geometry and cancelled capture activation. Instrumentation uses synthetic local coordinator responses and the real Keystore/JNI/projection foreground service. Optional `realPeer` instrumentation connects a host probe through the emulator UDP redirect and exercises text input into an owned test field. These tests do not prove physical phone compatibility, production account coordination or cross-network relay behavior. Verification results and remaining gaps are recorded in [the implementation evidence](verification/WI-ANDROID-001.md).
 
+## Device presence and screen sharing
+
+After signing in and adding this device, Settings → Keep this device online defaults to on. A separate connected-device foreground service maintains the authenticated endpoint and renews presence every 15 seconds, with a connection-status notification. Stopping capture, locking the phone or leaving the sharing page does not automatically stop that service. Stale screen capability is cleared when not sharing: peers can see the device online, while screen viewing and control still require valid recording authorization.
+
+Disable the setting or use the notification's Stop background presence action to stop standby. Active sharing still maintains its required connection through the capture service. Sign-out, server changes or a different bound device stop the old identity's task. Only the non-secret server/device scope is saved; service recreation rechecks native login and device credentials without saving or reusing recording authorization. The presence service holds only a bounded, renewed CPU wake lock, never wakes the display or unlocks the phone, and may increase battery use. Force stop, vendor background policies or network loss can still affect presence; use Background activity to review system settings.
+
 ## Automatic screen timeout and manual locking
 
 During an explicitly started share, “Prevent automatic screen timeout while sharing” defaults to on. A screen-dim wake lock is scoped to the projection foreground service so it also applies while another app is visible. It can be turned off immediately; stopping or failing capture releases it. It does not wake or unlock the phone. Screen and CPU wake locks have an eight-hour upper bound. Keeping the display on increases battery use.

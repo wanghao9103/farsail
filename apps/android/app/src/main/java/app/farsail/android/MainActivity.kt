@@ -38,6 +38,7 @@ class MainActivity : Activity() {
     private var sharingDetail: TextView? = null
     private var controlDetail: TextView? = null
     private var forgetControl: Button? = null
+    private var connectionDetail: TextView? = null
     private var pendingControlEnable = false
     private var guideConnected = false
     private var share: Button? = null
@@ -65,6 +66,7 @@ class MainActivity : Activity() {
     }
     override fun onResume() {
         super.onResume(); foreground = true
+        ConnectionService.retryOnForeground()
         val consentReturn = returningFromConsent; returningFromConsent = false
         if (!consentReturn && !consentOutstanding && CaptureService.phase !in listOf("consent", "starting")) restoreSharingPending = true
         app.observer = { draw() }; app.restoreControl(); draw(); devices?.resume(); app.updates.maybeCheck()
@@ -98,6 +100,7 @@ class MainActivity : Activity() {
     }
     private fun perform(op: String, args: JSONObject = JSONObject(), success: String = "", after: (() -> Unit)? = null) {
         val owner = page; val token = navigationEpoch
+        if (op == "logout") ConnectionService.stop(this)
         app.act(op, args, success, owner.name, { !isFinishing && !isDestroyed && page == owner && navigationEpoch == token }, after)
     }
     private fun say(text: String) { app.messageScope = page.name; app.message = text }
@@ -122,7 +125,7 @@ class MainActivity : Activity() {
             devices?.close(); devices = null; incoming = null
             rendered = page; body.removeAllViews(); busyButtons.clear(); authEmail = null
             (body.parent as ScrollView).scrollTo(0, 0)
-            status = null; sharingDetail = null; controlDetail = null; forgetControl = null; share = null; control = null; requestBox = null; updateText = null; updateButton = null; updateProgress = null
+            status = null; sharingDetail = null; controlDetail = null; forgetControl = null; connectionDetail = null; share = null; control = null; requestBox = null; updateText = null; updateButton = null; updateProgress = null
             header()
             when (page) {
                 Page.LOGIN -> login()
@@ -146,6 +149,8 @@ class MainActivity : Activity() {
             text = "收到 $count 个连接请求 · 处理"
         }
         if (page == Page.UPDATES) updateUpdates()
+        if (app.ready && !app.busy) ConnectionService.synchronize(this, app.state, foreground)
+        connectionDetail?.text = if (ConnectionService.enabled(this)) ConnectionService.detail else "仅共享或连接期间保持在线。"
         maybeRestoreSharing()
     }
     private fun maybeRestoreSharing() {
@@ -246,6 +251,12 @@ class MainActivity : Activity() {
         ui.row(body, "共享这台手机", if (CaptureService.running) "正在共享 · 管理共享与控制权限" else "屏幕共享与远程控制权限") { go(Page.SHARING) }
         ui.row(body, "服务器设置", if (hasServer()) app.state.optString("server") else "尚未设置") { go(Page.SERVER) }
         ui.row(body, "软件更新", "当前版本 ${app.updates.currentVersion}") { go(Page.UPDATES) }
+        ui.toggle(body, "保持本机在线", ConnectionService.enabled(this)).apply {
+            setOnCheckedChangeListener { _, enabled -> ConnectionService.preference(this@MainActivity, enabled) }
+        }
+        connectionDetail = ui.text(body, "", 13f, secondary = true)
+        ui.text(body, "锁屏或停止共享后仍保持设备连接，可能增加耗电；查看屏幕仍需系统录屏授权。", 13f, secondary = true)
+        ui.gap(body, 12)
         ui.row(body, "后台运行", "管理手机的后台与电池设置") {
             startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, android.net.Uri.parse("package:$packageName")))
         }
