@@ -74,8 +74,10 @@ jobs:
       - name: First-frame and delayed-selection browser regressions
         shell: pwsh
         run: |
-          npm install --no-save --package-lock=false playwright
+          $uiTools = Join-Path $env:RUNNER_TEMP 'farsail-ui-tools'
+          npm install --prefix $uiTools --no-save --package-lock=false playwright@1.56.1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:NODE_PATH = Join-Path $uiTools 'node_modules'
           $vite = Start-Process node -ArgumentList '../../node_modules/vite/bin/vite.js --host 127.0.0.1 --port 1420 --strictPort' -WorkingDirectory (Join-Path $PWD 'apps/desktop') -WindowStyle Hidden -PassThru
           try {
             for ($n=0; $n -lt 30; $n++) {
