@@ -28,6 +28,12 @@ class ControlStateTest {
         await { ControlSetup.connected(context) == enabled }
     }
     private fun open() { context.startActivity(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+    private fun background() {
+        device.pressHome()
+        // A foreground retry requires a completed pause, not a cancelled transition.
+        await { app.observer == null }
+        assertTrue(device.wait(Until.gone(By.pkg(context.packageName)), 10000))
+    }
     private fun text(value: String): UiObject2 {
         val scroll = UiScrollable(UiSelector().scrollable(true))
         if (scroll.exists()) { scroll.scrollToBeginning(10); scroll.scrollIntoView(UiSelector().text(value)) }
@@ -85,7 +91,7 @@ class ControlStateTest {
         coordinator.requestReady.set(true)
         await { coordinator.approved.get() }
         assertFalse(coordinator.foreignApproved.get())
-        device.pressHome(); systemControl(false)
+        background(); systemControl(false)
         await { val state = app.invoke("state") as JSONObject; !state.optBoolean("control") && !state.optBoolean("remoteWatch") }
         assertTrue("revoked control must not erase the saved choice", RemotePreferences.wantsControl(context, app.invoke("state") as JSONObject))
         assertTrue("valid capture can continue without control", CaptureService.running)
@@ -113,15 +119,15 @@ class ControlStateTest {
         assertNotNull("settings startup requests capture without an app Start click", consent)
         device.findObject(By.res("android", "button2")).click()
         await { !RemotePreferences.wantsSharing(context, app.state) }
-        device.pressHome(); open(); Thread.sleep(500)
+        background(); open(); Thread.sleep(500)
         assertFalse("cancel does not loop on foreground", device.hasObject(By.res("android", "button1")))
         val retry = RemotePreferences.beginConsent(context, app.state); RemotePreferences.abandonConsent(context, retry)
         inst.runOnMainSync { CaptureService.status(context, "failed", "Synthetic previous startup failure") }
-        device.pressHome(); open()
+        background(); open()
         val again = device.wait(Until.findObject(By.res("android", "button1")), 10000)
         assertNotNull("next foreground retries a saved failed startup without Start", again); again.click()
         await { CaptureService.phase == "sharing" }
-        device.pressHome(); open(); Thread.sleep(500)
+        background(); open(); Thread.sleep(500)
         assertTrue(CaptureService.running)
         assertFalse("existing capture never asks again", device.hasObject(By.res("android", "button1")))
     }
@@ -134,7 +140,7 @@ class ControlStateTest {
         Thread.sleep(1000)
         assertTrue(RemotePreferences.wantsSharing(context, app.state))
         assertFalse("failure must not trigger another permission dialog in the same visit", device.hasObject(By.res("android", "button1")))
-        device.pressHome(); open()
+        background(); open()
         assertNotNull("a later foreground can retry", device.wait(Until.findObject(By.res("android", "button1")), 10000))
         device.findObject(By.res("android", "button2")).click()
         await { !RemotePreferences.wantsSharing(context, app.state) }
