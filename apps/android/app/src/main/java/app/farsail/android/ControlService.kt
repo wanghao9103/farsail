@@ -155,9 +155,21 @@ class ControlService : AccessibilityService() {
         }
     }
     override fun onAccessibilityEvent(event: AccessibilityEvent?) { }
-    override fun onInterrupt() { RemotePreferences.suspendControl(); clearGesture() }
-    override fun onDestroy() {
+    override fun onInterrupt() {
+        RemotePreferences.suspendControl(); clearGesture()
+        val app = application as FarSailApp
+        app.io.execute { runCatching { app.refresh() } }
+    }
+    override fun onUnbind(intent: android.content.Intent?): Boolean {
+        disconnected()
+        return super.onUnbind(intent)
+    }
+    private fun disconnected() {
+        if (instance !== this) return
         instance = null; RemotePreferences.suspendControl(); clearGesture(); handler.removeCallbacks(poll)
-        (application as FarSailApp).observer?.invoke(); super.onDestroy()
+        (application as FarSailApp).restoreControl()
+    }
+    override fun onDestroy() {
+        disconnected(); super.onDestroy()
     }
 }

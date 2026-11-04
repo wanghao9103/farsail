@@ -1,8 +1,10 @@
 package app.farsail.android
 
 import android.app.Application
+import android.database.ContentObserver
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import org.json.JSONObject
 import org.json.JSONArray
 import java.util.concurrent.Executors
@@ -20,8 +22,19 @@ class FarSailApp : Application() {
     val updates by lazy { Updates(this) }
     @Volatile var ready = false
     @Volatile private var nativeReady = false
+    private val controlObserver = object : ContentObserver(main) {
+        override fun onChange(selfChange: Boolean) {
+            if (!nativeReady) return
+            // Revoke immediately; restoring intent still requires the real bound service.
+            if (!ControlSetup.connected(this@FarSailApp)) RemotePreferences.suspendControl()
+            restoreControl()
+            observer?.invoke()
+        }
+    }
     override fun onCreate() {
         super.onCreate()
+        for (key in listOf(Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES, Settings.Secure.ACCESSIBILITY_ENABLED))
+            contentResolver.registerContentObserver(Settings.Secure.getUriFor(key), false, controlObserver)
         main.postDelayed({ updates.maybeCheck() }, 5000)
         io.execute {
             try {
@@ -58,9 +71,14 @@ class FarSailApp : Application() {
     }
     fun invoke(op: String, args: JSONObject = JSONObject()): Any? = unwrap(NativeBridge.call(op, args.toString()))
     fun refresh() {
-        val next = invoke("state") as JSONObject
+        var next = invoke("state") as JSONObject
+        if (next.optBoolean("control") && !ControlSetup.connected(this)) {
+            RemotePreferences.suspendControl()
+            next = invoke("state") as JSONObject
+        }
+        val snapshot = next
         val requests = if (next.optBoolean("sharing")) invoke("pending") as? JSONArray ?: JSONArray() else JSONArray()
-        main.post { state = next; pending = requests; observer?.invoke() }
+        main.post { state = snapshot; pending = requests; observer?.invoke() }
     }
     fun act(op: String, args: JSONObject = JSONObject(), success: String = "", scope: String = "HOME", current: () -> Boolean = { true }, after: (() -> Unit)? = null) {
         if (busy || !ready) return

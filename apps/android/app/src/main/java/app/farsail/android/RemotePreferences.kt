@@ -30,13 +30,16 @@ object RemotePreferences {
     @Synchronized fun control(context: Context, state: JSONObject, enabled: Boolean) {
         revision++
         remember(context, state, "control", enabled)
-        NativeBridge.setControl(enabled && scope(state) != null && ControlService.instance != null)
+        NativeBridge.setControl(enabled && scope(state) != null && ControlSetup.connected(context))
     }
     @Synchronized fun restoreControl(context: Context, state: JSONObject, ticket: Long) {
         if (ticket != revision) { android.util.Log.i("FarSailAccess", "Control restore skipped after newer action"); return }
-        val enabled = ControlService.instance != null && wanted(context, state, "control")
-        android.util.Log.i("FarSailAccess", "Control restore: connected=${ControlService.instance != null} wanted=${wanted(context, state, "control")} enabled=$enabled")
-        if (enabled != state.optBoolean("control")) NativeBridge.setControl(enabled)
+        val connected = ControlSetup.connected(context)
+        val enabled = connected && wanted(context, state, "control")
+        if (enabled != state.optBoolean("control")) {
+            android.util.Log.i("FarSailAccess", "Control restore: connected=$connected wanted=${wanted(context, state, "control")} enabled=$enabled")
+            NativeBridge.setControl(enabled)
+        }
     }
     @Synchronized fun suspendControl() { revision++; NativeBridge.setControl(false); android.util.Log.i("FarSailAccess", "Control suspended by system") }
     private fun nextConsent(context: Context): Long {
