@@ -21,9 +21,12 @@ use tokio::sync::Mutex;
 pub const ALPN: &[u8] = b"farsail/session/1";
 const TIMEOUT: Duration = Duration::from_secs(10);
 const FILES_DIRECT_WINDOW: Duration = Duration::from_secs(3);
-const MEDIA_TIMEOUT: Duration = Duration::from_millis(400);
+const MEDIA_TIMEOUT: Duration = Duration::from_secs(2);
 fn media_timeout(bytes: usize) -> Duration {
-    MEDIA_TIMEOUT + Duration::from_millis((bytes.saturating_sub(1_000_000) / 1000).min(3600) as u64)
+    // Concurrent full-color viewers share the same network. A sub-megabyte
+    // frame may legitimately take longer than 400 ms without losing progress.
+    // Retain a hard bound; this never extends an authorization lease.
+    MEDIA_TIMEOUT + Duration::from_millis((bytes / 1000).min(4000) as u64)
 }
 const LIMIT: usize = 4096;
 const DISCOVERY_COOLDOWN: Duration = Duration::from_secs(30);
@@ -1306,6 +1309,110 @@ mod tests {
             stalled: AtomicBool::new(false),
         });
         (source, target, authority)
+    }
+
+    #[tokio::test]
+    async fn concurrent_peer_media_survives_a_delayed_frame_body() {
+        struct PeerAuthority {
+            id: &'static str,
+            source: EndpointId,
+            target: EndpointId,
+        }
+        impl Authority for PeerAuthority {
+            async fn inspect(&self, id: &str, token: &str) -> Result<Claims> {
+                if id != self.id || token != "peer-grant" {
+                    return Err(Error::Denied);
+                }
+                Ok(Claims {
+                    session_id: id.into(),
+                    permission: RemotePermission::View,
+                    source_public_key: hex::encode(self.source.as_bytes()),
+                    target_public_key: hex::encode(self.target.as_bytes()),
+                    nonce: "cd".repeat(32),
+                    expires_in: 60,
+                    checked_at: Instant::now(),
+                })
+            }
+            async fn issue(&self, id: &str, _: bool) -> Result<String> {
+                if id != self.id {
+                    return Err(Error::Denied);
+                }
+                Ok("peer-grant".into())
+            }
+        }
+        async fn peer(
+            source: &Transport,
+            target: &Transport,
+            id: &'static str,
+        ) -> (Session, Session) {
+            let authority = Arc::new(PeerAuthority {
+                id,
+                source: source.id(),
+                target: target.id(),
+            });
+            let accept = tokio::spawn({
+                let target = target.clone();
+                let authority = authority.clone();
+                async move { target.accept(authority).await.unwrap() }
+            });
+            let viewer = source
+                .connect(target.addr(), id, RemotePermission::View, authority)
+                .await
+                .unwrap();
+            (viewer, accept.await.unwrap())
+        }
+        let source = Transport::bind([81; 32], Config::default()).await.unwrap();
+        let first = Transport::bind([82; 32], Config::default()).await.unwrap();
+        let second = Transport::bind([83; 32], Config::default()).await.unwrap();
+        let (slow_viewer, slow_host) = peer(&source, &first, "slow-phone").await;
+        let (fast_viewer, fast_host) = peer(&source, &second, "fast-phone").await;
+        let delayed = tokio::spawn(async move {
+            let mut stream = slow_host.conn.open_uni().await.unwrap();
+            let payload = vec![0x5a; 128 * 1024];
+            let mut header = [0u8; 6];
+            header[0] = 1;
+            header[1] = Channel::Media.tag();
+            header[2..].copy_from_slice(&(payload.len() as u32).to_be_bytes());
+            stream.write_all(&header).await.unwrap();
+            stream.write_all(&payload[..1]).await.unwrap();
+            // Exceeds the old 400-ms deadline while the other phone keeps moving.
+            tokio::time::sleep(Duration::from_millis(700)).await;
+            stream.write_all(&payload[1..]).await.unwrap();
+            stream.finish().unwrap();
+            slow_host
+        });
+        let (slow, ()) = tokio::join!(slow_viewer.receive(), async {
+            for sequence in 0..5u8 {
+                fast_host
+                    .send(Frame {
+                        channel: Channel::Media,
+                        bytes: vec![sequence; 16],
+                    })
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    fast_viewer.receive().await.unwrap().bytes,
+                    vec![sequence; 16]
+                );
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        });
+        assert_eq!(slow.unwrap().bytes, vec![0x5a; 128 * 1024]);
+        let slow_host = delayed.await.unwrap();
+        for session in [&slow_viewer, &slow_host, &fast_viewer, &fast_host] {
+            assert!(session.is_open_now());
+            session.close();
+        }
+        source.close().await;
+        first.close().await;
+        second.close().await;
+    }
+
+    #[test]
+    fn media_transfer_budget_is_size_aware_and_bounded() {
+        assert!(media_timeout(500_000) > Duration::from_millis(700));
+        assert!(media_timeout(2_000_000) > media_timeout(500_000));
+        assert!(media_timeout(usize::MAX) <= Duration::from_secs(6));
     }
     #[tokio::test]
     async fn qad_failure_recovers_on_same_endpoint_without_interrupting_session() {

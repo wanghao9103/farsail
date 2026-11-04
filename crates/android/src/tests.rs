@@ -223,6 +223,84 @@ async fn two_android_hosts_receive_isolated_frames_and_input_and_stop_independen
     ta.close().await;
     tb.close().await;
 }
+
+#[tokio::test]
+async fn delayed_ack_keeps_capture_alive_but_a_stalled_peer_still_expires() {
+    let (h, server) = host(93).await;
+    let source = Transport::bind([94; 32], Config::default()).await.unwrap();
+    let target = Transport::bind([95; 32], Config::default()).await.unwrap();
+    let (viewer, peer) = connect(&source, &target, "delayed-ack", RemotePermission::View).await;
+    h.local.lock().unwrap().session = Some(peer.clone());
+    let run = tokio::spawn({
+        let h = h.clone();
+        async move { h.run(peer).await }
+    });
+    let layout = h.local.lock().unwrap().layout;
+    assert!(h.publish(image(&h), 16, 16, layout));
+    let first = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let frame = viewer.receive().await.unwrap();
+            if let Ok(image) = JpegFrame::from_wire(&frame.bytes) {
+                break image;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    tokio::time::sleep(Duration::from_secs(6)).await;
+    assert!(
+        viewer.is_open_now(),
+        "a brief multi-view network stall must not end sharing"
+    );
+    let mut ack = b"FSA1".to_vec();
+    ack.extend(first.meta.sequence.to_be_bytes());
+    viewer
+        .send(Frame {
+            channel: Channel::Media,
+            bytes: ack,
+        })
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if h.call("diagnostics", json!({})).await.unwrap()["acknowledged"]
+                == first.meta.sequence
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(h.publish(image(&h), 16, 16, layout));
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let next = viewer.receive().await.unwrap();
+            if JpegFrame::from_wire(&next.bytes)
+                .is_ok_and(|image| image.meta.sequence > first.meta.sequence)
+            {
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(18), viewer.wait_closed())
+        .await
+        .unwrap();
+    assert_eq!(
+        viewer.end_reason(),
+        "media_timeout",
+        "lost ACKs must still end a stalled session within a hard bound"
+    );
+    h.stop_local();
+    run.abort();
+    server.abort();
+    h.client.stop_transport().await;
+    source.close().await;
+    target.close().await;
+}
 #[tokio::test]
 async fn view_permission_rejects_control_frames_on_real_quic() {
     let source = Transport::bind([31; 32], Config::default()).await.unwrap();

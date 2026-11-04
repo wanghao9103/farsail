@@ -48,6 +48,9 @@ const fs = require("node:fs");
       },
       video: { profile: 1, generation: 0, supported: true, max_profile: 3 },
       heartbeat: true,
+      hideDisplaysUntil: 0,
+      holdSelect: false,
+      releaseSelect: null,
       lastFrame: 0,
       layout: 1,
       deliveredLayout: 0,
@@ -123,7 +126,7 @@ const fs = require("node:fs");
             input: reportedInput,
             mouse: f.mouse,
             rtt_ms: 23,
-            displays: [
+            displays: Date.now() < f.hideDisplaysUntil ? [] : [
               {
                 id: 1,
                 name: "Display",
@@ -171,6 +174,10 @@ const fs = require("node:fs");
           f.mouse = { generation: f.mouse.generation + 1, rejected: false };
           return {};
         }
+        if (cmd === "media_select" && f.holdSelect) {
+          await new Promise((resolve) => { f.releaseSelect = resolve; });
+          return {};
+        }
         if (cmd === "viewer_reconnect") {
           f.recovery = {
             cycle: f.recovery.cycle + 1,
@@ -190,6 +197,7 @@ const fs = require("node:fs");
           if (f.reconnectSuccess) {
             f.closed = false;
             f.retryable = false;
+            if (f.hideDisplaysUntil) f.hideDisplaysUntil = Date.now() + 400;
             f.recovery.phase = "connected";
             return { id: "recovered" };
           }
@@ -1275,6 +1283,30 @@ const fs = require("node:fs");
         c.args.input?.vk === 72,
     ),
   );
+  // One cached frame can arrive before the display list, and before the
+  // media_select IPC reply. Neither ordering may strand a restored phone.
+  for (const holdSelect of [false, true]) {
+    await load();
+    await page.evaluate((hold) => {
+      const f = window.fixture;
+      f.heartbeat = false;
+      f.hideDisplaysUntil = Date.now() + 400;
+      f.holdSelect = hold;
+      f.reconnectSuccess = true;
+      f.retryable = true;
+      f.closed = true;
+    }, holdSelect);
+    await page.waitForFunction(() => window.fixture.calls.some(c => c.cmd === "viewer_reconnect"));
+    await page.waitForFunction(() => window.fixture.calls.some(c => c.cmd === "media_select" && c.args.id === "recovered"));
+    if (holdSelect) await page.waitForFunction(() => !!window.fixture.releaseSelect);
+    await page.getByAltText("远端桌面").waitFor({ timeout: 4000 });
+    assert.equal(await page.getByRole("alertdialog").count(), 0);
+    if (holdSelect) {
+      await page.evaluate(() => { window.fixture.holdSelect = false; window.fixture.releaseSelect(); });
+      await page.waitForTimeout(200);
+      assert.equal(await page.getByAltText("远端桌面").count(), 1);
+    }
+  }
   await load();
   await page.evaluate(() => {
     window.fixture.retryable = true;

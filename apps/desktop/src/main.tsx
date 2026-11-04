@@ -3522,8 +3522,9 @@ function Viewer({
         if (status?.permission === "control")
           await invoke("remote_input", { id, input: null });
         if (!gate.current(ticket)) return;
-        await invoke("media_select", { id, display: ticket.display });
+        const selected = invoke("media_select", { id, display: ticket.display });
         if (gate.requested(ticket)) setDisplaySnapshot(gate.snapshot());
+        await selected;
       } catch (e) {
         if (gate.fail(ticket, "request")) {
           setDisplaySnapshot(gate.snapshot());
@@ -3669,10 +3670,15 @@ function Viewer({
             continue;
           const sequence = Number(view.getBigUint64(17));
           if (sequence <= last.current) continue;
-          last.current = sequence;
           const display = view.getUint32(5);
           const pending = !gate.canControl();
-          if (!gate.acceptFrame(display)) continue;
+          if (!gate.acceptFrame(display)) {
+            // Keep the native latest-frame cursor until the screen list and
+            // selection are ready. A static phone may send this frame only once.
+            await new Promise((resolve) => window.setTimeout(resolve, 50));
+            continue;
+          }
+          last.current = sequence;
           receivedDisplay.current = display;
           if (gate.observeInitial(display, currentDisplays.current)) {
             const intent = gate.intent();
