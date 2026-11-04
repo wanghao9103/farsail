@@ -238,6 +238,7 @@ fn cascade_viewers(app: &tauri::AppHandle) -> Result<(), String> {
 pub async fn viewer_window_action(
     window: tauri::WebviewWindow,
     action: String,
+    landscape: Option<bool>,
 ) -> Result<Value, String> {
     if action == "cascade" && (window.label() == "main" || window.label().starts_with("viewer-")) {
         cascade_viewers(window.app_handle())?;
@@ -248,16 +249,21 @@ pub async fn viewer_window_action(
     }
     let result = match action.as_str() {
         "phone_layout" => {
+            let preferred = if landscape.unwrap_or(false) {
+                (960.0_f64, 600.0_f64)
+            } else {
+                (440.0_f64, 900.0_f64)
+            };
             let monitor = window.current_monitor().map_err(|e| e.to_string())?;
             let (width, height) = monitor
                 .map(|m| {
                     let size = m.work_area().size.to_logical::<f64>(m.scale_factor());
                     (
-                        640.0_f64.min(size.width * 0.9),
-                        900.0_f64.min(size.height * 0.9),
+                        preferred.0.min(size.width * 0.9),
+                        preferred.1.min(size.height * 0.9),
                     )
                 })
-                .unwrap_or((640.0, 800.0));
+                .unwrap_or(preferred);
             window.unmaximize().map_err(|e| e.to_string())?;
             window
                 .set_min_size(Some(tauri::LogicalSize::new(360.0, 420.0)))
@@ -618,6 +624,10 @@ pub fn smoke_probe(webview: &tauri::Webview) {
         await new Promise(r=>setTimeout(r,300));
         const phone=await invoke('ipc_viewer_state');
         if(phone.maximized || phone.width>641 || phone.height>901 || phone.height<=phone.width) throw Error('phone window sizing failed');
+        await invoke('viewer_window_action',{action:'phone_layout',landscape:true});
+        await new Promise(r=>setTimeout(r,300));
+        const game=await invoke('ipc_viewer_state');
+        if(game.maximized || game.width<=game.height) throw Error('landscape game window sizing failed');
         await invoke('viewer_window_action',{action:'cascade'});
         await new Promise(r=>setTimeout(r,300));
         const cascade=await invoke('ipc_viewer_state');
@@ -627,7 +637,7 @@ pub fn smoke_probe(webview: &tauri::Webview) {
         await new Promise(r=>setTimeout(r,300));
         const minimized=await invoke('ipc_viewer_state');
         if(!minimized.minimized || !minimized.mainExists) throw Error('minimize/main isolation failed');
-        await invoke('ipc_smoke_report',{result:JSON.stringify({ok:true,denied,initial,restored,maximized,fullscreen,phone,cascade,minimized})});
+        await invoke('ipc_smoke_report',{result:JSON.stringify({ok:true,denied,initial,restored,maximized,fullscreen,phone,game,cascade,minimized})});
         await invoke('viewer_window_action',{action:'close'});
       } catch(e) { await invoke('ipc_smoke_report',{result:JSON.stringify({ok:false,error:String(e),denied})}); }
     },800)"#);

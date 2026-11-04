@@ -3135,9 +3135,9 @@ function Viewer({
       /* This session remains usable without storage. */
     }
   };
-  const phoneWindowConfigured = useRef(false);
-  const windowAction = (action: string) =>
-    void invoke<{ fullscreen?: boolean }>("viewer_window_action", { action })
+  const phoneWindowConfigured = useRef<boolean | null>(null);
+  const windowAction = (action: string, options: { landscape?: boolean } = {}) =>
+    void invoke<{ fullscreen?: boolean }>("viewer_window_action", { action, ...options })
       .then((s) => {
         if (typeof s.fullscreen === "boolean") setFullscreen(s.fullscreen);
       })
@@ -3422,10 +3422,12 @@ function Viewer({
     releaseInputs();
   }, [fitMode]);
   useEffect(() => {
-    if (status?.platform !== "android" || phoneWindowConfigured.current) return;
-    phoneWindowConfigured.current = true;
-    windowAction("phone_layout");
-  }, [status?.platform]);
+    if (status?.platform !== "android" || !picture) return;
+    const landscape = phoneTurns % 2 ? picture.height > picture.width : picture.width > picture.height;
+    if (phoneWindowConfigured.current === landscape) return;
+    phoneWindowConfigured.current = landscape;
+    windowAction("phone_layout", { landscape });
+  }, [status?.platform, picture?.width, picture?.height, phoneTurns]);
   const recoverMouse = () => {
     generation.current++;
     clearPointer();
