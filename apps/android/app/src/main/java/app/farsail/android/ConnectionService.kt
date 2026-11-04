@@ -61,6 +61,8 @@ class ConnectionService : Service() {
     private var startedAt = 0L
     private lateinit var cpu: PowerManager.WakeLock
     private var lastNotification = ""
+    @Volatile private var operation = "idle"
+    private var lastTick = 0L
 
     override fun onCreate() {
         super.onCreate()
@@ -100,6 +102,7 @@ class ConnectionService : Service() {
     private val tick = object : Runnable {
         override fun run() {
             if (stopped) return
+            lastTick = SystemClock.elapsedRealtime()
             if (!enabled(this@ConnectionService)) { stopSelf(); return }
             if (!app.ready && SystemClock.elapsedRealtime() - startedAt > 45000) { stopSelf(); return }
             // Bounded leases are renewed only while this visible connection task lives.
@@ -107,13 +110,15 @@ class ConnectionService : Service() {
             cpu.acquire(PERIOD * 6)
             if (!inflight && app.ready) {
                 inflight = true
+                operation = "queued"
                 val epoch = generation; val expected = identity
                 app.io.execute {
                     var current = true
                     var success = false
                     try {
+                        operation = "identity"
                         current = !stopped && generation == epoch && enabled(this@ConnectionService) && scope(app.invoke("state") as JSONObject) == expected
-                        if (current) { app.invoke("presence"); success = true; app.refresh() }
+                        if (current) { operation = "presence"; app.invoke("presence"); success = true; operation = "refresh"; app.refresh() }
                     } catch (e: Exception) {
                         val code = Regex("HTTP ([0-9]{3})").find(e.message.orEmpty())?.groupValues?.get(1) ?: e.javaClass.simpleName
                         android.util.Log.w("FarSailConnection", "Presence failed: $code")
@@ -122,6 +127,7 @@ class ConnectionService : Service() {
                     handler.post {
                         if (stopped || generation != epoch) return@post
                         inflight = false
+                        operation = "idle"
                         if (!current) { stopSelf(); return@post }
                         if (success) {
                             lastHeartbeat = SystemClock.elapsedRealtime()
@@ -139,6 +145,12 @@ class ConnectionService : Service() {
             }
             handler.postDelayed(this, PERIOD)
         }
+    }
+    override fun dump(fd: java.io.FileDescriptor, writer: java.io.PrintWriter, args: Array<out String>) {
+        val now = SystemClock.elapsedRealtime()
+        writer.println("running=$running ready=${app.ready} inflight=$inflight operation=$operation")
+        writer.println("heartbeatAgeMs=${if (lastHeartbeat == 0L) -1 else now - lastHeartbeat} tickAgeMs=${if (lastTick == 0L) -1 else now - lastTick}")
+        writer.println("batteryExempt=${BackgroundSetup.exempt(this)} cpuLeaseHeld=${::cpu.isInitialized && cpu.isHeld}")
     }
     override fun onDestroy() {
         stopped = true; generation++; running = false; activeScope = null

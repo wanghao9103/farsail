@@ -81,6 +81,8 @@ After signing in and adding this device, Settings → Keep this device online de
 
 Disable the setting or use the notification's Stop background presence action to stop standby. Active sharing still maintains its required connection through the capture service. Sign-out, server changes or a different bound device stop the old identity's task. Only the non-secret server/device scope is saved; service recreation rechecks native login and device credentials without saving or reusing recording authorization. The presence service holds only a bounded, renewed CPU wake lock, never wakes the display or unlocks the phone, and may increase battery use. Force stop, vendor background policies or network loss can still affect presence; use Background activity to review system settings.
 
+The home screen’s one-time lock-screen presence setup and Settings → Background presence setup open system battery-optimization consent for the user to decide. On return, the app reads the actual exemption status, without automatic approval or repeated prompts. Vendor policies may impose additional restrictions; once exempted, the same entry opens application details to review background activity and auto-start.
+
 ## Automatic screen timeout and manual locking
 
 During an explicitly started share, “Prevent automatic screen timeout while sharing” defaults to on. A screen-dim wake lock is scoped to the projection foreground service so it also applies while another app is visible. It can be turned off immediately; stopping or failing capture releases it. It does not wake or unlock the phone. Screen and CPU wake locks have an eight-hour upper bound. Keeping the display on increases battery use.

@@ -39,6 +39,8 @@ class MainActivity : Activity() {
     private var controlDetail: TextView? = null
     private var forgetControl: Button? = null
     private var connectionDetail: TextView? = null
+    private var backgroundDetail: TextView? = null
+    private var backgroundSetup: Button? = null
     private var pendingControlEnable = false
     private var guideConnected = false
     private var share: Button? = null
@@ -151,6 +153,8 @@ class MainActivity : Activity() {
         if (page == Page.UPDATES) updateUpdates()
         if (app.ready && !app.busy) ConnectionService.synchronize(this, app.state, foreground)
         connectionDetail?.text = if (ConnectionService.enabled(this)) ConnectionService.detail else "仅共享或连接期间保持在线。"
+        backgroundDetail?.text = BackgroundSetup.detail(this)
+        backgroundSetup?.visibility = if (ConnectionService.enabled(this) && !BackgroundSetup.exempt(this)) View.VISIBLE else View.GONE
         maybeRestoreSharing()
     }
     private fun maybeRestoreSharing() {
@@ -256,6 +260,8 @@ class MainActivity : Activity() {
         }
         connectionDetail = ui.text(body, "", 13f, secondary = true)
         ui.text(body, "锁屏或停止共享后仍保持设备连接，可能增加耗电；查看屏幕仍需系统录屏授权。", 13f, secondary = true)
+        backgroundDetail = ui.text(body, "", 13f, secondary = true)
+        ui.button(body, "后台在线设置") { BackgroundSetup.open(this) }
         ui.gap(body, 12)
         ui.row(body, "后台运行", "管理手机的后台与电池设置") {
             startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, android.net.Uri.parse("package:$packageName")))
@@ -285,6 +291,7 @@ class MainActivity : Activity() {
         boundWhenBuilt = bound(); lastRequests = ""
         ui.text(body, "我的设备", 28f, bold = true); ui.gap(body, 16)
         incoming = ui.link(body, "") { go(Page.SHARING) }.apply { visibility = View.GONE }
+        if (bound()) backgroundSetup = ui.link(body, "允许锁屏后保持在线 · 一次性设置") { BackgroundSetup.open(this) }
         if (!bound()) bindPhone(ui.card(body))
         else devices = DeviceListContent(this, ui, body).also { if (foreground) it.resume() }
     }

@@ -1887,7 +1887,9 @@ function Devices({
       : !device?.online
         ? "设备离线，请在对方设备上打开 FarSail 并登录。"
         : !device?.can_host
-          ? "对方尚未允许屏幕连接，请检查对方的远程连接设置。"
+          ? device.platform === "android"
+            ? "手机在线，但屏幕尚未共享或共享已中断。请在手机上解锁并恢复屏幕共享，确认系统授权后再连接。"
+            : "对方尚未允许屏幕连接，请检查对方的远程连接设置。"
           : "";
   return (
     <section
