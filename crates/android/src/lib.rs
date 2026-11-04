@@ -113,11 +113,35 @@ impl Host {
         if !l.capture || l.layout != layout || l.width != width || l.height != height {
             return false;
         }
+        self.publish_locked(&mut l, jpeg, width, height)
+    }
+    /// Screenshot callbacks may outlive stop, account changes or a new capture.
+    /// Validate their epoch and update geometry atomically before publishing.
+    pub fn publish_accessibility(
+        &self,
+        jpeg: Vec<u8>,
+        width: u32,
+        height: u32,
+        epoch: u64,
+    ) -> bool {
+        let mut l = self.local.lock().unwrap();
+        if !l.capture || l.epoch != epoch {
+            return false;
+        }
+        if l.width != width || l.height != height {
+            l.width = width;
+            l.height = height;
+            l.layout += 1;
+            l.inputs.clear();
+        }
+        self.publish_locked(&mut l, jpeg, width, height)
+    }
+    fn publish_locked(&self, l: &mut Local, jpeg: Vec<u8>, width: u32, height: u32) -> bool {
         l.sequence += 1;
         let image = JpegFrame {
             meta: FrameMeta {
                 monitor: 1,
-                layout,
+                layout: l.layout,
                 sequence: l.sequence,
                 captured_ms: SystemTime::now()
                     .duration_since(UNIX_EPOCH)

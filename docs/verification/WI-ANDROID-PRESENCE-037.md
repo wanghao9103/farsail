@@ -33,3 +33,8 @@ The second candidate `0.1.9-online-fix2` adds standard battery-optimization exem
 The second physical observation samples first, then stops app Binder sampling for at least 130 seconds before rechecking, to avoid diagnostic calls disturbing sleep. Final results are in `.local/android-idle-offline-20261104/verification.json`. The user requires ordinary installation and declined ADB activation; confirmation-free remote control after secure locking remains unimplemented, and this work is not evidence of that goal being complete. Desktop source now gives Android-specific sharing/interruption guidance; no desktop installer was published.
 
 The quiet-window recheck failed: after about 147 seconds without app Binder sampling, the physical phone remained Dozing with keyguard showing=true, running=true and batteryExempt=true, but heartbeatAgeMs=95984 and no connection lock in the effective wake-lock set. Java cpuLeaseHeld=true does not prove the system still honors the lock; system exemption is not an OPlus background-compatibility pass. Sustained physical-device presence remains unresolved; vendor background activity / auto-start restrictions and an unplugged overnight run remain uncovered.
+
+
+## Later capture-backend follow-up
+
+The limitation above describes the projection backend and the evidence available at that point. A later optional Android 11+ accessibility screenshot backend supports ordinary installation; see [accessibility screenshot sharing](WI-ANDROID-A11Y-038.md). Its emulator results do not replace the failed physical presence observations above. OEM full background allowance has since been selected through normal settings, with sustained physical idle/lock recovery still pending.

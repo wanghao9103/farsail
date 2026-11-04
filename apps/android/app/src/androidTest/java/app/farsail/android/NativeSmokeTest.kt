@@ -181,6 +181,12 @@ class NativeSmokeTest {
         assertNull(store.read("smoke-secret"))
         val readyFile = java.io.File(context.filesDir, "p2p-ready.json").apply { delete() }
         val realPeer = InstrumentationRegistry.getArguments().getString("realPeer") == "true"
+        val screenshot = InstrumentationRegistry.getArguments().getString("captureBackend") == "accessibility"
+        val wakePeer = InstrumentationRegistry.getArguments().getString("wakePeer") == "true"
+        val keyguard = context.getSystemService(android.app.KeyguardManager::class.java)
+        if (wakePeer) { check(screenshot); org.junit.Assume.assumeFalse("Never replace an existing credential", keyguard.isDeviceSecure) }
+        var peerCredential = false
+        val oldPeerLockDelay = shell("settings get secure lock_screen_lock_after_timeout")
         val coordinator = FakeCoordinator()
         try {
             app.invoke("server", JSONObject().put("url", "http://127.0.0.1:${coordinator.port}"))
@@ -188,6 +194,14 @@ class NativeSmokeTest {
             app.invoke("bind", JSONObject().put("name", "Android emulator smoke"))
             assertTrue(coordinator.androidBound.get())
             app.refresh()
+            if (screenshot) {
+                shell("settings put secure enabled_accessibility_services ''"); shell("settings put secure accessibility_enabled 0")
+                await { ControlService.instance == null }
+                shell("settings put secure enabled_accessibility_services app.farsail.android/app.farsail.android.ControlService")
+                shell("settings put secure accessibility_enabled 1")
+                await { AccessibilityFrames.available(context) }
+                RemotePreferences.accessibilityCapture(context, app.invoke("state") as JSONObject, true)
+            }
             context.startActivity(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             val device = UiDevice.getInstance(inst)
             openSharingSettings(device)
@@ -195,9 +209,11 @@ class NativeSmokeTest {
             assertTrue(device.wait(Until.hasObject(By.text("○ 屏幕共享未开启")), 5000))
             device.findObject(By.text("开启屏幕共享")).click()
             // The system dialog is interacted with visibly; no projection token is fabricated.
-            val allow = device.wait(Until.findObject(By.res("android", "button1")), 10000)
-            assertNotNull("system projection consent", allow)
-            allow.click()
+            if (!screenshot) {
+                val allow = device.wait(Until.findObject(By.res("android", "button1")), 10000)
+                assertNotNull("system projection consent", allow)
+                allow.click()
+            }
             await { CaptureService.running && (app.invoke("state") as JSONObject).optBoolean("sharing") }
             assertTrue(coordinator.hosting.get())
             await { CaptureService.phase == "sharing" }
@@ -246,7 +262,33 @@ class NativeSmokeTest {
                 val endpoint = JSONObject(coordinator.endpoint.get().toString())
                     .put("tapX", target.centerX().toDouble() / CaptureService.screenWidth)
                     .put("tapY", target.centerY().toDouble() / CaptureService.screenHeight)
+                    .put("inputReadyPort", coordinator.port)
+                if (wakePeer) {
+                    check(shell("locksettings set-pin 1234").contains("set", true)); peerCredential = true
+                    shell("settings put secure lock_screen_lock_after_timeout 0")
+                    device.sleep()
+                    await { keyguard.isKeyguardLocked && !context.getSystemService(android.os.PowerManager::class.java).isInteractive }
+                }
                 readyFile.writeText(endpoint.toString())
+                if (wakePeer) {
+                    await { context.getSystemService(android.os.PowerManager::class.java).isInteractive }
+                    assertTrue("Approved remote input may wake but must not unlock", keyguard.isKeyguardLocked)
+                    java.io.File(context.filesDir, "p2p-wake.json").writeText(JSONObject().put("approvedInputWokeScreen", true).put("secureStillLocked", true).toString())
+                    // Let the transient wake window finish before dismissing the
+                    // fixture keyguard; otherwise the shell request targets it.
+                    Thread.sleep(1000)
+                    device.swipe(device.displayWidth / 2, device.displayHeight * 4 / 5, device.displayWidth / 2, device.displayHeight / 5, 20)
+                    assertTrue("Fixture PIN keypad must be visible", device.wait(Until.hasObject(By.res("com.android.systemui", "key1")), 5000))
+                    for (digit in "1234") device.findObject(By.res("com.android.systemui", "key$digit")).click()
+                    val enter = device.findObject(By.res("com.android.systemui", "key_enter"))
+                    if (enter != null) enter.click() else device.pressEnter()
+                    await { !keyguard.isKeyguardLocked }
+                    check(shell("locksettings clear --old 1234").contains("cleared", true)); peerCredential = false
+                    context.startActivity(Intent(inst.context, InputFixtureActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                    assertTrue(device.wait(Until.hasObject(By.desc("remote-input-fixture")), 10000))
+                    device.findObject(By.desc("remote-input-fixture")).click()
+                    coordinator.inputReady.set(true)
+                }
                 assertTrue("real QUIC desktop text must reach owned Android input", device.wait(Until.hasObject(By.text("desktop-android-smoke")), 45000))
                 assertTrue("real mouse click must reach owned Android button", device.wait(Until.hasObject(By.text("远程点击成功")), 15000))
                 Thread.sleep(4500)
@@ -268,6 +310,12 @@ class NativeSmokeTest {
             val nm = context.getSystemService(android.app.NotificationManager::class.java)
             await { nm.activeNotifications.none { it.id == 41 } }
         } finally {
+            if (peerCredential) {
+                shell("locksettings clear --old 1234")
+                val cleanup = UiDevice.getInstance(inst)
+                cleanup.pressBack(); cleanup.sleep(); cleanup.wakeUp(); shell("wm dismiss-keyguard")
+            }
+            if (wakePeer) shell(if (oldPeerLockDelay == "null") "settings delete secure lock_screen_lock_after_timeout" else "settings put secure lock_screen_lock_after_timeout $oldPeerLockDelay")
             NativeBridge.stopLocal(); CaptureService.stop(context)
             try { app.invoke("logout") } catch (_: Exception) { }
             coordinator.close()
@@ -284,6 +332,7 @@ internal class FakeCoordinator(private val rejectSharing: Boolean = false) : jav
     val heartbeats = java.util.concurrent.atomic.AtomicInteger(0)
     val rejectHeartbeats = AtomicBoolean(false)
     val requestReady = AtomicBoolean(false)
+    val inputReady = AtomicBoolean(false)
     val approved = AtomicBoolean(false)
     val foreignApproved = AtomicBoolean(false)
     val endpoint = java.util.concurrent.atomic.AtomicReference<JSONObject?>()
@@ -306,6 +355,7 @@ internal class FakeCoordinator(private val rejectSharing: Boolean = false) : jav
                     val path = request.split(' ').getOrElse(1) { "/" }
                     var status = 200
                     val response = when (path.substringBefore('?')) {
+                        "/probe/input-ready" -> JSONObject().put("ready", inputReady.get()).toString()
                         "/v1/auth/login", "/v1/auth/refresh" -> """{"access_token":"synthetic-access","refresh_token":"synthetic-refresh","session_id":"10000000-0000-4000-8000-000000000001","access_expires_in":900}"""
                         "/v1/me" -> """{"id":"20000000-0000-4000-8000-000000000001","email":"android-smoke@example.invalid","email_verified":true,"role":"user"}"""
                         "/v1/devices/challenge" -> """{"challenge_id":"30000000-0000-4000-8000-000000000001","message":"synthetic-binding-challenge"}"""

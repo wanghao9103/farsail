@@ -270,6 +270,33 @@ pub extern "system" fn Java_app_farsail_android_NativeBridge_publishRgba(
     if accepted { JNI_TRUE } else { JNI_FALSE }
 }
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_app_farsail_android_NativeBridge_publishAccessibilityRgba(
+    env: JNIEnv,
+    _: JObject,
+    buffer: JByteBuffer,
+    w: jint,
+    h: jint,
+    row_stride: jint,
+    epoch: jlong,
+) -> jboolean {
+    let accepted = (|| {
+        let hst = host().ok()?;
+        let (width, height) = (u32::try_from(w).ok()?, u32::try_from(h).ok()?);
+        let stride = usize::try_from(row_stride).ok()?;
+        let span = crate::capture::rgba_span(width, height, stride, 4)?;
+        if epoch < 0 || span > env.get_direct_buffer_capacity(&buffer).ok()? {
+            return None;
+        }
+        let pointer = env.get_direct_buffer_address(&buffer).ok()?;
+        // Kotlin owns this direct buffer for the duration of the synchronous call.
+        let bytes = unsafe { std::slice::from_raw_parts(pointer, span) };
+        let image = crate::capture::encode_rgba(bytes, width, height, stride, 0)?;
+        Some(hst.publish_accessibility(image.jpeg, width, height, epoch as u64))
+    })()
+    .unwrap_or(false);
+    if accepted { JNI_TRUE } else { JNI_FALSE }
+}
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_app_farsail_android_NativeBridge_drain(
     mut env: JNIEnv,
     _: JObject,

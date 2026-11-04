@@ -16,7 +16,7 @@ object RemotePreferences {
         val p = prefs(context); val key = scope(state)
         val editor = p.edit()
         if (enabled && key != null && p.getString("scope", null) != key) {
-            editor.putString("scope", key).putBoolean("control", false).putBoolean("sharing", false)
+            editor.putString("scope", key).putBoolean("control", false).putBoolean("sharing", false).putBoolean("accessibilityCapture", false)
         }
         editor.putBoolean(name, enabled && key != null).commit()
     }
@@ -27,6 +27,10 @@ object RemotePreferences {
     @Synchronized fun ticket() = revision
     @Synchronized fun wantsControl(context: Context, state: JSONObject) = wanted(context, state, "control")
     @Synchronized fun wantsSharing(context: Context, state: JSONObject) = wanted(context, state, "sharing")
+    @Synchronized fun accessibilityCapture(context: Context, state: JSONObject) = wanted(context, state, "accessibilityCapture")
+    @Synchronized fun accessibilityCapture(context: Context, state: JSONObject, enabled: Boolean) {
+        remember(context, state, "accessibilityCapture", enabled)
+    }
     @Synchronized fun control(context: Context, state: JSONObject, enabled: Boolean) {
         revision++
         remember(context, state, "control", enabled)
@@ -49,7 +53,7 @@ object RemotePreferences {
     @Synchronized fun beginConsent(context: Context, state: JSONObject): Long {
         val key = scope(state) ?: return 0
         val p = prefs(context); val edit = p.edit()
-        if (p.getString("scope", null) != key) edit.putString("scope", key).putBoolean("control", false).putBoolean("sharing", false)
+        if (p.getString("scope", null) != key) edit.putString("scope", key).putBoolean("control", false).putBoolean("sharing", false).putBoolean("accessibilityCapture", false)
         val ticket = nextConsent(context)
         // Save the user's choice before leaving for the system permission UI.
         // This does not authorize capture; a fresh successful result is still required.
@@ -77,7 +81,7 @@ object RemotePreferences {
     fun autoRestore(context: Context, enabled: Boolean) { prefs(context).edit().putBoolean("autoRestore", enabled).apply() }
     @Synchronized fun clear(context: Context) {
         revision++
-        prefs(context).edit().remove("scope").remove("control").remove("sharing").putLong("consent", nextConsent(context)).commit()
+        prefs(context).edit().remove("scope").remove("control").remove("sharing").remove("accessibilityCapture").putLong("consent", nextConsent(context)).commit()
         NativeBridge.setControl(false)
     }
 }

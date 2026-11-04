@@ -12,7 +12,7 @@ import subprocess
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
-OUT = ROOT / ".local/android-verification"
+OUT = Path(os.environ.get("ANDROID_VERIFICATION_OUT", str(ROOT / ".local/android-verification")))
 OUT.mkdir(parents=True, exist_ok=True)
 
 
@@ -37,8 +37,17 @@ adb("install", "-r", str(ROOT / "apps/android/app/build/outputs/apk/androidTest/
 # The dedicated emulator package contains synthetic state from this test only.
 adb("shell", "pm", "clear", "app.farsail.android")
 redir = None
+ready_forward = None
+backend = os.environ.get("ANDROID_CAPTURE_BACKEND", "projection")
+assert backend in ("projection", "accessibility")
+guest = os.environ.get("ANDROID_PROBE_IN_GUEST") == "1"
+if guest:
+    guest_probe = ROOT / os.environ.get("CARGO_TARGET_DIR", "target") / "x86_64-linux-android/release/examples/device_probe"
+    assert guest_probe.is_file(), "Build the Android x86_64 device_probe example first"
+    adb("push", str(guest_probe), "/data/local/tmp/farsail-device-probe")
+    adb("shell", "chmod", "700", "/data/local/tmp/farsail-device-probe")
 with (OUT / "instrumentation.log").open("wb") as log:
-    test = subprocess.Popen([*ADB, "shell", "am", "instrument", "-w", "-e", "class", "app.farsail.android.NativeSmokeTest#keystoreJniProjectionBackgroundAndStop", "-e", "realPeer", "true", "-e", "sourceKey", key,
+    test = subprocess.Popen([*ADB, "shell", "am", "instrument", "-w", "-e", "class", "app.farsail.android.NativeSmokeTest#keystoreJniProjectionBackgroundAndStop", "-e", "realPeer", "true", "-e", "sourceKey", key, "-e", "captureBackend", backend, "-e", "wakePeer", str(backend == "accessibility").lower(),
                              "app.farsail.android.test/androidx.test.runner.AndroidJUnitRunner"], stdout=log, stderr=subprocess.STDOUT)
     try:
         end = time.monotonic() + 90
@@ -55,14 +64,25 @@ with (OUT / "instrumentation.log").open("wb") as log:
         ip_addresses = [a.get("Ip", a.get("ip", "")) for a in addresses if isinstance(a, dict)]
         ipv4 = next(a for a in ip_addresses if a and ":" in a and not a.startswith("["))
         guest_port = int(ipv4.rsplit(":", 1)[1])
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as available:
-            available.bind(("127.0.0.1", 0))
-            host_port = available.getsockname()[1]
-        result = adb("emu", "redir", "add", f"udp:{host_port}:{guest_port}")
-        assert b"OK" in result.stdout, result.stdout
-        redir = host_port
+        if guest:
+            command = [*ADB, "shell", "/data/local/tmp/farsail-device-probe", endpoint["id"], str(guest_port), str(endpoint["tapX"]), str(endpoint["tapY"])]
+        else:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as available:
+                available.bind(("127.0.0.1", 0))
+                host_port = available.getsockname()[1]
+            result = adb("emu", "redir", "add", f"udp:{host_port}:{guest_port}")
+            assert b"OK" in result.stdout, result.stdout
+            redir = host_port
+            command = [str(probe), endpoint["id"], str(host_port), str(endpoint["tapX"]), str(endpoint["tapY"])]
+        if backend == "accessibility":
+            command.append("--wake-first")
+            ready_port = endpoint["inputReadyPort"]
+            if not guest:
+                ready_forward = int(adb("forward", "tcp:0", f"tcp:{ready_port}").stdout)
+                ready_port = ready_forward
+            command.append(str(ready_port))
         with (OUT / "device-probe.jsonl").open("wb") as report:
-            remote = subprocess.Popen([str(probe), endpoint["id"], str(host_port), str(endpoint["tapX"]), str(endpoint["tapY"])], stdout=report, stderr=subprocess.STDOUT)
+            remote = subprocess.Popen(command, stdout=report, stderr=subprocess.STDOUT)
             time.sleep(3)
             (OUT / "remote-input.png").write_bytes(adb("exec-out", "screencap", "-p").stdout)
             assert remote.wait(timeout=25) == 0, "Desktop probe failed; inspect device-probe.jsonl"
@@ -72,8 +92,14 @@ with (OUT / "instrumentation.log").open("wb") as log:
         frames = [json.loads(line) for line in (OUT / "device-probe.jsonl").read_text().splitlines() if line.startswith("{")]
         assert any(f.get("first_frame") for f in frames)
         assert any(f.get("input_sent") and f.get("still_open") for f in frames)
-        print("PASS: Android Keystore/JNI, real projection, background/task removal, authenticated QUIC frames and owned text input, local stop and notification cleanup")
+        if backend == "accessibility":
+            wake = json.loads(adb("exec-out", "run-as", "app.farsail.android", "cat", "files/p2p-wake.json").stdout)
+            assert wake.get("approvedInputWokeScreen") and wake.get("secureStillLocked"), wake
+            (OUT / "wake.json").write_text(json.dumps(wake, indent=2))
+        print(f"PASS: Android Keystore/JNI, {backend}, background/task removal, authenticated QUIC frames and owned text/click input, local stop and notification cleanup")
     finally:
+        if ready_forward:
+            adb("forward", "--remove", f"tcp:{ready_forward}", check=False)
         if redir:
             adb("emu", "redir", "del", f"udp:{redir}", check=False)
         if test.poll() is None:

@@ -14,5 +14,5 @@
         <item name="android:windowBackground">#182327</item>
     </style>
     <style name="ViewerTheme" parent="ViewerBaseTheme" />
-    <string name="control_description">仅在你开启共享并批准设备连接后，FarSail 才允许对方点击、滑动及向当前输入框输入文字。你可以随时在 App 中停止共享。开启此服务不等于允许连接。</string>
+    <string name="control_description">选择辅助功能截图共享时，此服务会持续取得屏幕截图并显示共享通知，无需反复确认录屏。仅在你开启共享并批准设备连接后，FarSail 才向对方提供画面，并按控制设置允许点击、滑动及输入文字。受保护页面可能无法显示；你可以随时停止共享。仅开启此服务不会开始共享或允许连接。</string>
 </resources>

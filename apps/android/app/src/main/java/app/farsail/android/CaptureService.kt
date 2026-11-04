@@ -19,7 +19,10 @@ class CaptureService : Service() {
     companion object {
         const val POWER = "app.farsail.android.POWER"
         const val STOP = "app.farsail.android.STOP"
+        const val ACCESSIBILITY = "app.farsail.android.ACCESSIBILITY_CAPTURE"
         @Volatile var running = false
+        @Volatile var accessibilityMode = false
+        @Volatile var screenshotFrames = 0L
         @Volatile var phase = "off"
         @Volatile var detail = "电脑暂时无法查看这台手机。"
         fun status(context: Context, next: String, text: String) {
@@ -31,6 +34,12 @@ class CaptureService : Service() {
         @Volatile var screenWidth = 0
         @Volatile var screenHeight = 0
         fun stop(context: Context) { RemotePreferences.stopSharing(context); status(context, "off", "共享已停止，电脑无法继续查看。"); context.stopService(Intent(context, CaptureService::class.java)) }
+        fun accessibilityRevoked(context: Context) {
+            if (!accessibilityMode) return
+            NativeBridge.stopLocal()
+            status(context, "interrupted", "辅助功能服务已断开，截图共享已停止。恢复系统授权后返回 App 即可重试。")
+            context.stopService(Intent(context, CaptureService::class.java))
+        }
     }
     private val app get() = application as FarSailApp
     private val handler = Handler(Looper.getMainLooper())
@@ -39,6 +48,8 @@ class CaptureService : Service() {
     private var projection: MediaProjection? = null
     private var display: VirtualDisplay? = null
     private var reader: ImageReader? = null
+    private var accessibilityFrames: AccessibilityFrames? = null
+    private var announced = false
     private lateinit var power: SharingPower
     private var epoch = -1L
     private var lastHeartbeat = 0L
@@ -100,6 +111,7 @@ class CaptureService : Service() {
             return START_NOT_STICKY
         }
         if (running || intent == null) { if (!running) stopSelf(); return START_NOT_STICKY }
+        if (intent.action == ACCESSIBILITY) return startAccessibility()
         val data = if (Build.VERSION.SDK_INT >= 33) intent.getParcelableExtra("data", Intent::class.java) else @Suppress("DEPRECATION") intent.getParcelableExtra("data")
         if (data == null || intent.getIntExtra("result", 0) != Activity.RESULT_OK) { stopSelf(); return START_NOT_STICKY }
         status(this, "starting", "已获得系统授权，正在连接服务器…")
@@ -131,6 +143,40 @@ class CaptureService : Service() {
             }
             handler.post(poll)
         } catch (e: Exception) { fail(e) }
+        return START_NOT_STICKY
+    }
+    private fun startAccessibility(): Int {
+        if (Build.VERSION.SDK_INT < 30 || !app.ready || !RemotePreferences.accessibilityCapture(this, app.state) ||
+            !RemotePreferences.wantsSharing(this, app.state) || !AccessibilityFrames.available(this)) {
+            status(this, "interrupted", "辅助功能截图尚未授权，请在手机上恢复 FarSail 远程控制服务。")
+            stopSelf(); return START_NOT_STICKY
+        }
+        try {
+            startForeground(41, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+            epoch = NativeBridge.begin(); check(epoch >= 0) { "请等待初始化完成" }
+            running = true; accessibilityMode = true; screenshotFrames = 0
+            status(this, "starting", "正在通过辅助功能取得屏幕画面…")
+            power.start()
+            accessibilityFrames = AccessibilityFrames(this, capture, epoch, { width, height ->
+                handler.post {
+                    if (stopped) return@post
+                    screenshotFrames++
+                    lastFrame = SystemClock.elapsedRealtime()
+                    screenWidth = width; screenHeight = height
+                    if (!announced) {
+                        announced = true
+                        app.io.execute {
+                            try {
+                                app.invoke("share", JSONObject().put("epoch", epoch))
+                                handler.post { if (!stopped) status(this, "sharing", "辅助功能截图共享中，无需重复确认录屏。受保护页面可能无法显示。") }
+                                app.refresh()
+                            } catch (e: Exception) { if (!stopped) fail(e, "coordinator") }
+                        }
+                    }
+                }
+            }, { if (!stopped) fail(it, "accessibility") }).also { it.start() }
+            handler.post(poll)
+        } catch (e: Exception) { fail(e, "accessibility") }
         return START_NOT_STICKY
     }
     private fun fail(e: Exception, stage: String = "capture") {
@@ -201,7 +247,9 @@ class CaptureService : Service() {
         }
     }
     override fun onDestroy() {
-        stopped = true; running = false
+        stopped = true; running = false; accessibilityMode = false
+        if (Build.VERSION.SDK_INT >= 30) accessibilityFrames?.close()
+        accessibilityFrames = null
         getSystemService(DisplayManager::class.java).unregisterDisplayListener(displayListener)
         if (phase != "failed" && phase != "interrupted") status(this, "off", "共享已停止，电脑无法继续查看。")
         NativeBridge.stopLocal(); ControlService.cancel()
@@ -217,6 +265,14 @@ class CaptureService : Service() {
         stopForeground(STOP_FOREGROUND_REMOVE)
         app.observer?.invoke()
         super.onDestroy()
+    }
+    override fun dump(fd: java.io.FileDescriptor, writer: java.io.PrintWriter, args: Array<out String>) {
+        writer.println("running=$running phase=$phase accessibilityMode=$accessibilityMode screenshotFrames=$screenshotFrames")
+        writer.println("width=$screenWidth height=$screenHeight frameAgeMs=${if (lastFrame == 0L) -1 else SystemClock.elapsedRealtime() - lastFrame}")
+        writer.println("controlServiceConnected=${ControlSetup.connected(this)} interactive=${getSystemService(PowerManager::class.java).isInteractive}")
+        if (Build.VERSION.SDK_INT >= 30) accessibilityFrames?.let {
+            writer.println("screenshotCaptureMs=${it.captureMs} screenshotEncodeMs=${it.encodeMs} screenshotIntervalMs=${it.intervalMs}")
+        }
     }
     override fun onBind(intent: Intent?) = null
 }

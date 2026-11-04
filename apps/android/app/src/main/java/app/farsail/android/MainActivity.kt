@@ -172,6 +172,7 @@ class MainActivity : Activity() {
         }
     }
     private fun canRestoreSharing() = foreground && restoreSharingPending && !consentOutstanding &&
+        (Build.VERSION.SDK_INT < 30 || !RemotePreferences.accessibilityCapture(this, app.state) || AccessibilityFrames.available(this)) &&
         page in listOf(Page.HOME, Page.SETTINGS, Page.SHARING, Page.UPDATES) && app.ready && !app.busy &&
         signedIn() && bound() && !CaptureService.running && CaptureService.phase in listOf("off", "interrupted", "failed") &&
         RemotePreferences.autoRestore(this) && RemotePreferences.wantsSharing(this, app.state)
@@ -292,6 +293,8 @@ class MainActivity : Activity() {
         ui.text(body, "我的设备", 28f, bold = true); ui.gap(body, 16)
         incoming = ui.link(body, "") { go(Page.SHARING) }.apply { visibility = View.GONE }
         if (bound()) backgroundSetup = ui.link(body, "允许锁屏后保持在线 · 一次性设置") { BackgroundSetup.open(this) }
+        if (bound() && Build.VERSION.SDK_INT >= 30 && !RemotePreferences.accessibilityCapture(this, app.state))
+            ui.link(body, "启用免重复确认共享") { chooseAccessibilityCapture() }
         if (!bound()) bindPhone(ui.card(body))
         else devices = DeviceListContent(this, ui, body).also { if (foreground) it.resume() }
     }
@@ -314,13 +317,19 @@ class MainActivity : Activity() {
         } else {
             status = ui.text(card, "", 16f, bold = true); ui.gap(card, 6); sharingDetail = ui.text(card, "", 13f, secondary = true); ui.gap(card, 16)
             share = ui.button(card, "开启屏幕共享") { if (CaptureService.running) { stop(); draw() } else consent() }
+            if (Build.VERSION.SDK_INT >= 30) ui.link(card, if (RemotePreferences.accessibilityCapture(this, app.state)) "共享方式：辅助功能截图 · 切换为系统录屏" else "切换为免重复确认共享") {
+                if (CaptureService.running) { say("请先停止共享，再切换采集方式。"); draw() }
+                else if (RemotePreferences.accessibilityCapture(this, app.state)) {
+                    RemotePreferences.accessibilityCapture(this, app.state, false); rendered = null; draw()
+                } else chooseAccessibilityCapture()
+            }
             ui.divider(card)
             ui.toggle(card, "共享期间防止自动熄屏", SharingPower.enabled(this)).apply {
                 setOnCheckedChangeListener { _, enabled -> SharingPower.preference(this@MainActivity, enabled) }
             }
-            ui.text(card, "手动锁屏会中断共享，解锁后需重新授权。", 12f, secondary = true)
+            ui.text(card, if (RemotePreferences.accessibilityCapture(this, app.state)) "截图共享不依赖录屏会话；系统保护页面和厂商后台策略仍可能限制共享。" else "手动锁屏会中断共享，解锁后需重新授权。", 12f, secondary = true)
             ui.link(card, "共享与锁屏说明") {
-                AlertDialog.Builder(this).setTitle("共享与锁屏").setMessage("防止自动熄屏开启后，屏幕可变暗但不会自动熄屏，切到其他应用也有效，会增加耗电。\n\n手动锁屏仍会结束系统录屏授权。解锁后，点击恢复屏幕共享并确认系统授权。\n\n控制其他设备无需开启这台手机的共享或辅助功能。")
+                AlertDialog.Builder(this).setTitle("共享与锁屏").setMessage(if (RemotePreferences.accessibilityCapture(this, app.state)) "辅助功能截图不依赖录屏会话，无需重复确认录屏。系统保护页面可能黑屏，锁屏和后台兼容性取决于手机系统；此功能不会绕过密码。\n\n防止自动熄屏会增加耗电，可按需要关闭；手动锁屏不会主动停止截图服务。\n\n控制其他设备无需开启这台手机的共享或辅助功能。" else "防止自动熄屏开启后，屏幕可变暗但不会自动熄屏，切到其他应用也有效，会增加耗电。\n\n手动锁屏仍会结束系统录屏授权。解锁后，点击恢复屏幕共享并确认系统授权。\n\n控制其他设备无需开启这台手机的共享或辅助功能。")
                     .setPositiveButton("知道了", null).show()
             }
             ui.divider(card)
@@ -334,7 +343,7 @@ class MainActivity : Activity() {
         ui.toggle(body, "打开 App 时恢复上次共享", RemotePreferences.autoRestore(this)).apply {
             setOnCheckedChangeListener { _, enabled -> RemotePreferences.autoRestore(this@MainActivity, enabled) }
         }
-        ui.text(body, "开启一次后，打开 App 自动进入系统共享确认，无需再点开启按钮。主动停止或取消授权后保持关闭。", 13f, secondary = true)
+        ui.text(body, if (RemotePreferences.accessibilityCapture(this, app.state)) "已授权的辅助功能截图可在打开 App 时恢复，无需录屏弹窗。主动停止后保持关闭。" else "开启一次后，打开 App 自动进入系统共享确认，无需再点开启按钮。主动停止或取消授权后保持关闭。", 13f, secondary = true)
     }
     private fun updateSharing() {
         val phase = CaptureService.phase
@@ -342,7 +351,7 @@ class MainActivity : Activity() {
         status?.text = when (phase) { "consent" -> "等待系统录屏授权"; "starting" -> "正在开启共享…"; "sharing" -> "● 屏幕共享中"; "failed" -> "开启共享失败"; "interrupted" -> "屏幕共享已中断"; else -> if (remembered) "共享待恢复 · 设置已记住" else "○ 屏幕共享未开启" }
         status?.setTextColor(if (phase == "sharing") ui.green else if (phase == "failed") android.graphics.Color.rgb(164, 43, 43) else ui.ink)
         sharingDetail?.text = when (phase) {
-            "sharing" -> "其他设备可申请连接，切到后台仍可共享。"
+            "sharing" -> if (CaptureService.accessibilityMode) "辅助功能截图共享中，无需重复确认录屏；受保护页面可能无法显示。" else "其他设备可申请连接，切到后台仍可共享。"
             "off" -> if (remembered) "开启选择已记住，重新确认录屏授权即可恢复。" else "开启后，其他设备可查看或控制这台手机。"
             else -> CaptureService.detail
         }
@@ -406,9 +415,31 @@ class MainActivity : Activity() {
         ui.link(body, "暂不开启") { if (pendingControlEnable && signedIn() && bound()) setControl(false); pendingControlEnable = false; if (!back()) go(if (signedIn()) Page.HOME else Page.LOGIN, true) }
     }
     private fun stop() { NativeBridge.stopLocal(); ControlService.cancel(); CaptureService.stop(this) }
+    private fun chooseAccessibilityCapture() {
+        if (CaptureService.running) { say("请先停止共享，再切换采集方式。"); draw(); return }
+        AlertDialog.Builder(this).setTitle("免重复确认共享")
+            .setMessage("使用系统辅助功能截图，需在系统设置中一次性允许 FarSail 远程控制服务。开启共享后会持续取得屏幕画面并显示通知，可随时停止。\n\n此方式约每秒两帧。熄屏时远程首次点击用于唤醒，请再次点击操作，不会自动解锁；受保护页面可能黑屏。锁屏及后台兼容性取决于手机系统，无需 ADB 激活。")
+            .setPositiveButton("启用并共享") { _, _ ->
+                RemotePreferences.accessibilityCapture(this, app.state, true)
+                go(Page.SHARING); rendered = null; restoreSharingPending = false; consent()
+            }.setNegativeButton("取消", null).show()
+    }
     private fun consent(restoring: Boolean = false) {
         consentTicket = RemotePreferences.beginConsent(this, app.state)
         if (consentTicket == 0L) return
+        if (Build.VERSION.SDK_INT >= 30 && RemotePreferences.accessibilityCapture(this, app.state)) {
+            restoreSharingPending = false
+            if (!AccessibilityFrames.available(this)) {
+                CaptureService.status(this, "interrupted", "请在系统设置中允许 FarSail 远程控制服务；返回后可用辅助功能截图共享。")
+                draw(); if (!restoring) ControlSetup.open(this); return
+            }
+            if (RemotePreferences.sharing(this, app.state, consentTicket)) {
+                CaptureService.status(this, "starting", "正在开启辅助功能截图共享…")
+                try { startForegroundService(Intent(this, CaptureService::class.java).setAction(CaptureService.ACCESSIBILITY)) }
+                catch (e: Exception) { CaptureService.status(this, "failed", app.friendly(e.message ?: "系统无法启动截图共享。")) }
+            }
+            draw(); return
+        }
         consentOutstanding = true; returningFromConsent = true; restoreSharingPending = false
         if (restoring && page != Page.SHARING) go(Page.SHARING)
         CaptureService.status(this, "consent", if (restoring) "正在恢复上次共享，请在系统弹窗中确认共享整个屏幕。" else "请在系统弹窗中确认共享整个屏幕。")

@@ -4,6 +4,7 @@
     android:notificationTimeout="100"
     android:canRetrieveWindowContent="true"
     android:canPerformGestures="true"
+    android:canTakeScreenshot="true"
     android:isAccessibilityTool="false"
     android:description="@string/control_description"
     android:settingsActivity="app.farsail.android.MainActivity" />

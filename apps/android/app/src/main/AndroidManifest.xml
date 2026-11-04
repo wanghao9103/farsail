@@ -15,8 +15,9 @@
             <intent-filter><action android:name="android.intent.action.MAIN" /><category android:name="android.intent.category.LAUNCHER" /></intent-filter>
         </activity>
         <activity android:name=".DeviceListActivity" android:exported="false" />
+        <activity android:name=".WakeActivity" android:exported="false" android:excludeFromRecents="true" android:noHistory="true" android:taskAffinity="" android:theme="@android:style/Theme.Translucent.NoTitleBar" />
         <activity android:name=".ViewerActivity" android:exported="false" android:theme="@style/ViewerTheme" android:configChanges="orientation|screenSize|keyboardHidden" android:windowSoftInputMode="adjustResize" />
-        <service android:name=".CaptureService" android:exported="false" android:foregroundServiceType="mediaProjection" android:stopWithTask="false" />
+        <service android:name=".CaptureService" android:exported="false" android:foregroundServiceType="mediaProjection|connectedDevice" android:stopWithTask="false" />
         <service android:name=".ConnectionService" android:exported="false" android:foregroundServiceType="connectedDevice" android:stopWithTask="false" />
         <service android:name=".ControlService" android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE" android:exported="true" android:label="FarSail 远程控制">
             <intent-filter><action android:name="android.accessibilityservice.AccessibilityService" /></intent-filter>

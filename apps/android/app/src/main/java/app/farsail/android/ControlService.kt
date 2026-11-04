@@ -57,6 +57,12 @@ class ControlService : AccessibilityService() {
         (v.getDouble("x") * (CaptureService.screenWidth - 1)).toFloat() to (v.getDouble("y") * (CaptureService.screenHeight - 1)).toFloat()
     private fun apply(c: JSONObject) {
         val v = c.getJSONObject("input")
+        if (CaptureService.accessibilityMode && !getSystemService(PowerManager::class.java).isInteractive) {
+            // The caller has already checked the native session/epoch/layout lease.
+            // Consume the wake action so its coordinates cannot hit a newly visible UI.
+            if (v.getString("kind") !in listOf("move", "release")) WakeActivity.request(this, c)
+            clearGesture(); return
+        }
         when (v.getString("kind")) {
             "release" -> clearGesture()
             "move" -> pointer?.let { if (it.size < 128) it.add(point(v)) }
@@ -156,7 +162,13 @@ class ControlService : AccessibilityService() {
     }
     override fun onAccessibilityEvent(event: AccessibilityEvent?) { }
     override fun onInterrupt() {
-        RemotePreferences.suspendControl(); clearGesture()
+        clearGesture()
+        // This callback interrupts accessibility feedback, not the OS grant.
+        // Revocation is enforced by the settings observer and actual unbinding.
+        if (!ControlSetup.connected(this)) {
+            RemotePreferences.suspendControl()
+            CaptureService.accessibilityRevoked(this)
+        }
         val app = application as FarSailApp
         app.io.execute { runCatching { app.refresh() } }
     }
@@ -167,6 +179,7 @@ class ControlService : AccessibilityService() {
     private fun disconnected() {
         if (instance !== this) return
         instance = null; RemotePreferences.suspendControl(); clearGesture(); handler.removeCallbacks(poll)
+        CaptureService.accessibilityRevoked(this)
         (application as FarSailApp).restoreControl()
     }
     override fun onDestroy() {

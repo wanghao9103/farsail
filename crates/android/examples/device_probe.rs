@@ -7,6 +7,25 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+async fn wait_for_owned_input_fixture(port: u16) {
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            if let Ok(mut socket) = tokio::net::TcpStream::connect(std::net::SocketAddr::from(([127, 0, 0, 1], port))).await {
+                let request = b"GET /probe/input-ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+                if socket.write_all(request).await.is_ok() {
+                    let mut response = Vec::new();
+                    if socket.take(4096).read_to_end(&mut response).await.is_ok() {
+                        let response = String::from_utf8_lossy(&response);
+                        if response.split("\r\n\r\n").nth(1).and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok()).is_some_and(|v| v["ready"] == true) { break; }
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }).await.expect("owned input fixture did not become ready");
+}
 struct Synthetic {
     source: String,
     target: String,
@@ -114,20 +133,33 @@ async fn main() {
         }
     });
     tokio::time::sleep(Duration::from_secs(2)).await;
-    input(
-        &session,
-        1,
-        json!({"kind":"text","text":"desktop-android-smoke"}),
-    )
-    .await;
     let layout = tokio::time::timeout(Duration::from_secs(5), first_rx)
         .await
         .expect("no Android frame")
         .unwrap();
+    let wake_first = args.get(5).is_some_and(|s| s == "--wake-first");
+    if wake_first {
+        input(&session, 1, json!({"kind":"button","display":1,"layout":layout,"x":0.5,"y":0.5,"button":"left","down":true})).await;
+        input(&session, 2, json!({"kind":"button","display":1,"layout":layout,"x":0.5,"y":0.5,"button":"left","down":false})).await;
+        // The owned Android fixture verifies wake without dismissal, then unlocks
+        // only its own synthetic credential before the normal input checks.
+        if let Some(port) = args.get(6) {
+            wait_for_owned_input_fixture(port.parse().unwrap()).await;
+        } else {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        }
+    }
+    let first_input = if wake_first { 3 } else { 1 };
+    input(
+        &session,
+        first_input,
+        json!({"kind":"text","text":"desktop-android-smoke"}),
+    )
+    .await;
     let x: f64 = args.get(3).map(|s| s.parse().unwrap()).unwrap_or(0.5);
     let y: f64 = args.get(4).map(|s| s.parse().unwrap()).unwrap_or(0.5);
-    input(&session, 2, json!({"kind":"button","display":1,"layout":layout,"x":x,"y":y,"button":"left","down":true})).await;
-    input(&session, 3, json!({"kind":"button","display":1,"layout":layout,"x":x,"y":y,"button":"left","down":false})).await;
+    input(&session, first_input + 1, json!({"kind":"button","display":1,"layout":layout,"x":x,"y":y,"button":"left","down":true})).await;
+    input(&session, first_input + 2, json!({"kind":"button","display":1,"layout":layout,"x":x,"y":y,"button":"left","down":false})).await;
     tokio::time::sleep(Duration::from_secs(4)).await;
     println!(
         "{}",

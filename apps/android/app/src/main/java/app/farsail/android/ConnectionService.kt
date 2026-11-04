@@ -131,7 +131,7 @@ class ConnectionService : Service() {
                         if (!current) { stopSelf(); return@post }
                         if (success) {
                             lastHeartbeat = SystemClock.elapsedRealtime()
-                            detail = if (CaptureService.running && CaptureService.phase == "sharing") "设备在线，屏幕正在共享。" else "设备在线；屏幕未共享，查看前仍需系统授权。"
+                            detail = if (CaptureService.running && CaptureService.phase == "sharing") "设备在线，屏幕正在共享。" else "设备在线；屏幕未共享，请在手机上恢复屏幕共享。"
                             android.util.Log.i("FarSailConnection", "Heartbeat accepted; capture=${CaptureService.running}")
                         } else detail = "设备连接暂不可用，正在重试；请检查网络或登录状态。"
                         if (detail != lastNotification) {

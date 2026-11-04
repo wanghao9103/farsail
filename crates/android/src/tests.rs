@@ -245,6 +245,29 @@ async fn projection_stop_invalidates_delayed_enable_and_old_geometry() {
 }
 
 #[tokio::test]
+async fn stale_accessibility_frames_cannot_change_new_capture_geometry() {
+    let (h, server) = host(42).await;
+    let old = h.begin();
+    let jpeg = image(&h);
+    h.stop_local();
+    let next = h.begin();
+    h.geometry(32, 16);
+    assert!(!h.publish_accessibility(jpeg.clone(), 16, 16, old));
+    {
+        let local = h.local.lock().unwrap();
+        assert_eq!((local.width, local.height), (32, 16));
+    }
+    assert!(h.frames.borrow().is_none());
+    assert!(h.publish_accessibility(jpeg.clone(), 16, 16, next));
+    assert!(h.frames.borrow().is_some());
+    h.stop_local();
+    assert!(!h.publish_accessibility(jpeg, 16, 16, next));
+    assert!(h.frames.borrow().is_none());
+    h.client.stop_transport().await;
+    server.abort();
+}
+
+#[tokio::test]
 async fn same_account_auto_approval_stops_with_control_or_capture() {
     let (h, server) = host(39).await;
     h.control(true);

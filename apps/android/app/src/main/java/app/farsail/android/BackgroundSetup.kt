@@ -14,7 +14,7 @@ object BackgroundSetup {
         .isIgnoringBatteryOptimizations(context.packageName)
 
     fun detail(context: Context) = if (exempt(context))
-        "系统已允许不受电池优化限制；若仍锁屏掉线，请在应用信息中允许后台活动与自启动。"
+        "系统电池优化豁免已启用；若仍锁屏掉线，请在应用信息中允许后台活动与自启动。"
     else "尚未允许后台持续运行，系统省电策略可能在锁屏后暂停连接。允许后无需每次重新设置，会增加耗电。"
 
     fun open(activity: Activity) {
