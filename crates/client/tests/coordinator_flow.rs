@@ -568,7 +568,7 @@ async fn native_client_against_real_coordinator() {
             .as_array()
             .unwrap()
             .len(),
-        2
+        3 // Controller, original host, and the independent second host.
     );
     assert!(
         !b.call("admin_audit", Value::Null)
