@@ -1482,6 +1482,13 @@ impl NativeClient {
             )
             .await?;
         s.generation = v["generation"].as_i64();
+        if let Ok(current) = DeviceSnapshot::from_state(s) {
+            for (_, identity) in self.transport_identities.lock().await.values_mut() {
+                if identity.base == current.base && identity.token == current.token {
+                    identity.generation = current.generation;
+                }
+            }
+        }
         Ok(v)
     }
     async fn bind_device(&self, s: &mut State, owner: String, name: String) -> Result<()> {
@@ -2124,7 +2131,15 @@ impl Authority for NativeClient {
         self.transport_identities
             .lock()
             .await
-            .insert(id.into(), (epoch, identity));
+            .entry(id.into())
+            .and_modify(|saved| {
+                // A heartbeat can advance generation while this HTTP check is
+                // in flight. Never put its older snapshot back over that update.
+                if saved.0 != epoch {
+                    *saved = (epoch, identity.clone());
+                }
+            })
+            .or_insert((epoch, identity));
         Ok(claims)
     }
     async fn issue(&self, id: &str, renew: bool) -> farsail_transport::Result<String> {
@@ -2223,15 +2238,24 @@ mod tests {
         Arc<tokio::sync::Notify>,
         Arc<tokio::sync::Notify>,
     ) {
-        use axum::{Json, Router, extract::Path, http::HeaderMap, routing::get};
+        use axum::{
+            Json, Router,
+            extract::Path,
+            http::HeaderMap,
+            routing::{get, post},
+        };
         let seen = Arc::new(tokio::sync::Notify::new());
         let release = Arc::new(tokio::sync::Notify::new());
+        let expected_generation = Arc::new(std::sync::atomic::AtomicI64::new(1));
         let app = Router::new()
-            .route("/v1/remote/{id}/transport-grant", get(move |Path(id): Path<String>, headers: HeaderMap| async move {
+            .route("/v1/remote/{id}/transport-grant", get({let generation=expected_generation.clone();move |Path(id): Path<String>, headers: HeaderMap| {let generation=generation.clone();async move {
                 assert_eq!(headers["x-farsail-device-token"], "device-proof");
-                assert_eq!(headers["x-farsail-generation"], "1");
+                assert_eq!(headers["x-farsail-generation"].to_str().unwrap().parse::<i64>().unwrap(),generation.load(Ordering::SeqCst));
                 Json(json!({"session_id":id,"permission":"view","source_public_key":hex::encode([1;32]),"target_public_key":hex::encode([2;32]),"nonce":"ab".repeat(32),"expires_in":ttl}))
-            }))
+            }}}))
+            .route("/v1/devices/heartbeat",post(move || {let generation=expected_generation.clone();async move {
+                generation.store(2,Ordering::SeqCst);Json(json!({"generation":2,"expires_in":60}))
+            }}))
             .route("/v1/remote/{id}", get({
                 let seen=seen.clone(); let release=release.clone();
                 move || { let seen=seen.clone();let release=release.clone();async move {
@@ -2348,6 +2372,19 @@ mod tests {
             Err(farsail_transport::Error::Closed)
         ));
         assert!(client.transport_identities.lock().await.is_empty());
+        server.abort();
+    }
+    #[tokio::test]
+    async fn cached_lease_proofs_follow_the_same_devices_new_heartbeat_generation() {
+        let (client, server, _, _) = lease_fixture(30).await;
+        let id = "00000000-0000-0000-0000-000000000085";
+        Authority::inspect(&*client, id, "grant").await.unwrap();
+        {
+            let mut state = client.state.lock().await;
+            client.send_heartbeat(&mut state).await.unwrap();
+        }
+        Authority::inspect(&*client, id, "grant").await.unwrap();
+        assert_eq!(client.transport_identities.lock().await[id].1.generation, 2);
         server.abort();
     }
     #[test]
