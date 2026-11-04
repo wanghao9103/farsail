@@ -1865,18 +1865,14 @@ const fs = require("node:fs");
     () => document.querySelector(".remote-screen img")?.naturalWidth === 1280,
   );
   await verifyFillPixels({ width: 1280, height: 582 });
-  assert.equal(
-    await page.evaluate(
-      () =>
-        window.fixture.calls.filter(
-          (c) =>
-            c.cmd === "viewer_window_action" &&
-            c.args.action === "phone_layout",
-        ).length,
-    ),
-    1,
-    "rotation and polling must not reset a user-resized phone window",
-  );
+  await page.waitForFunction(() => window.fixture.calls.filter(c => c.cmd === "viewer_window_action" && c.args.action === "phone_layout").at(-1)?.args.landscape === true);
+  const phoneLayouts = await page.evaluate(() => window.fixture.calls.filter(c => c.cmd === "viewer_window_action" && c.args.action === "phone_layout").map(c => c.args.landscape));
+  assert(phoneLayouts.includes(false) && phoneLayouts.includes(true), "phone and game orientations both configure their native window shape");
+  assert(phoneLayouts.every((orientation,index) => index === 0 || orientation !== phoneLayouts[index-1]), "native window shape changes only when orientation changes");
+  await page.setViewportSize({ width: 720, height: 820 });
+  await page.waitForTimeout(1700);
+  assert.equal(await page.evaluate(() => window.fixture.calls.filter(c => c.cmd === "viewer_window_action" && c.args.action === "phone_layout").length), phoneLayouts.length, "ordinary polling must preserve the user's manual window size");
+  await page.setViewportSize({ width: 640, height: 900 });
   await page.evaluate(() => {
     window.fixture.closed = true;
   });
