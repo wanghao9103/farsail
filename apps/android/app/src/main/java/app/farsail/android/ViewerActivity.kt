@@ -4,9 +4,15 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.graphics.BitmapFactory
 import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
+import android.content.pm.ActivityInfo
+import android.content.res.Configuration
 import android.os.Bundle
 import android.text.InputType
 import android.view.View
+import android.view.Gravity
+import android.view.MotionEvent
+import android.view.WindowManager
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.widget.*
@@ -28,6 +34,15 @@ class ViewerActivity : Activity() {
     private lateinit var scroll: Button
     private lateinit var rightClick: Button
     private lateinit var phoneKeys: LinearLayout
+    private lateinit var overlay: FrameLayout
+    private lateinit var tools: ScrollView
+    private lateinit var handle: Button
+    private lateinit var notice: TextView
+    private var toolsOpened = true
+    private var firstPicture = true
+    private var followOrientation = true
+    private var remoteWidth = 0
+    private var remoteHeight = 0
     private val controls = mutableListOf<Button>()
     private val connectWorker = Executors.newSingleThreadExecutor()
     private val decoder = Executors.newSingleThreadScheduledExecutor()
@@ -46,15 +61,23 @@ class ViewerActivity : Activity() {
         super.onCreate(savedInstanceState); ui = MobileUi(this)
         target = intent.getStringExtra("target") ?: ""
         permission = intent.getStringExtra("permission")?.takeIf { it in listOf("view", "control") } ?: "view"
-        val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.rgb(24, 35, 39)) }
-        setContentView(body)
-        window.decorView.systemUiVisibility = 0
-        window.statusBarColor = Color.rgb(24, 35, 39)
-        window.navigationBarColor = Color.rgb(24, 35, 39)
-        if (android.os.Build.VERSION.SDK_INT >= 30) window.insetsController?.setSystemBarsAppearance(0, WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS)
-        body.setOnApplyWindowInsetsListener { _, insets ->
-            if (android.os.Build.VERSION.SDK_INT >= 30) { val bars = insets.getInsets(WindowInsets.Type.systemBars()); body.setPadding(bars.left, bars.top, bars.right, bars.bottom) }; insets
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        if (android.os.Build.VERSION.SDK_INT >= 28) window.attributes = window.attributes.apply { layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES }
+        overlay = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
+        setContentView(overlay)
+        immersive()
+        canvas = RemoteCanvas(this) { input -> send(input) }
+        overlay.addView(canvas, FrameLayout.LayoutParams(-1, -1))
+        notice = TextView(this).apply {
+            textSize = 14f; setTextColor(Color.WHITE); gravity = Gravity.CENTER
+            setPadding(ui.dp(16), ui.dp(12), ui.dp(16), ui.dp(12)); background = panelBackground()
+            setOnClickListener { showTools(true) }
         }
+        overlay.addView(notice, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
+        tools = ScrollView(this).apply { isFillViewport = false; background = panelBackground(); elevation = ui.dp(10).toFloat() }
+        val body = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(ui.dp(8), ui.dp(4), ui.dp(8), ui.dp(8)) }
+        tools.addView(body)
+        overlay.addView(tools, FrameLayout.LayoutParams(ui.dp(344), -2, Gravity.TOP or Gravity.END).apply { topMargin = ui.dp(64); rightMargin = ui.dp(8); bottomMargin = ui.dp(8) })
         val header = LinearLayout(this).apply { gravity = android.view.Gravity.CENTER_VERTICAL; setPadding(ui.dp(8), 0, ui.dp(8), 0) }
         body.addView(header, LinearLayout.LayoutParams(-1, ui.dp(54)))
         small(header, "退出") { finish() }
@@ -62,8 +85,6 @@ class ViewerActivity : Activity() {
         end = small(header, "取消连接") { if (active) disconnect("连接已结束") else connect() }
         status = TextView(this).apply { textSize = 12f; setTextColor(Color.rgb(186, 207, 203)); setPadding(ui.dp(12), ui.dp(5), ui.dp(12), ui.dp(5)); maxLines = 3 }
         body.addView(status)
-        canvas = RemoteCanvas(this) { input -> send(input) }
-        body.addView(canvas, LinearLayout.LayoutParams(-1, 0, 1f))
         val scroller = HorizontalScrollView(this).apply { isHorizontalScrollBarEnabled = false }
         val actions = LinearLayout(this).apply { setPadding(ui.dp(6), ui.dp(5), ui.dp(6), ui.dp(5)) }
         scroller.addView(actions); body.addView(scroller)
@@ -75,13 +96,17 @@ class ViewerActivity : Activity() {
         }.also(controls::add)
         rightClick = small(actions, "右键") { canvas.rightClick() }.also(controls::add)
         small(actions, "键盘") { keyboard() }.also(controls::add)
-        small(actions, "旋转画面") { send(null); canvas.rotate() }
+        small(actions, "旋转画面") { send(null); canvas.rotate(); orient() }
         val more = small(actions, "更多") { }
         more.setOnClickListener {
             val connected = active && remote.optString("phase") == "connected"
             val menu = PopupMenu(this, more)
             menu.menu.add("选择屏幕").apply { isEnabled = connected && (remote.optJSONArray("displays")?.length() ?: 0) > 1; setOnMenuItemClickListener { selectScreen(); true } }
             menu.menu.add("重试控制").apply { isEnabled = connected && permission == "control"; setOnMenuItemClickListener { send(JSONObject().put("kind", "resume_control")); true } }
+            menu.menu.add("适应屏幕").setOnMenuItemClickListener { canvas.fit(); true }
+            menu.menu.add("跟随远端方向").apply { isCheckable = true; isChecked = followOrientation; setOnMenuItemClickListener {
+                followOrientation = !followOrientation; orient(); true
+            } }
             menu.show()
         }
         phoneKeys = LinearLayout(this).apply { setPadding(ui.dp(6), 0, ui.dp(6), ui.dp(6)); visibility = View.GONE }
@@ -89,9 +114,79 @@ class ViewerActivity : Activity() {
         for ((label, vk) in listOf("返回" to 166, "主屏幕" to 172, "最近任务" to 93)) {
             small(phoneKeys, label) { key(vk) }.also { it.layoutParams = LinearLayout.LayoutParams(0, ui.dp(48), 1f); controls.add(it) }
         }
+        ui.text(body, "双指缩放、移动画面；点击悬浮按钮收起工具。", 12f, secondary = true)
+        handle = Button(this).apply {
+            text = "收起"; contentDescription = "收起远程工具"; textSize = 12f; isAllCaps = false
+            minWidth = 0; minimumWidth = 0; minimumHeight = 0; setPadding(0, 0, 0, 0)
+            setTextColor(Color.WHITE); background = panelBackground(); elevation = ui.dp(12).toFloat()
+            setOnClickListener { showTools(!toolsOpened) }
+        }
+        overlay.addView(handle, FrameLayout.LayoutParams(ui.dp(52), ui.dp(48), Gravity.TOP or Gravity.END).apply { topMargin = ui.dp(8); rightMargin = ui.dp(8) })
+        dragHandle()
+        overlay.setOnApplyWindowInsetsListener { _, insets ->
+            val left: Int; val top: Int; val right: Int; val bottom: Int
+            if (android.os.Build.VERSION.SDK_INT >= 30) {
+                val safe = insets.getInsets(WindowInsets.Type.displayCutout()); left = safe.left; top = safe.top; right = safe.right; bottom = safe.bottom
+            } else if (android.os.Build.VERSION.SDK_INT >= 28) {
+                val safe = insets.displayCutout; left = safe?.safeInsetLeft ?: 0; top = safe?.safeInsetTop ?: 0; right = safe?.safeInsetRight ?: 0; bottom = safe?.safeInsetBottom ?: 0
+            } else { left = 0; top = 0; right = 0; bottom = 0 }
+            // Only floating controls avoid the cutout; the remote canvas keeps every pixel.
+            handle.layoutParams = (handle.layoutParams as FrameLayout.LayoutParams).apply { rightMargin = right + ui.dp(8); topMargin = top + ui.dp(8) }
+            tools.layoutParams = (tools.layoutParams as FrameLayout.LayoutParams).apply {
+                width = minOf(ui.dp(344), resources.displayMetrics.widthPixels - left - right - ui.dp(16))
+                rightMargin = right + ui.dp(8); topMargin = top + ui.dp(64); bottomMargin = bottom + ui.dp(8)
+            }
+            insets
+        }
         decoder.scheduleWithFixedDelay({ poll() }, 0, 150, TimeUnit.MILLISECONDS)
         update(JSONObject().put("phase", "idle"))
     }
+    private fun panelBackground() = GradientDrawable().apply { setColor(Color.argb(235, 24, 35, 39)); cornerRadius = ui.dp(18).toFloat() }
+    @Suppress("DEPRECATION")
+    private fun immersive() {
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            window.setDecorFitsSystemWindows(false)
+            window.insetsController?.apply {
+                hide(WindowInsets.Type.systemBars())
+                systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            }
+        } else window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+    }
+    private fun showTools(open: Boolean) {
+        canvas.release(); send(null); toolsOpened = open
+        tools.visibility = if (open) View.VISIBLE else View.GONE
+        handle.text = if (open) "收起" else "工具"
+        handle.contentDescription = if (open) "收起远程工具" else "显示远程工具"
+    }
+    private fun dragHandle() {
+        var downX = 0f; var downY = 0f; var startX = 0f; var startY = 0f; var dragging = false
+        handle.setOnTouchListener { _, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> { downX = event.rawX; downY = event.rawY; startX = handle.translationX; startY = handle.translationY; dragging = false; true }
+                MotionEvent.ACTION_MOVE -> {
+                    if (kotlin.math.abs(event.rawX - downX) + kotlin.math.abs(event.rawY - downY) > ui.dp(8)) dragging = true
+                    if (dragging) {
+                        handle.translationX = (startX + event.rawX - downX).coerceIn(-handle.left.toFloat(), (overlay.width - handle.right).toFloat())
+                        handle.translationY = (startY + event.rawY - downY).coerceIn(-handle.top.toFloat(), (overlay.height - handle.bottom).toFloat())
+                    }; true
+                }
+                MotionEvent.ACTION_UP -> { if (!dragging) handle.performClick(); true }
+                MotionEvent.ACTION_CANCEL -> true
+                else -> false
+            }
+        }
+    }
+    private fun orient() {
+        val rotated = canvas.turns % 2 == 1
+        val width = if (rotated) remoteHeight else remoteWidth
+        val height = if (rotated) remoteWidth else remoteHeight
+        val wanted = if (!followOrientation || width == 0 || height == 0) ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED else if (width > height) ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE else ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+        if (requestedOrientation != wanted) requestedOrientation = wanted
+    }
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig); canvas.release(); handle.translationX = 0f; handle.translationY = 0f; immersive(); overlay.requestApplyInsets()
+    }
+    override fun onWindowFocusChanged(hasFocus: Boolean) { super.onWindowFocusChanged(hasFocus); if (hasFocus) immersive() }
     private fun small(parent: LinearLayout, text: String, action: () -> Unit): Button = Button(this).also {
         it.text = text; it.isAllCaps = false; it.textSize = 12f; it.minWidth = ui.dp(64); it.setTextColor(Color.WHITE)
         it.setPadding(ui.dp(6), 0, ui.dp(6), 0)
@@ -106,7 +201,7 @@ class ViewerActivity : Activity() {
         if (!foreground || !app.ready || active) return
         disconnect(""); canvas.clear(); ticket = NativeBridge.viewerBegin()
         if (ticket <= 0) { status.text = "正在初始化，请稍后重试。"; return }
-        active = true; val owner = ticket; end.text = "取消连接"; generation = 0
+        active = true; val owner = ticket; end.text = "取消连接"; generation = 0; firstPicture = true; showTools(true)
         update(JSONObject().put("phase", "requesting"))
         connectWorker.execute {
             try {
@@ -123,6 +218,7 @@ class ViewerActivity : Activity() {
         commands.queue.clear()
         if (::canvas.isInitialized) canvas.control = false
         if (::end.isInitialized) { end.text = "重新连接"; controls.forEach { it.isEnabled = false }; status.text = message }
+        if (::notice.isInitialized && message.isNotBlank()) { notice.text = message; notice.visibility = View.VISIBLE; showTools(true) }
     }
     private fun poll() {
         val owner = ticket
@@ -134,13 +230,19 @@ class ViewerActivity : Activity() {
                 val header = ByteBuffer.wrap(bytes)
                 val options = BitmapFactory.Options()
                 var edge = maxOf(header.getInt(33), header.getInt(37))
-                while (edge > 2048) { options.inSampleSize = maxOf(1, options.inSampleSize) * 2; edge /= 2 }
+                while (edge > 4096) { options.inSampleSize = maxOf(1, options.inSampleSize) * 2; edge /= 2 }
                 val bitmap = BitmapFactory.decodeByteArray(bytes, 49, bytes.size - 49, options) ?: error("远程画面解码失败")
                 RemoteCanvas.Frame(bitmap, header.getInt(5), header.getLong(9), header.getLong(17))
             } else null
             app.main.post {
                 try {
-                    if (current(owner)) { if (image != null) canvas.show(image); update(state) }
+                    if (current(owner)) {
+                        if (image != null) {
+                            remoteWidth = image.bitmap.width; remoteHeight = image.bitmap.height
+                            canvas.show(image); orient()
+                            if (firstPicture) { firstPicture = false; handle.postDelayed({ if (current(owner) && remote.optString("phase") == "connected") showTools(false) }, 2500) }
+                        }; update(state)
+                    }
                     else image?.bitmap?.recycle()
                 } finally { posted.set(false) }
             }
@@ -172,6 +274,8 @@ class ViewerActivity : Activity() {
             else -> "请选择设备连接"
         }
         if (phase == "connected") end.text = "结束连接"
+        notice.text = status.text
+        notice.visibility = if (phase == "connected") View.GONE else View.VISIBLE
         if (phase == "closed" && active) disconnect(status.text.toString())
     }
     private fun send(input: JSONObject?) {

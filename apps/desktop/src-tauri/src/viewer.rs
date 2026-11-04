@@ -165,11 +165,84 @@ impl Binding {
 #[derive(Default)]
 pub struct Windows(pub Mutex<HashMap<String, Arc<Binding>>>);
 
+// Work-area coordinates are logical, including negative origins on other monitors.
+fn cascade_position(
+    origin: (f64, f64),
+    area: (f64, f64),
+    size: (f64, f64),
+    index: usize,
+) -> (f64, f64) {
+    let columns = (((area.0 - size.0 - 16.0).max(0.0) / 36.0).floor() as usize) + 1;
+    let rows = (((area.1 - size.1 - 16.0).max(0.0) / 36.0).floor() as usize) + 1;
+    (
+        origin.0 + 8.0 + (index % columns) as f64 * 36.0,
+        origin.1 + 8.0 + (index % rows) as f64 * 36.0,
+    )
+}
+
+fn place_viewer(window: &tauri::WebviewWindow, index: usize) -> Result<(), String> {
+    let Some(monitor) = window.current_monitor().map_err(|e| e.to_string())? else {
+        return Ok(());
+    };
+    let factor = monitor.scale_factor();
+    let area = monitor.work_area();
+    let origin = area.position.to_logical::<f64>(factor);
+    let available = area.size.to_logical::<f64>(factor);
+    let size = window
+        .outer_size()
+        .map_err(|e| e.to_string())?
+        .to_logical::<f64>(factor);
+    let (x, y) = cascade_position(
+        (origin.x, origin.y),
+        (available.width, available.height),
+        (size.width, size.height),
+        index,
+    );
+    window
+        .set_position(tauri::LogicalPosition::new(x, y))
+        .map_err(|e| e.to_string())
+}
+
+fn cascade_viewers(app: &tauri::AppHandle) -> Result<(), String> {
+    let mut viewers: Vec<_> = app
+        .state::<Windows>()
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(_, binding)| binding.window_active(true))
+        .map(|(label, binding)| (binding.instance.parse::<u64>().unwrap_or(0), label.clone()))
+        .collect();
+    viewers.sort_by_key(|(instance, _)| *instance);
+    let mut monitors = HashMap::new();
+    for (_, label) in viewers {
+        let Some(window) = app.get_webview_window(&label) else {
+            continue;
+        };
+        let Some(monitor) = window.current_monitor().map_err(|e| e.to_string())? else {
+            continue;
+        };
+        let origin = monitor.work_area().position;
+        let index = monitors.entry((origin.x, origin.y)).or_insert(0usize);
+        window.set_fullscreen(false).map_err(|e| e.to_string())?;
+        window.unmaximize().map_err(|e| e.to_string())?;
+        window.unminimize().map_err(|e| e.to_string())?;
+        place_viewer(&window, *index)?;
+        window.set_focus().map_err(|e| e.to_string())?;
+        *index += 1;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn viewer_window_action(
     window: tauri::WebviewWindow,
     action: String,
 ) -> Result<Value, String> {
+    if action == "cascade" && (window.label() == "main" || window.label().starts_with("viewer-")) {
+        cascade_viewers(window.app_handle())?;
+        return Ok(json!({"fullscreen":window.is_fullscreen().map_err(|e|e.to_string())?}));
+    }
     if !window.label().starts_with("viewer-") {
         return Err("不是查看窗口".into());
     }
@@ -178,7 +251,7 @@ pub async fn viewer_window_action(
             let monitor = window.current_monitor().map_err(|e| e.to_string())?;
             let (width, height) = monitor
                 .map(|m| {
-                    let size = m.size().to_logical::<f64>(m.scale_factor());
+                    let size = m.work_area().size.to_logical::<f64>(m.scale_factor());
                     (
                         640.0_f64.min(size.width * 0.9),
                         900.0_f64.min(size.height * 0.9),
@@ -195,7 +268,17 @@ pub async fn viewer_window_action(
             window
                 .set_title("FarSail · 远程手机")
                 .map_err(|e| e.to_string())?;
-            window.center()
+            let index = window
+                .state::<Windows>()
+                .0
+                .lock()
+                .unwrap()
+                .get(window.label())
+                .and_then(|binding| binding.instance.parse::<usize>().ok())
+                .unwrap_or(1)
+                .saturating_sub(1);
+            place_viewer(&window, index)?;
+            Ok(())
         }
         "minimize" => window.minimize(),
         "drag" => window.start_dragging(),
@@ -352,15 +435,50 @@ pub async fn viewer_open(window: tauri::WebviewWindow, id: String) -> Result<Str
         }
         map.insert(label.clone(), binding.clone());
     }
+    let monitor = window.current_monitor().map_err(|e| e.to_string())?;
+    let (width, height) = monitor
+        .as_ref()
+        .map(|monitor| {
+            let area = monitor
+                .work_area()
+                .size
+                .to_logical::<f64>(monitor.scale_factor());
+            (
+                1000.0_f64.min((area.width - 96.0).max(640.0)),
+                720.0_f64.min((area.height - 96.0).max(420.0)),
+            )
+        })
+        .unwrap_or((1000.0, 720.0));
+    let index = binding
+        .instance
+        .parse::<usize>()
+        .unwrap_or(1)
+        .saturating_sub(1);
+    let position = monitor
+        .as_ref()
+        .map(|monitor| {
+            let factor = monitor.scale_factor();
+            let area = monitor.work_area();
+            let origin = area.position.to_logical::<f64>(factor);
+            let size = area.size.to_logical::<f64>(factor);
+            cascade_position(
+                (origin.x, origin.y),
+                (size.width, size.height),
+                (width, height),
+                index,
+            )
+        })
+        .unwrap_or((80.0, 80.0));
     let result = tauri::WebviewWindowBuilder::new(
         app,
         &label,
         tauri::WebviewUrl::App(format!("index.html?viewer={id}").into()),
     )
     .title("FarSail · 远程桌面")
-    .inner_size(1200.0, 800.0)
+    .inner_size(width, height)
+    .position(position.0, position.1)
     .min_inner_size(640.0, 420.0)
-    .maximized(true)
+    .maximized(false)
     .decorations(false)
     .on_navigation(|url| {
         let origin = (url.scheme() == "tauri" && url.host_str() == Some("localhost"))
@@ -608,6 +726,23 @@ pub async fn viewer_reconnect(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cascade_keeps_titlebars_distinct_and_inside_scaled_work_areas() {
+        for (origin, area, size) in [
+            ((-1280.0, 40.0), (1280.0, 984.0), (640.0, 820.0)),
+            ((0.0, 0.0), (1920.0, 1040.0), (1000.0, 720.0)),
+        ] {
+            let first = cascade_position(origin, area, size, 0);
+            let second = cascade_position(origin, area, size, 1);
+            assert_eq!((second.0 - first.0, second.1 - first.1), (36.0, 36.0));
+            for index in 0..100 {
+                let (x, y) = cascade_position(origin, area, size, index);
+                assert!(x >= origin.0 && y >= origin.1);
+                assert!(x + size.0 <= origin.0 + area.0);
+                assert!(y + size.1 <= origin.1 + area.1);
+            }
+        }
+    }
     fn binding() -> Binding {
         Binding {
             id: Mutex::new("synthetic".into()),
