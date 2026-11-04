@@ -1329,7 +1329,7 @@ mod tests {
                     source_public_key: hex::encode(self.source.as_bytes()),
                     target_public_key: hex::encode(self.target.as_bytes()),
                     nonce: "cd".repeat(32),
-                    expires_in: 60,
+                    expires_in: 30,
                     checked_at: Instant::now(),
                 })
             }
