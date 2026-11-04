@@ -190,6 +190,11 @@ class NativeSmokeTest {
             assertTrue("service holds screen protection in background", activeWakeLocks().contains("FarSail:SharingScreen"))
             assertTrue((app.invoke("state") as JSONObject).optBoolean("sharing"))
             assertFalse(NativeBridge.inputValid("unapproved-session", 0, 1))
+            // AOSP Launcher requests NOSENSOR and can keep the physical display
+            // portrait despite setOrientationLeft(). Use our rotation-capable
+            // foreground fixture while the sharing Activity stays in background.
+            context.startActivity(Intent(inst.context, InputFixtureActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            assertTrue(device.wait(Until.hasObject(By.desc("remote-input-fixture")), 10000))
             // Exercise both the pre-14 DisplayListener and the Android 14+
             // projection callback with the sharing Activity in the background.
             try {
