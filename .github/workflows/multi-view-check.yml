@@ -46,7 +46,7 @@ jobs:
           ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/farsail-installed.jks
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_APK_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: androiddebugkey
-        run: scripts/build-android.sh -PfarsailVersionName=0.1.9-multi :app:assembleRelease :app:lintRelease :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin
+        run: scripts/build-android.sh :app:assembleRelease :app:lintRelease :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin
       - uses: actions/upload-artifact@v4
         with:
           name: Android-signed-apk
