@@ -3,7 +3,6 @@ package app.farsail.android
 import android.app.*
 import android.content.*
 import android.content.pm.ServiceInfo
-import android.graphics.Bitmap
 import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
@@ -11,9 +10,9 @@ import android.media.ImageReader
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.*
+import android.view.Display
 import android.view.WindowManager
 import org.json.JSONObject
-import java.io.ByteArrayOutputStream
 import kotlin.math.roundToInt
 
 class CaptureService : Service() {
@@ -47,6 +46,19 @@ class CaptureService : Service() {
     @Volatile private var stopped = false
     private var layout = 0L
     private var lastFrame = 0L
+    // onCapturedContentResize is only delivered on Android 14+. Older phones
+    // must resize the capture surface when the physical display rotates too.
+    private val displayListener = object : DisplayManager.DisplayListener {
+        override fun onDisplayAdded(displayId: Int) { }
+        override fun onDisplayRemoved(displayId: Int) { }
+        override fun onDisplayChanged(displayId: Int) {
+            if (displayId != Display.DEFAULT_DISPLAY || stopped || !running || projection == null) return
+            try {
+                val (width, height) = dimensions(this@CaptureService)
+                resize(width, height)
+            } catch (e: Exception) { fail(e) }
+        }
+    }
     private val callback = object : MediaProjection.Callback() {
         override fun onStop() {
             if (stopped) return
@@ -100,8 +112,15 @@ class CaptureService : Service() {
             projection!!.registerCallback(callback, capture)
             running = true
             app.observer?.invoke()
-            val size = dimensions(this)
-            capture.post { try { resize(size.first, size.second) } catch (e: Exception) { fail(e) } }
+            if (Build.VERSION.SDK_INT < 34) {
+                getSystemService(DisplayManager::class.java).registerDisplayListener(displayListener, capture)
+            }
+            capture.post {
+                try {
+                    val (width, height) = dimensions(this)
+                    resize(width, height)
+                } catch (e: Exception) { fail(e) }
+            }
             power.start()
             app.io.execute {
                 try {
@@ -129,7 +148,8 @@ class CaptureService : Service() {
     private fun resize(w: Int, h: Int) {
         if (stopped || (screenWidth == w && screenHeight == h && display != null)) return
         screenWidth = w; screenHeight = h
-        val scale = minOf(1.0, 1280.0 / maxOf(w, h))
+        // Preserve native phone text detail, while keeping large displays bounded.
+        val scale = minOf(1.0, 2560.0 / maxOf(w, h))
         val width = (w * scale).roundToInt().coerceAtLeast(1)
         val height = (h * scale).roundToInt().coerceAtLeast(1)
         layout = NativeBridge.geometry(width, height)
@@ -144,15 +164,8 @@ class CaptureService : Service() {
                 if (stopped || now - lastFrame < 100 || source !== reader) return@setOnImageAvailableListener
                 lastFrame = now
                 val plane = image.planes[0]
-                val strideWidth = plane.rowStride / plane.pixelStride
-                val padded = Bitmap.createBitmap(strideWidth, height, Bitmap.Config.ARGB_8888)
-                padded.copyPixelsFromBuffer(plane.buffer)
-                val bitmap = Bitmap.createBitmap(padded, 0, 0, width, height)
-                val output = ByteArrayOutputStream()
-                bitmap.compress(Bitmap.CompressFormat.JPEG, 65, output)
-                NativeBridge.publish(output.toByteArray(), width, height, geometry)
-                if (bitmap !== padded) bitmap.recycle()
-                padded.recycle()
+                check(plane.pixelStride == 4) { "不支持的录屏像素格式" }
+                NativeBridge.publishRgba(plane.buffer.slice(), width, height, plane.rowStride, geometry)
             } catch (e: Exception) { fail(e) } finally { image.close() }
         }, capture)
         if (display == null) {
@@ -189,6 +202,7 @@ class CaptureService : Service() {
     }
     override fun onDestroy() {
         stopped = true; running = false
+        getSystemService(DisplayManager::class.java).unregisterDisplayListener(displayListener)
         if (phase != "failed" && phase != "interrupted") status(this, "off", "共享已停止，电脑无法继续查看。")
         NativeBridge.stopLocal(); ControlService.cancel()
         handler.removeCallbacks(poll)
