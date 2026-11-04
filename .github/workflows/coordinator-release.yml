@@ -1,0 +1,101 @@
+name: Coordinator update package
+on:
+  push:
+    branches: ["codex/multi-viewer-resilience"]
+    tags: ['coordinator-multiview-*']
+permissions:
+  contents: read
+concurrency:
+  group: coordinator-package-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: farsail
+          POSTGRES_PASSWORD: disposable_ci_password
+          POSTGRES_DB: farsail_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U farsail -d farsail_test"
+          --health-interval 2s --health-timeout 2s --health-retries 30
+    env:
+      FARSAIL_TEST_DATABASE_URL: postgres://farsail:disposable_ci_password@127.0.0.1:5432/farsail_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.93.0
+          components: rustfmt,clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Server and updater regressions
+        run: |
+          cargo fmt --all -- --check
+          cargo test --locked -p farsail-coordinator
+          cargo clippy --locked -p farsail-coordinator --all-targets -- -D warnings
+          bash -n scripts/deploy/{package-coordinator,test-coordinator-package,upgrade-coordinator,update-online,install-online-updater}.sh
+          python scripts/deploy/test-update-online.py
+          python scripts/deploy/test-update-latest.py
+          python scripts/deploy/test-update-download.py
+          python scripts/deploy/test-upgrade-coordinator.py
+          python scripts/deploy/test-install-online-updater.py
+      - uses: docker/setup-buildx-action@v3
+      - name: Build exact coordinator source
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/production/Dockerfile
+          target: coordinator
+          platforms: linux/amd64
+          load: true
+          tags: farsail/coordinator:${{ github.sha }}
+          build-args: REVISION=${{ github.sha }}
+          cache-from: type=gha,scope=coordinator-multiview
+          cache-to: type=gha,mode=max,scope=coordinator-multiview
+      - name: Package and verify real coordinator replacement
+        run: |
+          bash scripts/deploy/package-coordinator.sh "$GITHUB_SHA" .local/coordinator-package
+          bash scripts/deploy/test-coordinator-package.sh .local/coordinator-package/release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coordinator-update
+          path: |
+            .local/coordinator-package/*.tar.gz
+            .local/coordinator-package/*.sha256
+          if-no-files-found: error
+  publish:
+    if: startsWith(github.ref, 'refs/tags/coordinator-multiview-')
+    needs: package
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: coordinator-update
+          path: package
+      - name: Publish verified coordinator upgrade
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          SOURCE_REVISION: ${{ github.sha }}
+        run: |
+          cd package
+          sha256sum -c *.sha256
+          cat > notes.md <<'EOF'
+          修复多设备远程连接时可能出现的 HTTP 429：取消账号级远程请求次数限额。
+          保留登录保护、设备身份校验和目标授权。
+
+          已安装在线升级入口的服务器执行：
+          ```bash
+          /home/data/farsail/farsail-update
+          ```
+          Linux amd64 协调服务专用包；升级会备份数据库并短暂重启协调服务。
+          多开时的传输容错和重连画面修复还需要更新 Windows / Android 客户端。
+          EOF
+          gh release create "$RELEASE_TAG" --target "$SOURCE_REVISION" --prerelease --title 'FarSail 协调服务：多设备远程连接修复' --notes-file notes.md *.tar.gz *.sha256

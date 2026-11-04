@@ -196,6 +196,57 @@ async fn postgres_files_are_separate_from_screen_capabilities_and_require_approv
     let windows_generation = heartbeat(&app, &windows_token).await;
     let linux_generation = heartbeat(&app, &linux_token).await;
 
+    // Normal authorized remote requests are not account-wide login attempts.
+    // A legacy exhausted request bucket must not survive the server upgrade.
+    {
+        use sha2::{Digest, Sha256};
+        let owner: (Uuid,) = sqlx::query_as("SELECT owner_id FROM devices WHERE id=$1")
+            .bind(Uuid::parse_str(&windows).unwrap())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let key = hex::encode(Sha256::digest(
+            format!("remote_request:{}", owner.0).as_bytes(),
+        ));
+        sqlx::query("INSERT INTO rate_limits(key,attempts,window_start) VALUES($1,100,now())")
+            .bind(key)
+            .execute(&pool)
+            .await
+            .unwrap();
+        for _ in 0..70 {
+            let (status, pending) =
+                request(&app, user, &linux, &windows, &linux_token, "view").await;
+            assert_eq!(status, StatusCode::OK, "{pending}");
+            assert_eq!(
+                pending["state"], "pending",
+                "normal requests still require approval"
+            );
+            let (status, _) = call(
+                &app,
+                "POST",
+                &format!("/v1/remote/{}/revoke", pending["id"].as_str().unwrap()),
+                json!({}),
+                user,
+                None,
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK);
+        }
+        let (status, _) = call(
+            &app,
+            "POST",
+            "/v1/remote/request",
+            json!({"source_device_id":linux,"target_device_id":windows,"permission":"view"}),
+            user,
+            None,
+        )
+        .await;
+        assert!(
+            matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN),
+            "device identity proof is still mandatory"
+        );
+    }
+
     // Android shares the explicit screen capability/approval policy. It cannot
     // use a stale heartbeat or accidentally acquire Files with screen sharing.
     let (android, android_token) = bind(&app, user, "android", false).await;

@@ -226,7 +226,6 @@ pub async fn request(
     Json(input): Json<RequestInput>,
 ) -> Result<Json<RequestOutput>> {
     let p = principal(&state, &headers).await?;
-    rate_limit(&state, &format!("remote_request:{}", p.user_id), 60).await?;
     source_proof(&state, &headers, input.source_device_id, p.user_id).await?;
     if input.source_device_id == input.target_device_id {
         return Err(Error::Invalid("source equals target"));

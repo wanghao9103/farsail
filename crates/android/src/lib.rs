@@ -296,18 +296,29 @@ impl Host {
         let mut count = 0;
         let mut interval = Instant::now();
         while self.client.hosting_enabled() && session.is_open_now() {
-            let frame =
-                match tokio::time::timeout(Duration::from_millis(250), session.receive()).await {
-                    Ok(Ok(f)) => f,
-                    Ok(Err(farsail_transport::Error::Timeout)) | Err(_) => {
+            // Keep the same receive future across housekeeping ticks. Cancelling
+            // it after accept_uni would drop a partially received ACK/input stream.
+            let receive = session.receive();
+            tokio::pin!(receive);
+            let result = loop {
+                match tokio::time::timeout(Duration::from_millis(250), &mut receive).await {
+                    Ok(result) => break Some(result),
+                    Err(_) => {
                         if order.expired() {
                             session.close_with_reason("input_sequence");
-                            break;
+                            break None;
                         }
-                        continue;
+                        if !self.client.hosting_enabled() || !session.is_open_now() {
+                            break None;
+                        }
                     }
-                    _ => break,
-                };
+                }
+            };
+            let frame = match result {
+                Some(Ok(frame)) => frame,
+                Some(Err(farsail_transport::Error::Timeout)) => continue,
+                _ => break,
+            };
             if order.expired() {
                 session.close_with_reason("input_sequence");
                 break;
@@ -381,6 +392,7 @@ impl Host {
         let mut last = 0;
         let mut layout = 0;
         let mut progress = Instant::now();
+        let mut send_failures = 0u8;
         loop {
             if !self.client.hosting_enabled() || !session.is_open_now() {
                 break;
@@ -412,7 +424,7 @@ impl Host {
                 }
                 _ => (),
             }
-            if !window.is_empty() && progress.elapsed() > Duration::from_secs(5) {
+            if !window.is_empty() && progress.elapsed() > Duration::from_secs(15) {
                 session.close_with_reason("media_timeout");
                 break;
             }
@@ -435,19 +447,28 @@ impl Host {
                             continue;
                         }
                         if image.meta.layout != layout {
-                            layout = image.meta.layout;
                             let list = json!([{"id":1,"name":"Android 屏幕","x":0,"y":0,"width":image.meta.width,"height":image.meta.height,"dpi":160,"rotation":0}]);
                             let mut bytes = b"FSL1".to_vec();
                             bytes.extend(serde_json::to_vec(&list).unwrap());
-                            if session
+                            let sent = session
                                 .send(Frame {
                                     channel: Channel::Media,
                                     bytes,
                                 })
-                                .await
-                                .is_err()
-                            {
-                                break;
+                                .await;
+                            match sent {
+                                Ok(()) => {
+                                    layout = image.meta.layout;
+                                }
+                                Err(farsail_transport::Error::Timeout) => {
+                                    send_failures += 1;
+                                    if send_failures >= 3 {
+                                        session.close_with_reason("media_timeout");
+                                        break;
+                                    }
+                                    continue;
+                                }
+                                Err(_) => break,
                             }
                         }
                         let was_empty = window.is_empty();
@@ -459,15 +480,24 @@ impl Host {
                             progress = Instant::now();
                         }
                         let sent_at = Instant::now();
-                        if session
+                        let sent = session
                             .send(Frame {
                                 channel: Channel::Media,
                                 bytes: (*wire).clone(),
                             })
-                            .await
-                            .is_err()
-                        {
-                            break;
+                            .await;
+                        match sent {
+                            Ok(()) => send_failures = 0,
+                            Err(farsail_transport::Error::Timeout) => {
+                                window.failed(image.meta.sequence);
+                                send_failures += 1;
+                                if send_failures >= 3 {
+                                    session.close_with_reason("media_timeout");
+                                    break;
+                                }
+                                continue;
+                            }
+                            Err(_) => break,
                         }
                         let mut l = self.local.lock().unwrap();
                         if l.session
