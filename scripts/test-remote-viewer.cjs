@@ -19,7 +19,7 @@ const fs = require("node:fs");
   });
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
-  await page.addInitScript(() => {
+  const installFixture = () => {
     const f = (window.fixture = {
       closed: false,
       path: "direct",
@@ -51,6 +51,8 @@ const fs = require("node:fs");
       hideDisplaysUntil: 0,
       holdSelect: false,
       releaseSelect: null,
+      holdDecode: false,
+      releaseDecode: null,
       lastFrame: 0,
       layout: 1,
       deliveredLayout: 0,
@@ -59,6 +61,13 @@ const fs = require("node:fs");
       delay: false,
       release: null,
     });
+    const decodeImage = HTMLImageElement.prototype.decode;
+    HTMLImageElement.prototype.decode = function () {
+      if (!f.holdDecode) return decodeImage.call(this);
+      return new Promise((resolve, reject) => {
+        f.releaseDecode = () => decodeImage.call(this).then(resolve, reject);
+      });
+    };
     let packet, v;
     f.frame = (width, height) => {
       const canvas = document.createElement("canvas");
@@ -216,7 +225,8 @@ const fs = require("node:fs");
         return {};
       },
     };
-  });
+  };
+  await page.addInitScript(installFixture);
   const load = async () => {
     await page.goto(process.env.UI_URL || "http://127.0.0.1:1420/?viewer=test");
     await page.getByAltText("远端桌面").waitFor();
@@ -240,6 +250,24 @@ const fs = require("node:fs");
     await page.getByRole("button", { name: "显示工具栏", exact: true }).hover();
     await page.locator(".viewer-toolbar").hover();
   };
+  await load();
+  // One slow decoder retains its last image and does not stall another viewer.
+  const previousImage = await page.getByAltText("远端桌面").getAttribute("src");
+  await page.evaluate(() => { window.fixture.holdDecode = true; window.fixture.lastFrame = 0; });
+  await page.waitForFunction(() => !!window.fixture.releaseDecode);
+  const heldCalls = await page.evaluate(() => window.fixture.calls.filter(c => c.cmd === "media_next").length);
+  const other = await browser.newPage();
+  await other.addInitScript(installFixture);
+  await other.goto(process.env.UI_URL || "http://127.0.0.1:1420/?viewer=other");
+  await other.getByAltText("远端桌面").waitFor();
+  const otherImage = await other.getByAltText("远端桌面").getAttribute("src");
+  await other.evaluate(() => { window.fixture.lastFrame = 0; });
+  await other.waitForFunction(src => document.querySelector('img[alt="远端桌面"]')?.getAttribute("src") !== src, otherImage);
+  assert.equal(await page.getByAltText("远端桌面").getAttribute("src"), previousImage, "retain the displayed image until its replacement is decoded");
+  assert.equal(await page.evaluate(() => window.fixture.calls.filter(c => c.cmd === "media_next").length), heldCalls, "one window must not build an unbounded decode queue");
+  await page.evaluate(() => { window.fixture.holdDecode = false; window.fixture.releaseDecode(); });
+  await page.waitForFunction(src => document.querySelector('img[alt="远端桌面"]')?.getAttribute("src") !== src, previousImage);
+  await other.close();
   await load();
   // Keyboard users can reveal the toolbar and keep it open while choosing controls.
   await page.mouse.move(500, 600);

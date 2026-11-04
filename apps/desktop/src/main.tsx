@@ -3689,14 +3689,30 @@ function Viewer({
             if (intent) onDisplayIntent(intent);
           }
           if (pending) setDisplaySnapshot(gate.snapshot());
+          const next = URL.createObjectURL(
+            new Blob([data.slice(49)], { type: "image/jpeg" }),
+          );
+          // Present only a decoded frame. Otherwise a busy multi-view renderer
+          // can keep replacing/revoking images before any of them is displayed.
+          // Awaiting here also bounds decode work independently for each window;
+          // native transport keeps ACKing and retains the newest available frame.
+          try {
+            const decoded = new Image();
+            decoded.src = next;
+            await decoded.decode();
+          } catch {
+            URL.revokeObjectURL(next);
+            continue;
+          }
+          if (!live || !receiving || !gate.acceptFrame(display)) {
+            URL.revokeObjectURL(next);
+            continue;
+          }
           if (resumePending.current) {
             resumePending.current = false;
             setRestoringConnection(false);
             onRestored(id, gate.intent());
           }
-          const next = URL.createObjectURL(
-            new Blob([data.slice(49)], { type: "image/jpeg" }),
-          );
           const old = url.current;
           url.current = next;
           frameTimes.current.push(performance.now());
