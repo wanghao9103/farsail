@@ -64,6 +64,45 @@ pub(crate) fn encode_rgba(
     }
 }
 
+/// Retain pixels only for the active capture, avoiding repeated DCT work on
+/// identical screenshots. Every call still validates a newly obtained buffer.
+#[derive(Default)]
+pub(crate) struct ScreenshotEncoder {
+    cached: Option<(u32, u32, Vec<u8>, JpegFrame)>,
+}
+impl ScreenshotEncoder {
+    pub fn clear(&mut self) {
+        self.cached = None;
+    }
+    pub fn encode(
+        &mut self,
+        bytes: &[u8],
+        width: u32,
+        height: u32,
+        stride: usize,
+    ) -> Option<JpegFrame> {
+        let span = rgba_span(width, height, stride, 4)?;
+        let source = bytes.get(..span)?;
+        let row_bytes = width as usize * 4;
+        if let Some((w, h, pixels, image)) = &self.cached
+            && (*w, *h) == (width, height)
+            && (0..height as usize).all(|y| {
+                source[y * stride..y * stride + row_bytes]
+                    == pixels[y * row_bytes..(y + 1) * row_bytes]
+            })
+        {
+            return Some(image.clone());
+        }
+        let image = encode_rgba(source, width, height, stride, 0)?;
+        let mut pixels = Vec::with_capacity(row_bytes * height as usize);
+        for y in 0..height as usize {
+            pixels.extend_from_slice(&source[y * stride..y * stride + row_bytes]);
+        }
+        self.cached = Some((width, height, pixels, image.clone()));
+        Some(image)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -84,6 +123,37 @@ mod tests {
         assert!(rgba_span(0, 2, 8, 4).is_none());
         assert!(rgba_span(u32::MAX, 2, 8, 4).is_none());
         assert!(rgba_span(1, 2, usize::MAX, 4).is_none());
+    }
+
+    #[test]
+    fn screenshot_cache_respects_content_padding_geometry_and_clear() {
+        let mut encoder = ScreenshotEncoder::default();
+        let mut rgba = vec![255u8; 16 * 16 * 4];
+        let first = encoder.encode(&rgba, 16, 16, 64).unwrap();
+        let mut padded = Vec::new();
+        for row in rgba.chunks_exact(64) {
+            padded.extend_from_slice(row);
+            padded.extend_from_slice(&[7; 8]);
+        }
+        assert_eq!(
+            encoder.encode(&padded, 16, 16, 72).unwrap().jpeg,
+            first.jpeg
+        );
+        assert!(
+            encoder
+                .encode(&rgba[..rgba.len() - 1], 16, 16, 64)
+                .is_none()
+        );
+        for pixel in rgba.chunks_exact_mut(4) {
+            pixel[1] = 0;
+            pixel[2] = 0;
+        }
+        let changed = encoder.encode(&rgba, 16, 16, 64).unwrap();
+        assert_ne!(changed.jpeg, first.jpeg);
+        let rotated = encoder.encode(&rgba, 8, 32, 32).unwrap();
+        assert_eq!((rotated.meta.width, rotated.meta.height), (8, 32));
+        encoder.clear();
+        assert!(encoder.cached.is_none());
     }
 
     #[test]

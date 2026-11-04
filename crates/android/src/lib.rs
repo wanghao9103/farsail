@@ -1,5 +1,5 @@
 //! Android host reuses device proofs, approval, authenticated QUIC and short leases.
-//! Only the local MediaProjection service can arm capture. No secrets cross the UI.
+//! Only a locally authorized capture service can arm capture. No secrets cross the UI.
 mod bridge;
 mod capture;
 mod protocol;
@@ -19,6 +19,18 @@ use std::{
 };
 use tokio::sync::watch;
 
+#[derive(Default)]
+struct MediaDiagnostics {
+    bytes: usize,
+    sent: u64,
+    acknowledged: u64,
+    send_ms: u64,
+    publish_to_send_ms: u64,
+    ack_ms: u64,
+    input_wait_ms: u64,
+    pending: VecDeque<(u64, Instant)>,
+}
+
 struct Local {
     epoch: u64,
     capture: bool,
@@ -28,7 +40,8 @@ struct Local {
     height: u32,
     sequence: u64,
     session: Option<Session>,
-    inputs: VecDeque<Value>,
+    inputs: VecDeque<(Instant, Value)>,
+    media: MediaDiagnostics,
 }
 
 pub struct Host {
@@ -37,6 +50,7 @@ pub struct Host {
     frames: watch::Sender<Option<Arc<Vec<u8>>>>,
     viewer: Arc<viewer::Viewer>,
     endpoint: tokio::sync::Mutex<()>,
+    screenshot_encoder: Mutex<capture::ScreenshotEncoder>,
 }
 impl Host {
     pub fn new(client: Arc<NativeClient>) -> Arc<Self> {
@@ -44,6 +58,7 @@ impl Host {
         Arc::new(Self {
             viewer: viewer::Viewer::new(client.clone()),
             endpoint: tokio::sync::Mutex::new(()),
+            screenshot_encoder: Mutex::new(capture::ScreenshotEncoder::default()),
             client,
             frames,
             local: Mutex::new(Local {
@@ -56,6 +71,7 @@ impl Host {
                 sequence: 0,
                 session: None,
                 inputs: VecDeque::new(),
+                media: MediaDiagnostics::default(),
             }),
         })
     }
@@ -63,6 +79,7 @@ impl Host {
         self.stop_local();
         let mut l = self.local.lock().unwrap();
         l.capture = true;
+        l.media = MediaDiagnostics::default();
         l.layout += 1;
         l.epoch
     }
@@ -77,6 +94,8 @@ impl Host {
         }
         self.client.disable_host_local();
         self.frames.send_replace(None);
+        drop(l);
+        self.screenshot_encoder.lock().unwrap().clear();
     }
     pub fn control(&self, enabled: bool) {
         let mut l = self.local.lock().unwrap();
@@ -114,6 +133,20 @@ impl Host {
             return false;
         }
         self.publish_locked(&mut l, jpeg, width, height)
+    }
+    fn encode_screenshot(
+        &self,
+        bytes: &[u8],
+        width: u32,
+        height: u32,
+        stride: usize,
+        epoch: u64,
+    ) -> Option<JpegFrame> {
+        let mut encoder = self.screenshot_encoder.lock().unwrap();
+        if !self.current(epoch) {
+            return None;
+        }
+        encoder.encode(bytes, width, height, stride)
     }
     /// Screenshot callbacks may outlive stop, account changes or a new capture.
     /// Validate their epoch and update geometry atomically before publishing.
@@ -156,6 +189,7 @@ impl Host {
         };
         match image.to_wire() {
             Ok(wire) => {
+                l.media.bytes = wire.len();
                 self.frames.send_replace(Some(Arc::new(wire)));
                 true
             }
@@ -176,7 +210,15 @@ impl Host {
     pub fn drain(&self) -> Value {
         let mut l = self.local.lock().unwrap();
         let inputs: Vec<_> = l.inputs.drain(..).collect();
-        json!(inputs)
+        if let Some((queued, _)) = inputs.first() {
+            l.media.input_wait_ms = queued.elapsed().as_millis() as u64;
+        }
+        json!(
+            inputs
+                .into_iter()
+                .map(|(_, command)| command)
+                .collect::<Vec<_>>()
+        )
     }
     fn enqueue(&self, session: &Session, payload: &[u8]) -> Result<(), ()> {
         let mut l = self.local.lock().unwrap();
@@ -197,7 +239,7 @@ impl Host {
         }
         let command =
             json!({"session":session.id(), "epoch":l.epoch, "layout":l.layout, "input":input});
-        l.inputs.push_back(command);
+        l.inputs.push_back((Instant::now(), command));
         Ok(())
     }
     pub fn listen(self: &Arc<Self>) {
@@ -217,6 +259,7 @@ impl Host {
                                 false
                             } else {
                                 l.inputs.clear();
+                                l.media = MediaDiagnostics::default();
                                 l.session = Some(s.clone());
                                 true
                             }
@@ -342,8 +385,27 @@ impl Host {
             if !self.client.hosting_enabled() || !session.is_open_now() {
                 break;
             }
-            match window.acknowledge(*ack.borrow_and_update()) {
-                Ok(true) => progress = Instant::now(),
+            let sequence = *ack.borrow_and_update();
+            match window.acknowledge(sequence) {
+                Ok(true) => {
+                    progress = Instant::now();
+                    let mut l = self.local.lock().unwrap();
+                    if l.session
+                        .as_ref()
+                        .is_some_and(|s| s.stable_id() == session.stable_id())
+                    {
+                        while l
+                            .media
+                            .pending
+                            .front()
+                            .is_some_and(|(seq, _)| *seq <= sequence)
+                        {
+                            let (_, at) = l.media.pending.pop_front().unwrap();
+                            l.media.ack_ms = at.elapsed().as_millis() as u64;
+                        }
+                        l.media.acknowledged = sequence;
+                    }
+                }
                 Err(_) => {
                     session.close_with_reason("media_timeout");
                     break;
@@ -396,6 +458,7 @@ impl Host {
                         if was_empty {
                             progress = Instant::now();
                         }
+                        let sent_at = Instant::now();
                         if session
                             .send(Frame {
                                 channel: Channel::Media,
@@ -405,6 +468,16 @@ impl Host {
                             .is_err()
                         {
                             break;
+                        }
+                        let mut l = self.local.lock().unwrap();
+                        if l.session
+                            .as_ref()
+                            .is_some_and(|s| s.stable_id() == session.stable_id())
+                        {
+                            l.media.sent = image.meta.sequence;
+                            l.media.send_ms = sent_at.elapsed().as_millis() as u64;
+                            l.media.publish_to_send_ms = now.saturating_sub(image.meta.captured_ms);
+                            l.media.pending.push_back((image.meta.sequence, sent_at));
                         }
                     }
                 }
@@ -494,6 +567,17 @@ impl Host {
             };
         }
         let result = match op {
+            "diagnostics" => {
+                let l = self.local.lock().unwrap();
+                let session = l.session.as_ref().filter(|s| s.is_open_now());
+                let (path, rtt) = session.map(|s| s.path()).unwrap_or(("none", None));
+                return Ok(json!({"path":path,"rttMs":rtt,"frameBytes":l.media.bytes,
+                    "published":l.sequence,"sent":l.media.sent,"acknowledged":l.media.acknowledged,
+                    "sendMs":l.media.send_ms,"publishToSendMs":l.media.publish_to_send_ms,
+                    "ackMs":l.media.ack_ms,"inputWaitMs":l.media.input_wait_ms,
+                    "pendingFrames":l.media.pending.len(),
+                    "oldestPendingMs":l.media.pending.front().map(|(_, at)| at.elapsed().as_millis() as u64)}));
+            }
             "state" => {
                 let mut state = client.public_state().await;
                 let l = self.local.lock().unwrap();

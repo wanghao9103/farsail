@@ -271,8 +271,9 @@ class CaptureService : Service() {
         writer.println("width=$screenWidth height=$screenHeight frameAgeMs=${if (lastFrame == 0L) -1 else SystemClock.elapsedRealtime() - lastFrame}")
         writer.println("controlServiceConnected=${ControlSetup.connected(this)} interactive=${getSystemService(PowerManager::class.java).isInteractive}")
         if (Build.VERSION.SDK_INT >= 30) accessibilityFrames?.let {
-            writer.println("screenshotCaptureMs=${it.captureMs} screenshotEncodeMs=${it.encodeMs} screenshotIntervalMs=${it.intervalMs}")
+            writer.println("screenshotCaptureMs=${it.captureMs} screenshotAgeMs=${it.captureAgeMs} screenshotEncodeMs=${it.encodeMs} screenshotIntervalMs=${it.intervalMs}")
         }
+        if (app.ready) runCatching { writer.println("media=${app.invoke("diagnostics")}") }
     }
     override fun onBind(intent: Intent?) = null
 }

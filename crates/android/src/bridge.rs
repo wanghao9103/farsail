@@ -290,7 +290,7 @@ pub extern "system" fn Java_app_farsail_android_NativeBridge_publishAccessibilit
         let pointer = env.get_direct_buffer_address(&buffer).ok()?;
         // Kotlin owns this direct buffer for the duration of the synchronous call.
         let bytes = unsafe { std::slice::from_raw_parts(pointer, span) };
-        let image = crate::capture::encode_rgba(bytes, width, height, stride, 0)?;
+        let image = hst.encode_screenshot(bytes, width, height, stride, epoch as u64)?;
         Some(hst.publish_accessibility(image.jpeg, width, height, epoch as u64))
     })()
     .unwrap_or(false);

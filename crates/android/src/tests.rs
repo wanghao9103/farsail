@@ -188,6 +188,21 @@ async fn two_android_hosts_receive_isolated_frames_and_input_and_stop_independen
     .await
     .unwrap();
     let command = a.drain()[0].clone();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let d = a.call("diagnostics", json!({})).await.unwrap();
+            if d["acknowledged"].as_u64().unwrap() > 0 {
+                assert_eq!(d["path"], "direct");
+                assert!(d["frameBytes"].as_u64().unwrap() > 49);
+                assert_eq!(d["pendingFrames"], 0);
+                assert!(d.get("session").is_none() && d.get("id").is_none());
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
     assert!(a.input_valid("phone-a", command["epoch"].as_u64().unwrap(), layout));
     assert!(!b.input_valid("phone-a", command["epoch"].as_u64().unwrap(), layout));
     assert_eq!(b.drain(), json!([]));
