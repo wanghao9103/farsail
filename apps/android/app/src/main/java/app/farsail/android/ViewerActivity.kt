@@ -114,7 +114,7 @@ class ViewerActivity : Activity() {
         for ((label, vk) in listOf("返回" to 166, "主屏幕" to 172, "最近任务" to 93)) {
             small(phoneKeys, label) { key(vk) }.also { it.layoutParams = LinearLayout.LayoutParams(0, ui.dp(48), 1f); controls.add(it) }
         }
-        ui.text(body, "双指缩放、移动画面；点击悬浮按钮收起工具。", 12f, secondary = true)
+        ui.text(body, "双指缩放、移动画面；点击悬浮按钮收起工具。", 12f, secondary = true).setTextColor(Color.rgb(186, 207, 203))
         handle = Button(this).apply {
             text = "收起"; contentDescription = "收起远程工具"; textSize = 12f; isAllCaps = false
             minWidth = 0; minimumWidth = 0; minimumHeight = 0; setPadding(0, 0, 0, 0)

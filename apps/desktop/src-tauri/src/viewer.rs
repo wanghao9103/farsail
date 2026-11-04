@@ -546,6 +546,37 @@ pub fn smoke_setup(app: &tauri::AppHandle) -> tauri::Result<()> {
     .decorations(false)
     .build()?;
     binding.opened.store(true, Ordering::SeqCst);
+    for number in 2..=3 {
+        let id = format!("00000000-0000-0000-0000-{number:012}");
+        let label = format!("viewer-cascade-{number}");
+        let binding = Arc::new(Binding {
+            id: Mutex::new(id.clone()),
+            instance: next_window_instance(),
+            opened: AtomicBool::new(true),
+            source: "synthetic".into(),
+            target: "synthetic".into(),
+            permission: RemotePermission::View,
+            cancelled: AtomicBool::new(false),
+            retrying: AtomicBool::new(false),
+            attempts: AtomicU32::new(0),
+            recovery_allowed: AtomicBool::new(false),
+            progress: Mutex::new(RecoveryProgress::default()),
+        });
+        app.state::<Windows>()
+            .0
+            .lock()
+            .unwrap()
+            .insert(label.clone(), binding);
+        tauri::WebviewWindowBuilder::new(
+            app,
+            &label,
+            tauri::WebviewUrl::App(format!("index.html?viewer={id}").into()),
+        )
+        .title("FarSail cascade fixture")
+        .inner_size(640.0, 620.0)
+        .decorations(false)
+        .build()?;
+    }
     Ok(())
 }
 
@@ -587,11 +618,16 @@ pub fn smoke_probe(webview: &tauri::Webview) {
         await new Promise(r=>setTimeout(r,300));
         const phone=await invoke('ipc_viewer_state');
         if(phone.maximized || phone.width>641 || phone.height>901 || phone.height<=phone.width) throw Error('phone window sizing failed');
+        await invoke('viewer_window_action',{action:'cascade'});
+        await new Promise(r=>setTimeout(r,300));
+        const cascade=await invoke('ipc_viewer_state');
+        if(cascade.viewers.length!==3 || new Set(cascade.viewers.map(w=>`${w.x},${w.y}`)).size!==3) throw Error('independent viewers did not cascade');
+        if(cascade.viewers.some(w=>w.maximized || w.fullscreen || w.minimized)) throw Error('cascade did not restore viewer windows');
         await invoke('viewer_window_action',{action:'minimize'});
         await new Promise(r=>setTimeout(r,300));
         const minimized=await invoke('ipc_viewer_state');
         if(!minimized.minimized || !minimized.mainExists) throw Error('minimize/main isolation failed');
-        await invoke('ipc_smoke_report',{result:JSON.stringify({ok:true,denied,initial,restored,maximized,fullscreen,phone,minimized})});
+        await invoke('ipc_smoke_report',{result:JSON.stringify({ok:true,denied,initial,restored,maximized,fullscreen,phone,cascade,minimized})});
         await invoke('viewer_window_action',{action:'close'});
       } catch(e) { await invoke('ipc_smoke_report',{result:JSON.stringify({ok:false,error:String(e),denied})}); }
     },800)"#);
@@ -604,8 +640,14 @@ pub fn ipc_viewer_state(window: tauri::WebviewWindow) -> Result<Value, String> {
         .inner_size()
         .map_err(|e| e.to_string())?
         .to_logical::<f64>(window.scale_factor().map_err(|e| e.to_string())?);
+    let viewers: Vec<Value> = window.app_handle().webview_windows().values()
+        .filter(|viewer| viewer.label().starts_with("viewer-"))
+        .filter_map(|viewer| {
+            let position = viewer.outer_position().ok()?;
+            Some(json!({"x":position.x,"y":position.y,"maximized":viewer.is_maximized().ok()?,"fullscreen":viewer.is_fullscreen().ok()?,"minimized":viewer.is_minimized().ok()?}))
+        }).collect();
     Ok(
-        json!({"width":size.width,"height":size.height,"decorations":window.is_decorated().map_err(|e|e.to_string())?,"maximized":window.is_maximized().map_err(|e|e.to_string())?,"fullscreen":window.is_fullscreen().map_err(|e|e.to_string())?,"minimized":window.is_minimized().map_err(|e|e.to_string())?,"mainExists":window.app_handle().get_webview_window("main").is_some()}),
+        json!({"width":size.width,"height":size.height,"decorations":window.is_decorated().map_err(|e|e.to_string())?,"maximized":window.is_maximized().map_err(|e|e.to_string())?,"fullscreen":window.is_fullscreen().map_err(|e|e.to_string())?,"minimized":window.is_minimized().map_err(|e|e.to_string())?,"mainExists":window.app_handle().get_webview_window("main").is_some(),"viewers":viewers}),
     )
 }
 pub fn cancel(app: &tauri::AppHandle, label: &str) -> Option<String> {
