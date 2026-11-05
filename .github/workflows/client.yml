@@ -77,3 +77,22 @@ jobs:
         timeout-minutes: 3
         run: cargo test -p farsail-windows --lib real_input_into_own_foreground_window -- --ignored --test-threads=1
       - run: cargo clippy -p farsail-windows --all-targets -- -D warnings
+  capture-recovery:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.93.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-native-capture
+      - name: Capture and recorded Windows regressions
+        run: cargo test -p farsail-windows --lib
+      - name: Require real in-memory DXGI readback
+        timeout-minutes: 3
+        run: cargo test -p farsail-windows --lib real_dxgi_frame_stays_in_memory -- --ignored --test-threads=1
+      - name: Owned confirmation and borderless fullscreen capture
+        timeout-minutes: 3
+        run: cargo test -p farsail-windows --lib real_dxgi_owned_confirmation_and_fullscreen_overlay -- --ignored --test-threads=1 --nocapture

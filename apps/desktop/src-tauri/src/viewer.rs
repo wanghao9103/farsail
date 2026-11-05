@@ -70,6 +70,18 @@ impl Binding {
             && !self.cancelled.load(Ordering::SeqCst)
     }
 
+    fn arm_manual_capture_retry(&self, status: &Value) {
+        if !self.cancelled.load(Ordering::SeqCst)
+            && status["id"].as_str() == Some(self.id.lock().unwrap().as_str())
+            && status["state"] == "closed"
+            && status["reason"] == "capture_failed"
+        {
+            // Only a deliberate click can use this eligibility. It never makes
+            // capture failure automatically retryable or reuses the old grant.
+            self.recovery_allowed.store(true, Ordering::SeqCst);
+        }
+    }
+
     fn begin_recovery(&self, manual: bool, retryable: bool) -> Result<(), String> {
         let mut progress = self.progress.lock().unwrap();
         if self.cancelled.load(Ordering::SeqCst)
@@ -925,6 +937,10 @@ pub async fn viewer_reconnect(
     let mut exhausted = false;
     let result = async {
         if manual.unwrap_or(false) {
+            if !binding.recovery_allowed.load(Ordering::SeqCst) {
+                let status = remote.status(&old).await?;
+                binding.arm_manual_capture_retry(&status);
+            }
             binding.begin_recovery(true, false)?;
         } else {
             let status = remote.status(&old).await?;
@@ -1179,6 +1195,65 @@ mod tests {
         binding.cancelled.store(true, Ordering::SeqCst);
         assert!(binding.begin_recovery(true, false).is_err());
         assert!(binding.begin_recovery(false, true).is_err());
+    }
+    #[test]
+    fn only_current_closed_capture_failure_arms_a_manual_fresh_cycle() {
+        for reason in [
+            "authorization_failed",
+            "lease_expired",
+            "renewal_failed",
+            "input_failed",
+            "stopped",
+            "session_ended",
+            "network_timeout",
+        ] {
+            let binding = binding();
+            binding.arm_manual_capture_retry(
+                &json!({"id":"synthetic","state":"closed","reason":reason}),
+            );
+            assert!(binding.begin_recovery(true, false).is_err(), "{reason}");
+        }
+        for status in [
+            json!({"id":"other","state":"closed","reason":"capture_failed"}),
+            json!({"id":"synthetic","state":"direct","reason":"capture_failed"}),
+            json!({"state":"closed","reason":"capture_failed"}),
+        ] {
+            let binding = binding();
+            binding.arm_manual_capture_retry(&status);
+            assert!(binding.begin_recovery(true, false).is_err());
+        }
+        let binding = binding();
+        binding.arm_manual_capture_retry(
+            &json!({"id":"synthetic","state":"closed","reason":"capture_failed"}),
+        );
+        assert!(
+            binding.begin_recovery(false, false).is_err(),
+            "capture failure remains ineligible for automatic reconnect"
+        );
+        binding.begin_recovery(true, false).unwrap();
+        assert_eq!(binding.recovery_status(Instant::now())["cycle"], 1);
+        binding.finish_recovery(false, false);
+        assert!(
+            binding.begin_recovery(true, false).is_err(),
+            "an early refusal cannot silently reuse eligibility"
+        );
+    }
+    #[test]
+    fn stopping_overrides_capture_manual_retry_before_or_after_arming() {
+        let capture = json!({"id":"synthetic","state":"closed","reason":"capture_failed"});
+        for cancel_first in [false, true] {
+            let binding = binding();
+            if cancel_first {
+                binding.cancel_recovery();
+            }
+            binding.arm_manual_capture_retry(&capture);
+            binding.cancel_recovery();
+            assert!(binding.begin_recovery(true, false).is_err());
+            assert_eq!(
+                binding.recovery_status(Instant::now())["manualRetryAllowed"],
+                false
+            );
+        }
     }
     #[test]
     fn progress_follows_attempt_stages_and_the_real_backoff_deadline() {

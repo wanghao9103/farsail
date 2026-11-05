@@ -37,6 +37,8 @@ const fs = require("node:fs");
       failTabClose: null,
       appliedTabMutations: [],
       closed: false,
+      endReason: null,
+      endError: null,
       path: "direct",
       discovery: "direct",
       retryable: false,
@@ -234,7 +236,10 @@ const fs = require("node:fs");
                         rotation: 0,
                       },
                     ],
-              error: f.closed ? "会话已结束，画面与输入已停止" : null,
+              error: f.closed
+                ? (f.endError ?? "会话已结束，画面与输入已停止")
+                : null,
+              reason: f.closed ? (f.endReason ?? "session_ended") : undefined,
               retryable: f.retryable,
             };
           } finally {
@@ -1407,6 +1412,143 @@ const fs = require("node:fs");
     ),
     0,
   );
+  // Capture failure is manual-only: the user can request a fresh grant, but
+  // persistent fullscreen/capture failures cannot create an automatic session chain.
+  await load();
+  await page.evaluate(() => {
+    window.fixture.closed = true;
+    window.fixture.endReason = "capture_failed";
+    window.fixture.endError = "被控端屏幕采集中断，请重试连接";
+    // Even a malformed legacy hint must not make capture failure automatic.
+    window.fixture.retryable = true;
+  });
+  const captureDialog = () =>
+    page.getByRole("alertdialog", { name: "屏幕采集已中断", exact: true });
+  await captureDialog()
+    .getByRole("button", { name: "重试连接", exact: true })
+    .waitFor();
+  await page.waitForTimeout(900);
+  assert.equal(
+    await page.evaluate(
+      () =>
+        window.fixture.calls.filter((c) => c.cmd === "viewer_reconnect").length,
+    ),
+    0,
+  );
+  assert.equal(await page.getByAltText("远端桌面").count(), 0);
+  await page.screenshot({
+    path: ".local/ui-verification/viewer-capture-manual-retry.png",
+  });
+  await captureDialog()
+    .getByRole("button", { name: "取消", exact: true })
+    .click();
+  const captureCanvasRetry = page
+    .locator(".viewer-empty-state")
+    .getByRole("button", { name: "重试连接", exact: true });
+  await captureCanvasRetry.waitFor();
+  await page.evaluate(() => {
+    window.fixture.reconnectFailure = "重连已取消或授权已结束";
+  });
+  await captureCanvasRetry.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await page
+    .getByRole("alertdialog")
+    .locator("p")
+    .getByText("重连已取消或授权已结束", { exact: true })
+    .waitFor();
+  await page.waitForTimeout(900);
+  assert.equal(
+    await page.evaluate(
+      () =>
+        window.fixture.calls.filter((c) => c.cmd === "viewer_reconnect").length,
+    ),
+    1,
+    "one explicit retry, including a double click, cannot start parallel or automatic cycles",
+  );
+  assert.equal(
+    await page.evaluate(
+      () =>
+        window.fixture.calls.find((c) => c.cmd === "viewer_reconnect").args
+          .manual,
+    ),
+    true,
+  );
+  assert.equal(
+    await page.getByRole("button", { name: "重试连接", exact: true }).count(),
+    0,
+    "an early identity/refusal failure consumes the capture-only button",
+  );
+  await load();
+  await page.evaluate(() => {
+    window.fixture.closed = true;
+    window.fixture.endReason = "capture_failed";
+    window.fixture.endError = "被控端屏幕采集中断，请重试连接";
+    window.fixture.reconnectSuccess = true;
+  });
+  await captureDialog()
+    .getByRole("button", { name: "重试连接", exact: true })
+    .click();
+  await page.getByAltText("远端桌面").waitFor();
+  assert.equal(
+    await page.evaluate(
+      () =>
+        window.fixture.calls.filter((c) => c.cmd === "viewer_reconnect").length,
+    ),
+    1,
+  );
+  assert.equal(
+    await page.evaluate(
+      () =>
+        window.fixture.calls.find((c) => c.cmd === "viewer_reconnect").args
+          .manual,
+    ),
+    true,
+  );
+  await page.evaluate(() => {
+    window.fixture.closed = true;
+  });
+  await captureDialog()
+    .getByRole("button", { name: "重试连接", exact: true })
+    .waitFor();
+  await page.waitForTimeout(900);
+  assert.equal(
+    await page.evaluate(
+      () =>
+        window.fixture.calls.filter((c) => c.cmd === "viewer_reconnect").length,
+    ),
+    1,
+    "a new capture failure after successful manual recovery needs another explicit click",
+  );
+  for (const reason of [
+    "authorization_failed",
+    "lease_expired",
+    "renewal_failed",
+    "input_failed",
+    "stopped",
+  ]) {
+    await load();
+    await page.evaluate((reason) => {
+      window.fixture.closed = true;
+      window.fixture.endReason = reason;
+    }, reason);
+    await page.getByText("连接已结束", { exact: true }).waitFor();
+    assert.equal(
+      await page.getByRole("button", { name: "重试连接", exact: true }).count(),
+      0,
+      reason,
+    );
+    assert.equal(
+      await page.evaluate(
+        () =>
+          window.fixture.calls.filter((c) => c.cmd === "viewer_reconnect")
+            .length,
+      ),
+      0,
+      reason,
+    );
+  }
   await load();
   await page.evaluate(() => (window.fixture.video.max_profile = 1));
   await page.waitForFunction(
@@ -2915,7 +3057,7 @@ const fs = require("node:fs");
   assert.deepEqual(errors, []);
   await browser.close();
   console.log(
-    "PASS repeated left/right pairs, multi-button capture, queued outside UP then release-all, external held entry, blur/lost-capture cancellation, ordered remote Alt+Tab and view/paused/ended guards; fit/quality/FPS/pause/terminal/read-only, five-session fullscreen/overflow navigation, adjacent close, rapid ordered tab changes and local popup isolation coverage. Synthetic IPC only.",
+    "PASS repeated left/right pairs, multi-button capture, queued outside UP then release-all, external held entry, blur/lost-capture cancellation, ordered remote Alt+Tab and view/paused/ended guards; fit/quality/FPS/pause/terminal/read-only, five-session fullscreen/overflow navigation, adjacent close, rapid ordered tab changes, manual-only capture recovery and local popup isolation coverage. Synthetic IPC only.",
   );
 })().catch((e) => {
   console.error(e);

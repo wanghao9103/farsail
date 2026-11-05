@@ -2970,6 +2970,7 @@ type RemoteStatus = {
   input?: { generation: number; blocked: boolean; message: string | null };
   mouse?: { generation: number; rejected: boolean };
   retryable?: boolean;
+  reason?: string;
   state: string;
   rtt_ms: number | null;
   discovery?: string;
@@ -3365,6 +3366,8 @@ function Viewer({
   const [fileNote, setFileNote] = useState("");
   const [reconnecting, setReconnecting] = useState(false);
   const [reconnectFailed, setReconnectFailed] = useState(false);
+  const [captureManualRetry, setCaptureManualRetry] = useState(false);
+  const reconnectInFlight = useRef(false);
   const [recoveryStatus, setRecoveryStatus] = useState<RecoveryStatus | null>(
     null,
   );
@@ -3796,7 +3799,10 @@ function Viewer({
   };
   const beginReconnect = (manual: boolean) => {
     const lease = viewerLease.current;
+    if (!lease.active || reconnectInFlight.current) return;
+    reconnectInFlight.current = true;
     onRecoveryStart();
+    setCaptureManualRetry(false);
     setReconnectFailed(false);
     setRecoveryStatus(null);
     minimumRecoveryCycle.current = recoveryCycle.current + 1;
@@ -3823,6 +3829,9 @@ function Viewer({
         }
         if (!lease.active) return;
         setReconnecting(false);
+      })
+      .finally(() => {
+        reconnectInFlight.current = false;
       });
   };
   const reconnect = () => beginReconnect(true);
@@ -3951,7 +3960,10 @@ function Viewer({
         url.current = null;
       }
       setProblem(s?.error || (error ? errorText(error) : "连接已结束"));
-      if (s?.retryable) {
+      const captureFailure =
+        s?.state === "closed" && s.reason === "capture_failed";
+      setCaptureManualRetry(captureFailure);
+      if (s?.retryable && !captureFailure) {
         beginReconnect(false);
       }
     };
@@ -4622,15 +4634,21 @@ function Viewer({
           }
           onDismiss={() => setProblem("")}
           action={
-            reconnectFailed
+            captureManualRetry
               ? {
-                  title: "暂时无法恢复远程连接",
+                  title: "屏幕采集已中断",
                   retry: reconnect,
-                  retryLabel: "重新尝试连接",
+                  retryLabel: "重试连接",
                 }
-              : /transport timeout/i.test(problem)
-                ? { title: "远程操作超时" }
-                : undefined
+              : reconnectFailed
+                ? {
+                    title: "暂时无法恢复远程连接",
+                    retry: reconnect,
+                    retryLabel: "重新尝试连接",
+                  }
+                : /transport timeout/i.test(problem)
+                  ? { title: "远程操作超时" }
+                  : undefined
           }
         />
         <FailureDialog
@@ -4794,6 +4812,11 @@ function Viewer({
               {reconnectFailed && !reconnecting && (
                 <button className="primary" onClick={reconnect}>
                   重新尝试连接
+                </button>
+              )}
+              {captureManualRetry && !reconnecting && (
+                <button className="primary" onClick={reconnect}>
+                  重试连接
                 </button>
               )}
             </div>

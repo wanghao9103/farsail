@@ -92,6 +92,14 @@ pub struct Capture {
     last_rgb: Option<Vec<u8>>,
     profile: u8,
 }
+fn capture_monitor_error(error: windows_capture::monitor::Error) -> Error {
+    if matches!(error, windows_capture::monitor::Error::NotFound) {
+        Error::CaptureReset("selected monitor temporarily absent during capture creation".into())
+    } else {
+        // Enumeration permission/API failures are not evidence of a mode switch.
+        Error::Unavailable(error.to_string())
+    }
+}
 fn output_size(width: usize, height: usize, profile: u8) -> Result<(usize, usize)> {
     if width == 0 || height == 0 || profile > 3 {
         return Err(Error::Geometry);
@@ -124,8 +132,7 @@ impl Capture {
         if id == 0 {
             return Err(Error::Geometry);
         }
-        let monitor =
-            Monitor::from_index(id as usize).map_err(|e| Error::Unavailable(e.to_string()))?;
+        let monitor = Monitor::from_index(id as usize).map_err(capture_monitor_error)?;
         let mut display = desc(monitor, id)?;
         let dxgi = Duplication::new(monitor.as_raw_hmonitor())?;
         display.rotation = dxgi.rotation;
@@ -163,8 +170,8 @@ impl Capture {
             (source_width, source_height)
         };
         if logical_w != self.display.width as usize || logical_h != self.display.height as usize {
-            return Err(Error::Unavailable(
-                "display geometry changed; reconnect after selecting the new layout".into(),
+            return Err(Error::CaptureReset(
+                "display geometry changed; waiting for the selected layout".into(),
             ));
         }
         let (out_w, out_h) = output_size(logical_w, logical_h, self.profile)?;
@@ -723,6 +730,26 @@ fn move_to(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn only_an_absent_capture_monitor_enters_bounded_mode_recovery() {
+        use windows_capture::monitor::Error as MonitorError;
+        assert!(matches!(
+            capture_monitor_error(MonitorError::NotFound),
+            Error::CaptureReset(_)
+        ));
+        for error in [
+            MonitorError::IndexIsLowerThanOne,
+            MonitorError::FailedToGetMonitorInfo,
+            MonitorError::FailedToGetMonitorSettings,
+            MonitorError::FailedToGetMonitorName,
+            MonitorError::NameNotFound,
+        ] {
+            assert!(matches!(
+                capture_monitor_error(error),
+                Error::Unavailable(_)
+            ));
+        }
+    }
     fn pointer_display() -> Display {
         Display {
             id: 1,
@@ -1093,6 +1120,278 @@ mod tests {
                 "DXGI produced no frame"
             );
         }
+    }
+    #[test]
+    #[ignore = "requires an interactive Windows desktop; paints only owned windows and keeps captured pixels in memory"]
+    fn real_dxgi_owned_confirmation_and_fullscreen_overlay() {
+        use std::time::{Duration, Instant};
+        use windows::{
+            Win32::{
+                Foundation::{HWND, POINT},
+                Graphics::Gdi::ClientToScreen,
+                UI::WindowsAndMessaging::{
+                    BS_DEFPUSHBUTTON, CreateWindowExW, DestroyWindow, DispatchMessageW,
+                    GetClientRect, GetWindowThreadProcessId, IsWindowVisible, MSG, PM_REMOVE,
+                    PeekMessageW, TranslateMessage, WINDOW_STYLE, WS_CHILD, WS_EX_TOPMOST,
+                    WS_OVERLAPPEDWINDOW, WS_POPUP, WS_VISIBLE,
+                },
+            },
+            core::w,
+        };
+        // Standard STATIC class rectangle styles (SS_BLACKRECT / SS_WHITERECT).
+        // These paint known pixels without injecting input or subclassing another app.
+        const BLACK_RECT: WINDOW_STYLE = WINDOW_STYLE(4);
+        const WHITE_RECT: WINDOW_STYLE = WINDOW_STYLE(6);
+        struct OwnedWindow(HWND);
+        impl OwnedWindow {
+            fn check(hwnd: HWND) -> Self {
+                let mut pid = 0;
+                unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+                assert_eq!(
+                    pid,
+                    std::process::id(),
+                    "test window must belong to this process"
+                );
+                assert!(unsafe { IsWindowVisible(hwnd) }.as_bool());
+                Self(hwnd)
+            }
+            fn sample_point(&self) -> POINT {
+                let mut rect = RECT::default();
+                unsafe { GetClientRect(self.0, &mut rect) }.unwrap();
+                assert!(rect.right >= 40 && rect.bottom >= 40);
+                let mut point = POINT { x: 20, y: 20 };
+                assert!(unsafe { ClientToScreen(self.0, &mut point) }.as_bool());
+                point
+            }
+        }
+        impl Drop for OwnedWindow {
+            fn drop(&mut self) {
+                let mut pid = 0;
+                unsafe { GetWindowThreadProcessId(self.0, Some(&mut pid)) };
+                // A closed/reused handle must never close a different process's window.
+                if pid == std::process::id() {
+                    let _ = unsafe { DestroyWindow(self.0) };
+                }
+            }
+        }
+        fn pump() {
+            let mut message = MSG::default();
+            while unsafe { PeekMessageW(&mut message, None, 0, 0, PM_REMOVE) }.as_bool() {
+                unsafe {
+                    let _ = TranslateMessage(&message);
+                    DispatchMessageW(&message);
+                }
+            }
+        }
+        fn await_color(
+            capture: &mut Option<Capture>,
+            display: &Display,
+            point: POINT,
+            white: bool,
+            phase: &str,
+            sequence: &mut u64,
+        ) {
+            let deadline = Instant::now() + Duration::from_secs(8);
+            loop {
+                assert!(
+                    Instant::now() < deadline,
+                    "no new decoded frame for {phase}"
+                );
+                pump();
+                if capture.is_none() {
+                    match Capture::new(display.id) {
+                        Ok(next) => {
+                            let d = next.display();
+                            assert_eq!(
+                                (&d.name, d.x, d.y, d.width, d.height),
+                                (
+                                    &display.name,
+                                    display.x,
+                                    display.y,
+                                    display.width,
+                                    display.height
+                                ),
+                                "owned overlay test must not silently capture another display"
+                            );
+                            *capture = Some(next);
+                        }
+                        Err(Error::CaptureReset(_)) => {
+                            std::thread::sleep(Duration::from_millis(50));
+                            continue;
+                        }
+                        Err(error) => panic!("DXGI recreation failed during {phase}: {error}"),
+                    }
+                }
+                *sequence += 1;
+                match capture.as_mut().unwrap().next_frame(1, *sequence) {
+                    Ok(Some(frame)) => {
+                        let wire = frame.to_wire().unwrap();
+                        let frame = JpegFrame::from_wire(&wire).unwrap();
+                        assert_eq!(frame.meta.monitor, display.id);
+                        let rgb = frame.decode_rgb().unwrap();
+                        assert_eq!(
+                            rgb.len(),
+                            frame.meta.width as usize * frame.meta.height as usize * 3
+                        );
+                        let x = ((point.x - display.x) as u64 * u64::from(frame.meta.width)
+                            / u64::from(display.width)) as usize;
+                        let y = ((point.y - display.y) as u64 * u64::from(frame.meta.height)
+                            / u64::from(display.height)) as usize;
+                        assert!(x < frame.meta.width as usize && y < frame.meta.height as usize);
+                        let pixel = &rgb[(y * frame.meta.width as usize + x) * 3..][..3];
+                        if pixel
+                            .iter()
+                            .all(|&value| if white { value > 223 } else { value < 32 })
+                        {
+                            println!(
+                                "PASS owned DXGI capture phase: {phase}; pixels remain in memory"
+                            );
+                            return;
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(Error::CaptureReset(_)) => *capture = None,
+                    Err(error) => panic!("DXGI capture failed during {phase}: {error}"),
+                }
+                std::thread::sleep(Duration::from_millis(15));
+            }
+        }
+        ensure_dpi_awareness().unwrap();
+        let id = displays()
+            .unwrap()
+            .first()
+            .expect("interactive monitor required")
+            .id;
+        let first = Capture::new(id).expect("real DXGI readback is required, not skipped");
+        let display = first.display().clone();
+        assert!(
+            display.width >= 480 && display.height >= 360,
+            "display too small for owned confirmation fixture"
+        );
+        let mut capture = Some(first);
+        let mut sequence = 0;
+        let base = OwnedWindow::check(
+            unsafe {
+                CreateWindowExW(
+                    WS_EX_TOPMOST,
+                    w!("STATIC"),
+                    w!("FarSail owned capture baseline"),
+                    WS_OVERLAPPEDWINDOW | WS_VISIBLE | BLACK_RECT,
+                    display.x + 40,
+                    display.y + 40,
+                    360,
+                    240,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+            }
+            .unwrap(),
+        );
+        let base_point = base.sample_point();
+        await_color(
+            &mut capture,
+            &display,
+            base_point,
+            false,
+            "before confirmation",
+            &mut sequence,
+        );
+        let confirmation = OwnedWindow::check(
+            unsafe {
+                CreateWindowExW(
+                    WS_EX_TOPMOST,
+                    w!("STATIC"),
+                    w!("FarSail owned confirmation - continue?"),
+                    WS_OVERLAPPEDWINDOW | WS_VISIBLE | WHITE_RECT,
+                    display.x + 60,
+                    display.y + 60,
+                    300,
+                    180,
+                    Some(base.0),
+                    None,
+                    None,
+                    None,
+                )
+            }
+            .unwrap(),
+        );
+        let button = unsafe {
+            CreateWindowExW(
+                Default::default(),
+                w!("BUTTON"),
+                w!("OK"),
+                WS_CHILD | WS_VISIBLE | WINDOW_STYLE(BS_DEFPUSHBUTTON as u32),
+                120,
+                85,
+                100,
+                28,
+                Some(confirmation.0),
+                None,
+                None,
+                None,
+            )
+        }
+        .unwrap();
+        let mut button_pid = 0;
+        unsafe { GetWindowThreadProcessId(button, Some(&mut button_pid)) };
+        assert_eq!(button_pid, std::process::id());
+        let confirmation_point = confirmation.sample_point();
+        await_color(
+            &mut capture,
+            &display,
+            confirmation_point,
+            true,
+            "ordinary confirmation visible",
+            &mut sequence,
+        );
+        let fullscreen = OwnedWindow::check(
+            unsafe {
+                CreateWindowExW(
+                    WS_EX_TOPMOST,
+                    w!("STATIC"),
+                    w!("FarSail owned borderless fullscreen overlay"),
+                    WS_POPUP | WS_VISIBLE | BLACK_RECT,
+                    display.x,
+                    display.y,
+                    display.width as i32,
+                    display.height as i32,
+                    Some(confirmation.0),
+                    None,
+                    None,
+                    None,
+                )
+            }
+            .unwrap(),
+        );
+        await_color(
+            &mut capture,
+            &display,
+            confirmation_point,
+            false,
+            "borderless fullscreen overlay visible",
+            &mut sequence,
+        );
+        drop(fullscreen);
+        await_color(
+            &mut capture,
+            &display,
+            confirmation_point,
+            true,
+            "fullscreen overlay closed",
+            &mut sequence,
+        );
+        drop(confirmation);
+        await_color(
+            &mut capture,
+            &display,
+            base_point,
+            false,
+            "confirmation closed",
+            &mut sequence,
+        );
+        // No display-mode changes, screenshots, SendInput or foreign window messages.
     }
     #[test]
     #[ignore = "injects harmless text only into a verified foreground window created by this test"]

@@ -14,9 +14,10 @@ use windows::{
             Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
             Dxgi::{
                 CreateDXGIFactory1, DXGI_ERROR_ACCESS_LOST, DXGI_ERROR_DEVICE_REMOVED,
-                DXGI_ERROR_DEVICE_RESET, DXGI_ERROR_NOT_FOUND, DXGI_ERROR_WAIT_TIMEOUT,
-                DXGI_OUTDUPL_FRAME_INFO, IDXGIAdapter1, IDXGIFactory1, IDXGIOutput5,
-                IDXGIOutputDuplication,
+                DXGI_ERROR_DEVICE_RESET, DXGI_ERROR_MODE_CHANGE_IN_PROGRESS,
+                DXGI_ERROR_NOT_CURRENTLY_AVAILABLE, DXGI_ERROR_NOT_FOUND, DXGI_ERROR_UNSUPPORTED,
+                DXGI_ERROR_WAIT_TIMEOUT, DXGI_OUTDUPL_FRAME_INFO, IDXGIAdapter1, IDXGIFactory1,
+                IDXGIOutput5, IDXGIOutputDuplication,
             },
         },
     },
@@ -63,6 +64,22 @@ fn unavailable(e: windows::core::Error) -> Error {
         Error::Unavailable(e.to_string())
     }
 }
+fn duplication_creation_error(e: windows::core::Error) -> Error {
+    // These results describe the current output's mode/resource availability,
+    // not every D3D/DXGI API. The host's bounded recovery policy decides how long
+    // to wait; access-denied, protected-content and disconnected desktops still
+    // remain terminal and are never bypassed here.
+    if matches!(
+        e.code(),
+        DXGI_ERROR_UNSUPPORTED
+            | DXGI_ERROR_MODE_CHANGE_IN_PROGRESS
+            | DXGI_ERROR_NOT_CURRENTLY_AVAILABLE
+    ) {
+        Error::CaptureReset(format!("DuplicateOutput1: {e}"))
+    } else {
+        unavailable(e)
+    }
+}
 impl Duplication {
     pub fn new(hmonitor: *mut std::ffi::c_void) -> Result<Self> {
         let factory: IDXGIFactory1 = unsafe { CreateDXGIFactory1() }.map_err(unavailable)?;
@@ -106,7 +123,7 @@ impl Duplication {
                     let duplication = unsafe {
                         output.DuplicateOutput1(&device, 0, &[DXGI_FORMAT_B8G8R8A8_UNORM])
                     }
-                    .map_err(unavailable)?;
+                    .map_err(duplication_creation_error)?;
                     let rotation = unsafe { duplication.GetDesc() }.Rotation.0 as u32;
                     return Ok(Self {
                         _adapter: adapter,
@@ -135,9 +152,6 @@ impl Duplication {
         } {
             Ok(()) => (),
             Err(e) if e.code() == DXGI_ERROR_WAIT_TIMEOUT => return Ok(None),
-            Err(e) if e.code() == DXGI_ERROR_ACCESS_LOST => {
-                return Err(Error::CaptureReset("DXGI access lost".into()));
-            }
             Err(e) => return Err(unavailable(e)),
         }
         let _held = Held(&self.duplication);
@@ -207,5 +221,72 @@ impl Duplication {
             height,
             pitch,
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows::{
+        Win32::{
+            Foundation::{E_ACCESSDENIED, E_INVALIDARG},
+            Graphics::Dxgi::{
+                DXGI_ERROR_ACCESS_DENIED, DXGI_ERROR_CANNOT_PROTECT_CONTENT,
+                DXGI_ERROR_INVALID_CALL, DXGI_ERROR_SESSION_DISCONNECTED,
+            },
+        },
+        core::{Error as WindowsError, HRESULT},
+    };
+
+    fn error(code: HRESULT) -> WindowsError {
+        WindowsError::from_hresult(code)
+    }
+
+    #[test]
+    fn temporary_output_creation_failures_are_recoverable_only_at_creation() {
+        for code in [
+            DXGI_ERROR_UNSUPPORTED,
+            DXGI_ERROR_MODE_CHANGE_IN_PROGRESS,
+            DXGI_ERROR_NOT_CURRENTLY_AVAILABLE,
+        ] {
+            assert!(matches!(
+                duplication_creation_error(error(code)),
+                Error::CaptureReset(_)
+            ));
+            assert!(matches!(unavailable(error(code)), Error::Unavailable(_)));
+        }
+    }
+
+    #[test]
+    fn lost_or_reset_devices_still_recreate_in_both_contexts() {
+        for code in [
+            DXGI_ERROR_ACCESS_LOST,
+            DXGI_ERROR_DEVICE_REMOVED,
+            DXGI_ERROR_DEVICE_RESET,
+        ] {
+            assert!(matches!(unavailable(error(code)), Error::CaptureReset(_)));
+            assert!(matches!(
+                duplication_creation_error(error(code)),
+                Error::CaptureReset(_)
+            ));
+        }
+    }
+
+    #[test]
+    fn security_disconnect_and_programming_errors_are_not_mode_recovery() {
+        for code in [
+            E_ACCESSDENIED,
+            DXGI_ERROR_ACCESS_DENIED,
+            DXGI_ERROR_CANNOT_PROTECT_CONTENT,
+            DXGI_ERROR_SESSION_DISCONNECTED,
+            E_INVALIDARG,
+            DXGI_ERROR_INVALID_CALL,
+        ] {
+            assert!(matches!(
+                duplication_creation_error(error(code)),
+                Error::Unavailable(_)
+            ));
+            assert!(matches!(unavailable(error(code)), Error::Unavailable(_)));
+        }
     }
 }
