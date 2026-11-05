@@ -34,7 +34,6 @@ The second physical observation samples first, then stops app Binder sampling fo
 
 The quiet-window recheck failed: after about 147 seconds without app Binder sampling, the physical phone remained Dozing with keyguard showing=true, running=true and batteryExempt=true, but heartbeatAgeMs=95984 and no connection lock in the effective wake-lock set. Java cpuLeaseHeld=true does not prove the system still honors the lock; system exemption is not an OPlus background-compatibility pass. Sustained physical-device presence remains unresolved; vendor background activity / auto-start restrictions and an unplugged overnight run remain uncovered.
 
-
 ## Later capture-backend follow-up
 
 The limitation above describes the projection backend and the evidence available at that point. A later optional Android 11+ accessibility screenshot backend supports ordinary installation; see [accessibility screenshot sharing](WI-ANDROID-A11Y-038.md). Its emulator results do not replace the failed physical presence observations above. OEM full background allowance has since been selected through normal settings, with sustained physical idle/lock recovery still pending.

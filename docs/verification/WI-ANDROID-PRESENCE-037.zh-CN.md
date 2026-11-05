@@ -34,7 +34,6 @@
 
 静置复核失败：停止应用 Binder 采样约 147 秒后，实体仍 Dozing、keyguard showing=true，服务 running=true 且 batteryExempt=true，但 heartbeatAgeMs=95984，当前生效唤醒锁列表没有连接锁。Java 的 cpuLeaseHeld=true 不能证明系统仍兑现该锁；不将系统电池豁免当作 OPlus 后台兼容性通过。实体长期在线仍未解决，尚未覆盖厂商后台活动 / 自启动限制与拔线整夜。
 
-
 ## 后续采集后端补充
 
 上述限制描述当时的系统录屏后端与验证状态。后续新增支持普通安装的 Android 11+ 可选辅助功能截图，见[辅助功能截图共享](WI-ANDROID-A11Y-038.zh-CN.md)。模拟器结果不替换本篇实体在线失败记录。现已通过普通设置选择厂商完全允许后台行为，实体长时间闲置及锁屏恢复仍待验证。

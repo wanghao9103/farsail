@@ -14,7 +14,7 @@ Hardware screenshots are copied to software RGBA, bounded to a 2560-pixel longes
 
 Screen wake uses ordinary window APIs through a non-exported entry that rechecks screenshot sharing, accessibility and the current native control session’s capture/layout epochs. The first action wakes without replaying coordinates; the window exits automatically without requesting dismissal of a password lock. View-only permission cannot enter this path.
 
-The `onInterrupt` callback interrupts accessibility feedback rather than revoking permission. It clears gestures without suspending valid control/capture; actual permission loss and unbinding still revoke capability. Reference: [accessibility service lifecycle](https://developer.android.com/reference/android/accessibilityservice/AccessibilityService#onInterrupt()).
+The `onInterrupt` callback interrupts accessibility feedback rather than revoking permission. It clears gestures without suspending valid control/capture; actual permission loss and unbinding still revoke capability. Reference: [accessibility service lifecycle](<https://developer.android.com/reference/android/accessibilityservice/AccessibilityService#onInterrupt()>).
 
 ## Verification evidence
 
@@ -32,7 +32,6 @@ The `onInterrupt` callback interrupts accessibility feedback rather than revokin
 
 Screenshot capability does not bypass device passwords or protected pages. Vendor app stops and network restrictions may still interrupt service; adding this backend does not turn the earlier physical-device failure after power exemption into a pass. Android 8–10 retain system projection. Physical vendor compatibility, prolonged unplugged operation, remote input on the lock screen and production release are separate checks, without a pass claim before verification.
 
-
 ## Physical latency follow-up
 
 The user clarified that USB removal was intentional and sharing was not explicitly stopped. On reconnection at 15:39:51, the phone was noninteractive with active screenshot frames and current heartbeats; this single snapshot does not prove uninterrupted service during the entire unplugged window. At 15:40:51 a screenshot exception stopped capture while heartbeats continued. Exact system error logging was added; the original generic exception cannot establish its cause.
@@ -42,7 +41,6 @@ The user reported over one second of perceived delay on the same network with de
 Identical newly obtained RGBA screenshots now reuse the previous JPEG after exact meaningful-row comparison; changed pixels, dimensions and invalid buffers cannot use the cache. Pixel/JPEG state is cleared on local capture stop and fenced by the current epoch. Successful cached frames still receive fresh sequence numbers. Temporary screenshot rate limits now gradually recover toward 350 ms after stable operation, rather than permanently retaining the slower interval. This reduces repeated work and prevents persistent backoff; it does not turn screenshot mode into high-frame-rate projection.
 
 [AOSP request throttling](https://android.googlesource.com/platform/frameworks/base/+/main/core/java/android/accessibilityservice/AccessibilityService.java) defines a 333 ms minimum interval. Screenshot result age, encoding, sending and cumulative ACK age are independent of final WebView presentation time; diagnostics expose no identities, addresses, input payloads or credentials. Candidate `0.1.9-a11y-preview4` is a local ordinary-install optimization build; actual physical comparisons and regression outcomes are recorded in `.local/android-latency-20261104/verification.json`. Public feeds are unchanged.
-
 
 Final checks passed: 18 Rust tests, Clippy, 7 JVM tests, debug/release builds and lint, signature and dual-ABI/16 KB packaging. On the physical device, native processing of unchanged screenshots fell from about 50 ms to 1–3 ms; changed frames still took about 55 ms, preserving dimensions and quality. No percentage improvement in final screen-to-screen delay was measured. Samples are in `.local/android-latency-20261104/physical-preview3-samples.json`, with direct transport re-established at the end; later noninteractive direct samples still advanced frames and ACKs.
 

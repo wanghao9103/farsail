@@ -14,7 +14,7 @@ Android 11 以上可由用户选择 `AccessibilityService.takeScreenshot`，服�
 
 熄屏唤醒由普通窗口 API 完成，入口不导出，启动时重新检查当前截图共享、辅助功能和原生控制会话的采集 / 布局代次。首次操作只唤醒，不重放坐标；窗口自动退出，不请求解除密码锁。仅取得查看权限不能触发该路径。
 
-`onInterrupt` 表示中断辅助功能反馈，不等同于撤销权限。现在只清理手势，不暂停仍有效的控制或截图；实际权限关闭及服务解绑仍撤销能力。依据：[辅助功能生命周期](https://developer.android.com/reference/android/accessibilityservice/AccessibilityService#onInterrupt())。
+`onInterrupt` 表示中断辅助功能反馈，不等同于撤销权限。现在只清理手势，不暂停仍有效的控制或截图；实际权限关闭及服务解绑仍撤销能力。依据：[辅助功能生命周期](<https://developer.android.com/reference/android/accessibilityservice/AccessibilityService#onInterrupt()>)。
 
 ## 验证证据
 
@@ -32,7 +32,6 @@ Android 11 以上可由用户选择 `AccessibilityService.takeScreenshot`，服�
 
 可截图不等于可绕过设备密码或保护页面。厂商后台停止和网络限制仍可能中断；此前实体省电豁免后的在线失败记录不因新增后端而自动转为通过。Android 8–10 继续系统录屏。实体厂商兼容性、长时间拔线、锁屏远程输入及生产发布分别记录，未验证前不作通过承诺。
 
-
 ## 实体延迟补证
 
 用户澄清 USB 是主动拔掉，没有主动停止共享。15:39:51 接回后，手机非交互状态下截图仍活跃且心跳正常；这一快照不能证明整个拔线窗口持续不中断。15:40:51 截图异常使采集停止，但心跳继续。现补充具体系统错误码日志；原先只有异常类型，无法确定原因。
@@ -42,7 +41,6 @@ Android 11 以上可由用户选择 `AccessibilityService.takeScreenshot`，服�
 现在对每次新取得的 RGBA 截图逐行精确比较有效像素，完全相同才复用已有 JPEG；像素、尺寸变化和无效缓冲不能使用旧缓存。停止本地共享会清除像素及 JPEG 缓存，采集代次仍需有效；复用帧也发布新序号。临时截图限流后，稳定运行会逐步恢复至 350 毫秒目标间隔，避免永久停留在降速状态。这能减少重复工作并防止持续退避，不将截图方式变成高帧率录屏。
 
 [AOSP 请求限流](https://android.googlesource.com/platform/frameworks/base/+/main/core/java/android/accessibilityservice/AccessibilityService.java) 定义最小请求间隔 333 毫秒。截图结果年龄、编码、发送及累计 ACK 耗时均与 WebView 最终呈现时间独立；诊断不暴露身份、地址、输入内容或凭据。`0.1.9-a11y-preview4` 为本地普通安装优化候选；实体比较及回归结果记入 `.local/android-latency-20261104/verification.json`，未修改公开更新通道。
-
 
 最终验证：Rust 18 项、Clippy、JVM 7 项、debug/release 构建及 lint、签名及双 ABI/16 KB 检查通过。实体静止画面的原生处理从约 50 毫秒降到 1–3 毫秒；变化帧仍约 55 毫秒，保持尺寸及质量，未测得最终屏到屏延迟改善比例。实体采样在 `.local/android-latency-20261104/physical-preview3-samples.json`，其中末尾已重新建立直连；后续熄屏直连采样仍有新帧及 ACK。
 
