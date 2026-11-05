@@ -2,7 +2,7 @@
 
 # Concurrent viewers, session tabs and retained window geometry
 
-Date: 2026-11-05. Baseline: main `e5bddf0`. Versions remain desktop 0.1.35 / Android 0.1.10; this working-tree change has not been released.
+Date: 2026-11-05. Baseline: main `e5bddf0`. Initial validation used desktop 0.1.35 / Android 0.1.10 before publication; release results are below.
 
 ## Changes
 
@@ -28,3 +28,11 @@ Evidence directory: `.local/viewer-tabs-20261105/`.
 ## Limits
 
 The reported overnight versions and logs were unavailable. The two-target integration is synthetic and the native window probe runs on Linux. Actual Windows multi-phone traffic, a physical phone controller, long overnight use, vendor background restrictions and wide-area network behavior have not been accepted in this run. No production coordinator was modified, no package was published, and no personal-device install was performed.
+
+## Published releases
+
+Desktop [0.1.36](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.36) uses source `cf0b0fb0fe2ef8b66cc8e56e4c580de67384889e`; [release workflow](https://github.com/wanghao9103/farsail/actions/runs/41958143325) succeeded. All 12 public assets, three architecture signatures, source metadata, 11 checksums, native tray reports and the ordinary fixed feed were verified; the publication was reconstructed byte for byte. Only failed publication was retried after the fixed URL matched; original package jobs and version asset identities were retained. Evidence: `.local/client-public-0.1.36/verification.json`.
+
+Android [0.1.12](https://github.com/wanghao9103/farsail/releases/tag/android-v0.1.12), code 13, uses source `82066f9fc8687ee0beb33af0b2f77361148b2228`; [release workflow](https://github.com/wanghao9103/farsail/actions/runs/41959560575) succeeded. All 4 public assets, signed metadata, original certificate, both native ABIs and fixed feed passed verification. A final owned-emulator update from code 1 to code 13 used automatic in-app download and the system installer; the installed APK matched the public hash and data/identity continuity passed. See [phone update acceptance](WI-ANDROID-UPDATES-040.md).
+
+Additional simulation found and fixed shared status-request overlap and an Android input-release request sent before connection readiness. The final three-phone stress ran 60 switches and 6 isolated recoveries with at most one status request in flight per session. The mobile controller test deliberately delayed peer lookup by 450 ms and passed real JNI/QUIC, static-frame control, rotated input, view-only denial and cancellation. An installation-requirement reminder fix was published as Android 0.1.12; the earlier 0.1.11 candidate was cancelled before publication, without moving its tag. Four pre-existing Markdown formatting issues were corrected in a separate documentation commit. Production coordinator deployment and physical overnight tests remain outside this run.

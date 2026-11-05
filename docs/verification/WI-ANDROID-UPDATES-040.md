@@ -2,7 +2,7 @@
 
 # Phone updates without a computer
 
-Date: 2026-11-05. Candidate: Android 0.1.12 / code 13, desktop 0.1.36.
+Date: 2026-11-05. Released versions: Android 0.1.12 / code 13, desktop 0.1.36.
 
 ## Behavior
 
@@ -22,6 +22,10 @@ Evidence: `.local/release-tabs-20261105/`.
 - The normal system installer completed the update. An instrumentation check against the installed code 9 confirmed that the continuity marker in app preferences survived (`public-updater-verify-retry.log`). The first verification was started while Android still held the package frozen during installation; that failed startup was retained rather than counted as an application failure.
 - The tests use the owned `farsail-memory-api35` emulator. No personal device was installed, uninstalled or cleared. The initial baseline's manifest and APK are retained under `update-baseline/`; no production update channel was changed for this test.
 
-## Remaining release acceptance
+## Release acceptance
 
-The published 0.1.12 APK, signature, source provenance, fixed feed and an update to that exact release are checked after publication. Physical vendor background policies, arbitrary captive/metered networks and unattended background downloads are outside this test. This implementation checks when the app starts or returns to the foreground; it does not promise a permanently running background updater or silent package installation.
+The published 0.1.12 APK, signature, source provenance, fixed feed and update to that exact release passed the checks below. Physical vendor background policies, arbitrary captive/metered networks and unattended background downloads are outside this test. This implementation checks when the app starts or returns to the foreground; it does not promise a permanently running background updater or silent package installation.
+
+The [0.1.12 release](https://github.com/wanghao9103/farsail/releases/tag/android-v0.1.12) and its [workflow](https://github.com/wanghao9103/farsail/actions/runs/41959560575) completed successfully from source `82066f9fc8687ee0beb33af0b2f77361148b2228`. Public downloads matched all 4 API asset digests; Ed25519 metadata, original certificate, non-debuggable package, both ABI 16 KB alignments and ordinary fixed-feed bytes passed (`.local/android-public-0.1.12/final-verification.json`). Only the failed publication step was retried after the normal URL matched; version assets were unchanged. Both this release and desktop 0.1.36 are published as regular releases.
+
+The exact public package then auto-downloaded on the owned emulator without pressing Download. The normal system installer upgraded the code 1 baseline to code 13; verification checked the continuity marker, first installation time and package UID. The installed APK SHA-256 was `b7edc3ba4ca7b7edc3db91bf788630715b76d9c7200c5c7a35c235342b21085f`, identical to the public package. Setup used ADB; the update itself used the app and system installer. Evidence: `.local/release-tabs-20261105/exact-public-update-verification.json`, `exact-012-update-prepare.log` and `exact-012-update-verify.log`. Physical-phone behavior remains untested. The 0.1.11 candidate was cancelled before publication to correct hidden installation-requirement messages on the home reminder; its tag was retained.
