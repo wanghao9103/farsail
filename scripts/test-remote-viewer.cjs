@@ -1296,7 +1296,8 @@ const fs = require("node:fs");
     .getByRole("button", { name: "重试控制", exact: true })
     .click();
   await page
-    .getByText("控制已暂停", { exact: true })
+    .locator(".viewer-title-status")
+    .filter({ hasText: "控制已暂停" })
     .waitFor({ state: "detached" });
   assert(await page.getByAltText("远端桌面").isVisible());
   await page.getByText("更多操作", { exact: true }).click();
