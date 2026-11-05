@@ -593,6 +593,10 @@ function App() {
             FarSail <span className="window-subtitle">遥舟</span>
           </button>
           <div id="window-menu" className="window-menu" popover="auto">
+            <button onClick={() => {
+              document.getElementById("window-menu")?.hidePopover();
+              void act(() => invoke("viewer_window_action", { action: "cascade" }), "远程窗口已堆叠", false);
+            }}>堆叠远程窗口</button>
             <button
               onClick={() => {
                 document.getElementById("window-menu")?.hidePopover();
@@ -4016,6 +4020,9 @@ function Viewer({
             >
               <summary>更多操作</summary>
               <div className="viewer-popover">
+                <button type="button" onClick={() => windowAction("cascade")}>
+                  堆叠全部远程窗口
+                </button>
                 <label className="viewer-pin">
                   <input
                     type="checkbox"

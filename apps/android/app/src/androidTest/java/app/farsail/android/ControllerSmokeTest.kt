@@ -32,6 +32,7 @@ class ControllerSmokeTest {
         val list = row.getJSONArray("inputs"); (0 until list.length()).map { list.getJSONObject(it) }
     }
     private fun text(label: String): UiObject2 {
+        if (device.hasObject(By.desc("远程画面"))) device.findObject(By.desc("显示远程工具"))?.click()
         var node = device.findObject(By.text(label))
         if (node == null || node.visibleBounds.isEmpty) {
             val scroller = UiScrollable(UiSelector().scrollable(true))
@@ -85,6 +86,7 @@ class ControllerSmokeTest {
             text("退出").click(); choose("Synthetic phone")
             // The phone peer sends one frame only; control must outlive an idle image.
             Thread.sleep(6200)
+            device.findObject(By.desc("显示远程工具"))?.click()
             assertTrue(device.findObject(By.textStartsWith("已连接")).text.contains("可控制"))
             text("键盘").click()
             assertFalse(device.hasObject(By.text("Ctrl+V")))
@@ -94,6 +96,7 @@ class ControllerSmokeTest {
             for (label in listOf("返回","主屏幕","最近任务")) text(label).click()
             await { inputs(true).filter { it.optString("kind") == "key" && it.optBoolean("down") }.map { it.optInt("vk") }.containsAll(listOf(166,172,93)) }
             text("旋转画面").click()
+            device.waitForIdle()
             val rotated = point(320,640,1,.25f,.75f); device.click(rotated.first,rotated.second)
             await { inputs(true).any { it.optString("kind") == "button" && !it.optBoolean("down") && kotlin.math.abs(it.optDouble("x")-.75)<.015 && kotlin.math.abs(it.optDouble("y")-.75)<.015 } }
             device.takeScreenshot(java.io.File(context.filesDir,"controller-phone.png"))

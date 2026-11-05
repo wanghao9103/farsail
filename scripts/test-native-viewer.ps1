@@ -17,6 +17,7 @@ try {
     $report = Get-Content $env:FARSAIL_IPC_SMOKE_PATH -Raw | ConvertFrom-Json
     if (!$report.ok) { throw ($report | ConvertTo-Json -Depth 5) }
     if (!$report.initial.maximized -or $report.restored.maximized) { throw 'Viewer must start maximized and support restore' }
+    if ($report.cascade.viewers.Count -ne 3) { throw 'Three independent viewer windows must cascade' }
     $closed = Get-Content ($env:FARSAIL_IPC_SMOKE_PATH + '.closed') -Raw | ConvertFrom-Json
     if (!$closed.mainExists -or $process.HasExited) { throw 'Closing viewer also closed main' }
     Copy-Item $env:FARSAIL_IPC_SMOKE_PATH .local/native-viewer-verification.json -Force

@@ -30,7 +30,8 @@ jobs:
       - run: cargo build -p farsail-desktop
       - name: Native viewer isolation and browser interaction regressions
         run: |
-          npm install --no-save --package-lock=false playwright
+          $uiTools = Join-Path $env:RUNNER_TEMP 'farsail-ui-tools'
+          npm install --prefix $uiTools --no-save --package-lock=false playwright@1.56.1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           New-Item -ItemType Directory -Force .local | Out-Null
           $vite = Start-Process node -ArgumentList '../../node_modules/vite/bin/vite.js --host 127.0.0.1 --port 1420 --strictPort' -WorkingDirectory (Join-Path $PWD 'apps/desktop') -WindowStyle Hidden -PassThru
@@ -40,7 +41,7 @@ jobs:
             }
             ./scripts/test-native-viewer.ps1
             $env:UI_BROWSER = 'msedge'
-            $env:NODE_PATH = Join-Path $PWD 'node_modules'
+            $env:NODE_PATH = Join-Path $uiTools 'node_modules'
             node scripts/test-desktop-ui.cjs
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
             node scripts/test-client-updates-ui.cjs
