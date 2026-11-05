@@ -70,3 +70,11 @@
 窗口工作区统一维护切换/关闭的有序队列及单次在途标签查询。用户操作先推进意图代次再立即选择；旧代次或旧生命周期的快照不能覆盖新选择。操作完成后重新读取原生实际状态，包含最新选择失败后的恢复、新打开设备及重连后的会话 ID。effect 重放保留同一个 controller，避免旧查询与新查询重叠。过时选择的失败不覆盖后来结果，但关闭失败即使随后切换成功也仍然提示。
 
 发布源码为 `74a5e41a39754f984eaaf7f8e6a7066e013c314a`，打包结果在下文单独记录。该源码的生产构建、30 项纯状态测试（含 9 项新标签策略）及 Chromium/WebKit 完整查看器套件通过。浏览器故障夹具持有旧 A 快照和 B 操作，在用户选择 C/E 后才放行，验证最后意图保持、最多 1 个在途查询/操作，再覆盖选择失败恢复、关闭顺序及关闭失败后切换成功。既有输入隔离、全屏和标签溢出回归仍包含其中。证据：`.local/viewer-races-20261105/verification.json` 及最终浏览器日志。这些使用合成 IPC，不是实体多手机性能测量。
+
+## 0.1.39 正式交付
+
+桌面 [0.1.39](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.39) 已设为正式版及 GitHub Latest，源码 `74a5e41a39754f984eaaf7f8e6a7066e013c314a`。包含上文全屏设备切换、标签溢出导航、相邻关闭、WebKit 悬停修复及连续切换顺序保护。[Windows CI](https://github.com/wanghao9103/farsail/actions/runs/42000350834) 和 [Ubuntu 两架构](https://github.com/wanghao9103/farsail/actions/runs/42000350804) 均在此精确源码通过；Ubuntu 首轮恢复缓存时遇到构建机磁盘不足，删除对应可重建缓存后仅重试失败任务。
+
+[发布流程](https://github.com/wanghao9103/farsail/actions/runs/42000624959)成功。第 1 次保留已成功的 Windows/Linux x64 包；ARM 下载历史测试包遇到 HTTP 504。仅重试失败部分后，ARM 在第 2 次通过。全部 12 个附件上传后，最后通道比对失败；先确认普通固定清单与版本清单逐字节一致，再于第 3 次仅重试发布。真实成功包的原任务 ID、时间及日志通过 `package-success-proof.json` 和来源记录绑定同一 run/source；12 个版本附件的 ID、摘要、大小及创建/更新时间全都保持不变。
+
+独立匿名下载、3 个平台签名、11 条校验和、架构/源码元数据、原生托盘报告、逐字节重建及普通固定更新通道全部通过，设为正式版/Latest 后也完成最终复核。安装包使用 12 个精确 HTTP 分段读取，全部首次完成，本轮未实际触发续传。gh 2.46.0 在重试后对原任务返回过空日志；采集器保留严格报告断言，转读真实任务 REST 日志，并确认与保留的原日志字节一致。证据：`.local/client-public-0.1.39/verification.json`、`immutable-assets-final.json`、`source-ci-verification.json`、`tray-actual-rest-log-provenance.json` 及下载/包来源记录。未在个人设备安装、未发布安卓或部署协调服务。
