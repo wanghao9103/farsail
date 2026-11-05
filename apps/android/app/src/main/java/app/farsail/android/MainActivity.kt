@@ -13,7 +13,7 @@ import android.widget.*
 import org.json.JSONObject
 
 class MainActivity : Activity() {
-    private enum class Page { LOGIN, REGISTER, VERIFY, SERVER, SETTINGS, SHARING, UPDATES, CONTROL_SETUP, HOME }
+    private enum class Page { LOGIN, REGISTER, VERIFY, SERVER, SETTINGS, SHARING, UPDATES, CONTROL_SETUP, BACKGROUND_SETUP, HOME }
     private val app get() = application as FarSailApp
     private lateinit var ui: MobileUi
     private lateinit var body: LinearLayout
@@ -40,7 +40,6 @@ class MainActivity : Activity() {
     private var forgetControl: Button? = null
     private var connectionDetail: TextView? = null
     private var backgroundDetail: TextView? = null
-    private var backgroundSetup: Button? = null
     private var pendingControlEnable = false
     private var guideConnected = false
     private var share: Button? = null
@@ -128,7 +127,7 @@ class MainActivity : Activity() {
             devices?.close(); devices = null; incoming = null
             rendered = page; body.removeAllViews(); busyButtons.clear(); authEmail = null
             (body.parent as ScrollView).scrollTo(0, 0)
-            status = null; sharingDetail = null; controlDetail = null; forgetControl = null; connectionDetail = null; share = null; control = null; requestBox = null; updateText = null; updateButton = null; updateProgress = null
+            status = null; sharingDetail = null; controlDetail = null; forgetControl = null; connectionDetail = null; backgroundDetail = null; share = null; control = null; requestBox = null; updateText = null; updateButton = null; updateProgress = null
             header()
             updateNotice = if (page in listOf(Page.HOME, Page.SETTINGS, Page.LOGIN)) UpdateNoticeView(this) {
                 when (app.updates.state.phase) {
@@ -146,6 +145,7 @@ class MainActivity : Activity() {
                 Page.SHARING -> sharing()
                 Page.UPDATES -> updates()
                 Page.CONTROL_SETUP -> controlSetup()
+                Page.BACKGROUND_SETUP -> backgroundSettings()
                 Page.HOME -> home()
             }
         }
@@ -163,7 +163,6 @@ class MainActivity : Activity() {
         if (app.ready && !app.busy) ConnectionService.synchronize(this, app.state, foreground)
         connectionDetail?.text = if (ConnectionService.enabled(this)) ConnectionService.detail else "仅共享或连接期间保持在线。"
         backgroundDetail?.text = BackgroundSetup.detail(this)
-        backgroundSetup?.visibility = if (ConnectionService.enabled(this) && !BackgroundSetup.exempt(this)) View.VISIBLE else View.GONE
         maybeRestoreSharing()
     }
     private fun maybeRestoreSharing() {
@@ -269,14 +268,31 @@ class MainActivity : Activity() {
             setOnCheckedChangeListener { _, enabled -> ConnectionService.preference(this@MainActivity, enabled) }
         }
         connectionDetail = ui.text(body, "", 13f, secondary = true)
-        ui.text(body, "锁屏或停止共享后仍保持设备连接，可能增加耗电；查看屏幕仍需系统录屏授权。", 13f, secondary = true)
+        ui.text(body, "锁屏或停止共享后仍保持设备连接，可能增加耗电；查看屏幕仍需开启共享并取得系统授权。", 13f, secondary = true)
         backgroundDetail = ui.text(body, "", 13f, secondary = true)
-        ui.button(body, "后台在线设置") { BackgroundSetup.open(this) }
-        ui.gap(body, 12)
-        ui.row(body, "后台运行", "管理手机的后台与电池设置") {
-            startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, android.net.Uri.parse("package:$packageName")))
-        }
+        ui.row(body, "锁屏与后台设置", "电池优化、后台活动、自启动与辅助功能") { go(Page.BACKGROUND_SETUP) }
         if (signedIn()) ui.link(body, "退出登录") { stop(); RemotePreferences.clear(this); perform("logout", success = "") { history.clear(); go(Page.LOGIN, true) } }
+    }
+    private fun backgroundSettings() {
+        title("锁屏与后台设置", "${Build.MANUFACTURER} ${Build.MODEL} · Android ${Build.VERSION.RELEASE}")
+        val online = ui.card(body)
+        ui.text(online, "保持设备在线", 18f, bold = true)
+        ui.text(online, "先在设置中开启「保持本机在线」。在线仅表示设备可连接，查看画面还需要已开启屏幕共享。", 13f, secondary = true)
+        backgroundDetail = ui.text(online, "", 13f, secondary = true)
+        ui.gap(online, 12)
+        ui.button(online, "设置电池优化豁免") { BackgroundSetup.open(this) }
+        ui.button(online, "打开应用后台设置", false) { BackgroundSetup.openAppDetails(this) }
+        if (BackgroundSetup.colorOs()) {
+            ui.text(online, "OPPO / ColorOS：在应用详情的「耗电管理」或系统设置的「电池 → 应用耗电管理」找到 FarSail，允许后台运行；若有自启动选项也请允许。旧版系统可能在「手机管家 → 权限隐私 → 自启动管理」。菜单名称随版本变化，请以实际页面为准。", 13f, secondary = true)
+            ui.button(online, "打开手机管家", false) { BackgroundSetup.openPhoneManager(this) }
+            ui.text(online, "系统电池豁免不能代表厂商后台和自启动已放行；这些开关仍需你手动确认。", 13f, secondary = true)
+        } else ui.text(online, "在应用详情中查找电池、后台活动或自启动设置，按手机实际菜单允许 FarSail 在后台运行。", 13f, secondary = true)
+        ui.gap(body, 16)
+        val capture = ui.card(body)
+        ui.text(capture, "画面与远程控制", 18f, bold = true)
+        ui.text(capture, BackgroundSetup.captureDetail(), 13f, secondary = true)
+        ui.button(capture, "管理辅助功能授权", false) { go(Page.CONTROL_SETUP) }
+        ui.button(capture, "管理屏幕共享", false) { go(Page.SHARING) }
     }
     private fun updates() {
         title("软件更新", "当前版本 ${app.updates.currentVersion}")
@@ -302,7 +318,7 @@ class MainActivity : Activity() {
         boundWhenBuilt = bound(); lastRequests = ""
         ui.text(body, "我的设备", 28f, bold = true); ui.gap(body, 16)
         incoming = ui.link(body, "") { go(Page.SHARING) }.apply { visibility = View.GONE }
-        if (bound()) backgroundSetup = ui.link(body, "允许锁屏后保持在线 · 一次性设置") { BackgroundSetup.open(this) }
+        if (bound()) ui.link(body, "锁屏与后台设置") { go(Page.BACKGROUND_SETUP) }
         if (bound() && Build.VERSION.SDK_INT >= 30 && !RemotePreferences.accessibilityCapture(this, app.state))
             ui.link(body, "启用免重复确认共享") { chooseAccessibilityCapture() }
         if (!bound()) bindPhone(ui.card(body))
@@ -337,9 +353,9 @@ class MainActivity : Activity() {
             ui.toggle(card, "共享期间防止自动熄屏", SharingPower.enabled(this)).apply {
                 setOnCheckedChangeListener { _, enabled -> SharingPower.preference(this@MainActivity, enabled) }
             }
-            ui.text(card, if (RemotePreferences.accessibilityCapture(this, app.state)) "截图共享不依赖录屏会话；系统保护页面和厂商后台策略仍可能限制共享。" else "手动锁屏会中断共享，解锁后需重新授权。", 12f, secondary = true)
+            ui.text(card, if (RemotePreferences.accessibilityCapture(this, app.state)) "截图共享不依赖录屏会话；系统保护页面和厂商后台策略仍可能限制共享。" else "锁屏后可能黑屏或中断；发生中断时需解锁并重新授权。", 12f, secondary = true)
             ui.link(card, "共享与锁屏说明") {
-                AlertDialog.Builder(this).setTitle("共享与锁屏").setMessage(if (RemotePreferences.accessibilityCapture(this, app.state)) "辅助功能截图不依赖录屏会话，无需重复确认录屏。系统保护页面可能黑屏，锁屏和后台兼容性取决于手机系统；此功能不会绕过密码。\n\n防止自动熄屏会增加耗电，可按需要关闭；手动锁屏不会主动停止截图服务。\n\n控制其他设备无需开启这台手机的共享或辅助功能。" else "防止自动熄屏开启后，屏幕可变暗但不会自动熄屏，切到其他应用也有效，会增加耗电。\n\n手动锁屏仍会结束系统录屏授权。解锁后，点击恢复屏幕共享并确认系统授权。\n\n控制其他设备无需开启这台手机的共享或辅助功能。")
+                AlertDialog.Builder(this).setTitle("共享与锁屏").setMessage(if (RemotePreferences.accessibilityCapture(this, app.state)) "辅助功能截图不依赖录屏会话，无需重复确认录屏。系统保护页面可能黑屏，锁屏和后台兼容性取决于手机系统；此功能不会绕过密码。\n\n防止自动熄屏会增加耗电，可按需要关闭；手动锁屏不会主动停止截图服务。\n\n控制其他设备无需开启这台手机的共享或辅助功能。" else "防止自动熄屏开启后，屏幕可变暗但不会自动熄屏，切到其他应用也有效，会增加耗电。\n\n锁屏后，系统可能停止录屏或限制画面。发生中断时，解锁后点击恢复屏幕共享并确认系统授权。\n\n控制其他设备无需开启这台手机的共享或辅助功能。")
                     .setPositiveButton("知道了", null).show()
             }
             ui.divider(card)
@@ -349,6 +365,7 @@ class MainActivity : Activity() {
             forgetControl = ui.link(card, "取消已记住的控制设置") { pendingControlEnable = false; setControl(false); draw() }
         }
         ui.link(body, "管理远程控制授权") { go(Page.CONTROL_SETUP) }
+        ui.link(body, "锁屏与后台设置") { go(Page.BACKGROUND_SETUP) }
         ui.gap(body, 16)
         ui.toggle(body, "打开 App 时恢复上次共享", RemotePreferences.autoRestore(this)).apply {
             setOnCheckedChangeListener { _, enabled -> RemotePreferences.autoRestore(this@MainActivity, enabled) }
