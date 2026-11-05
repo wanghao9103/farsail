@@ -1639,27 +1639,25 @@ td {
   position: relative;
   flex: none;
 }
-.viewer-tab-menu summary {
+.viewer-tab-menu-trigger {
   width: 30px;
   height: 35px;
   display: grid;
   place-items: center;
   color: #b7c1c9;
   cursor: pointer;
-  list-style: none;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  background: transparent;
 }
-.viewer-tab-menu summary::-webkit-details-marker {
-  display: none;
-}
-.viewer-tab-menu summary svg {
+.viewer-tab-menu-trigger > svg {
   width: 16px;
   height: 16px;
 }
 .viewer-tab-menu-list {
-  position: absolute;
-  top: calc(100% + 5px);
-  right: 0;
-  width: 240px;
+  position: fixed;
+  z-index: 52;
   max-height: calc(100dvh - 56px);
   overflow-y: auto;
   background: #22272e;
@@ -1667,6 +1665,90 @@ td {
   border-radius: 8px;
   box-shadow: 0 8px 24px #0006;
   padding: 6px;
+  overscroll-behavior: contain;
+}
+.viewer-tab-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0;
+  cursor: default;
+}
+.viewer-tab-menu-trigger[aria-expanded="true"],
+.viewer-tab-menu-trigger:hover {
+  background: #353a42;
+}
+.viewer-fullscreen-switcher {
+  position: absolute;
+  left: 12px;
+  top: 0;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  max-width: calc(50% - 44px);
+  border: 1px solid #424b53;
+  border-top: 0;
+  border-radius: 0 0 8px 8px;
+  background: #22272ee8;
+  color: #d7e8ee;
+}
+.viewer-fullscreen-switcher .viewer-tab-menu-trigger {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  width: auto;
+  min-width: 0;
+  height: 30px;
+  border-radius: 0 0 0 8px;
+}
+.viewer-fullscreen-switcher .viewer-tab-menu-trigger > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+.viewer-fullscreen-switcher .viewer-tab-menu-trigger > svg {
+  flex: none;
+}
+.viewer-fullscreen-device-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.viewer-fullscreen-device-name > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.viewer-session-count {
+  flex: none;
+  color: #a0e5d6;
+  font-size: 11px;
+}
+.viewer-exit-fullscreen {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-left: 1px solid #424b53;
+  border-radius: 0 0 8px 0;
+  background: transparent;
+  color: inherit;
+}
+.viewer-exit-fullscreen:hover {
+  background: #353a42;
+}
+.viewer-exit-fullscreen svg {
+  width: 18px;
+  height: 18px;
 }
 .viewer-tab-menu-list strong {
   display: block;
@@ -1824,6 +1906,9 @@ td {
 }
 .viewer-window .viewer-toolbar button:focus-visible,
 .viewer-add:focus-visible,
+.viewer-tab-menu-trigger:focus-visible,
+.viewer-tab-menu-list button:focus-visible,
+.viewer-exit-fullscreen:focus-visible,
 .viewer-tab button:focus-visible,
 .viewer-reveal:focus-visible {
   outline: 2px solid var(--accent);

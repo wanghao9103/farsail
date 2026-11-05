@@ -44,3 +44,13 @@
 应用内浏览器 targeted 检查使用合成原生 IPC，验证发出 drag 请求但不展开工具栏、不注入远端鼠标 / 按键。原 Windows 浏览器套件发现输入恢复测试的文案选择器匹配两处元素；仅修改测试，把定位收窄到可见标题状态，随后[完整 Windows CI](https://github.com/wanghao9103/farsail/actions/runs/41987128858)通过。后续提交记录于 `.local/client-public-0.1.38/ui-selector-fix.json`，已证明 apps/desktop、crates、packages 中产品文件与发布标签相同，仅浏览器测试变化；不算用户实体桌面拖动验收。
 
 [发布流程](https://github.com/wanghao9103/farsail/actions/runs/41985606172)成功。12 个公开附件、三个平台签名、11 条校验和、原生托盘证据、逐字节重建及普通固定更新通道均通过。首轮仅最终清单比对失败，普通地址下载匹配后仅重试失败发布；全部版本附件 ID、摘要、大小及时间保持不变。慢速 Ubuntu 下载通过匿名分段 / 断点读取完成，先核对完整 SHA-256，再验证签名，保留中断下载日志。证据：`.local/client-public-0.1.38/delivery-verification.json`、`verification.json`、`ranged-download-provenance.json`、`immutable-assets-final.json`。没有发布安卓、部署协调服务或安装个人设备。
+
+## 0.1.38 后续：全屏设备导航（未发布）
+
+全屏画布新增独立设备切换入口，显示当前设备与连接数，并提供独立退出按钮。选择设备不会展开远程工具。普通窗口和全屏设备列表均支持 Escape、方向键、Home/End 与 Tab；显式选择后焦点转移到新设备的切换入口。遮罩关闭会消费这次点击，不把它送到远端画面，列表定位也受窄窗口边界限制。
+
+全屏状态改由窗口工作区持有，不跟随单个会话。resize 查询有代次检查；迟到的拖动或手机布局快照不能覆盖之后的全屏选择。原生窗口命令与会话权限保持既有边界。
+
+证据：`.local/viewer-navigation-20261105/verification.json`。TypeScript/Vite 生产构建、17 项查看器策略、完整 Chromium 查看器套件及 Chromium/WebKit 新导航专项通过。新增夹具切换 5 个已连接会话，检查 320×640 普通窗口和 440×900 全屏，验证画布没有标题栏留白、键盘焦点、无远端输入注入、无重连/关闭调用、独立退出全屏以及故意迟到的旧拖动响应。这些使用合成 IPC，不是实体手机。
+
+完整本地 WebKit 套件已尝试，在既有文件粘贴后的工具栏展开步骤超时；未修改的基线 `981846a` 同样复现该超时。两份日志保留，不计作完整 WebKit 通过。Windows 实体渲染、真实多手机性能及真实断线后的全屏恢复尚未验证。本次仅修改源码，未发布新包、修改安卓或部署协调服务。

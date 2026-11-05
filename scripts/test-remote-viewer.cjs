@@ -61,6 +61,8 @@ const fs = require("node:fs");
       layout: 1,
       deliveredLayout: 0,
       fullscreen: false,
+      deferWindowAction: null,
+      releaseWindowAction: null,
       calls: [],
       delay: false,
       release: null,
@@ -256,7 +258,13 @@ const fs = require("node:fs");
         }
         if (cmd === "viewer_window_action") {
           if (args.action === "fullscreen") f.fullscreen = !f.fullscreen;
-          return { fullscreen: f.fullscreen };
+          const snapshot = { fullscreen: f.fullscreen };
+          if (args.action === f.deferWindowAction) {
+            await new Promise((resolve) => {
+              f.releaseWindowAction = resolve;
+            });
+          }
+          return snapshot;
         }
         return {};
       },
@@ -2157,6 +2165,208 @@ const fs = require("node:fs");
     0,
     "switching/closing tabs does not reconnect other phones",
   );
+  // Five sessions remain available by mouse in fullscreen, independently of
+  // the remote-command toolbar. Popup navigation must stay on the local side.
+  await load();
+  await page.evaluate(() => {
+    window.fixture.tabs = ["A", "B", "C", "D", "E"].map((letter, index) => ({
+      instance: `phone-${letter.toLowerCase()}`,
+      id: `session-${letter.toLowerCase()}`,
+      name: `测试手机 ${letter}`,
+      selected: index === 0,
+    }));
+  });
+  await page.getByRole("tab", { name: "测试手机 A", exact: true }).waitFor();
+  const activePanel = () => page.getByRole("tabpanel");
+  const deviceSwitcher = () =>
+    page.getByRole("button", {
+      name: "切换远程设备",
+      exact: true,
+    });
+  const popup = () => page.locator(".viewer-tab-menu-list");
+  await activePanel().getByAltText("远端桌面").waitFor();
+  await page.mouse.move(500, 600);
+  await activePanel().locator(".remote-screen").focus();
+  await activePanel().locator(".viewer-toolbar").waitFor({ state: "hidden" });
+  const beforeLocalMenu = await page.evaluate(
+    () => window.fixture.calls.length,
+  );
+  await deviceSwitcher().press("ArrowDown");
+  await page.waitForFunction(
+    () => document.activeElement?.getAttribute("aria-label") === "测试手机 A",
+  );
+  await page.keyboard.press("End");
+  await page.waitForFunction(
+    () => document.activeElement?.getAttribute("aria-label") === "测试手机 E",
+  );
+  await page.keyboard.press("Home");
+  await page.keyboard.press("ArrowDown");
+  await page.waitForFunction(
+    () => document.activeElement?.getAttribute("aria-label") === "测试手机 B",
+  );
+  await page.keyboard.press("ArrowUp");
+  await page.waitForFunction(
+    () => document.activeElement?.getAttribute("aria-label") === "测试手机 A",
+  );
+  await page.keyboard.press("Escape");
+  await popup().waitFor({ state: "hidden" });
+  assert.equal(
+    await deviceSwitcher().evaluate(
+      (button) => button === document.activeElement,
+    ),
+    true,
+  );
+  assert.equal(
+    await page
+      .getByRole("tab", { name: "测试手机 A", exact: true })
+      .getAttribute("aria-selected"),
+    "true",
+  );
+  assert(
+    !(await activePanel().locator(".viewer-toolbar").isVisible()),
+    "device navigation cannot expand remote controls",
+  );
+  // A small portrait window must keep the full popup inside its client area.
+  await page.setViewportSize({ width: 320, height: 640 });
+  await deviceSwitcher().press("End");
+  const normalMenuBounds = await popup().boundingBox();
+  assert(
+    normalMenuBounds &&
+      normalMenuBounds.x >= 0 &&
+      normalMenuBounds.x + normalMenuBounds.width <= 320,
+  );
+  assert(
+    normalMenuBounds.y >= 0 &&
+      normalMenuBounds.y + normalMenuBounds.height <= 640,
+  );
+  await page.keyboard.press("Tab");
+  await popup().waitFor({ state: "hidden" });
+  assert.equal(
+    await page
+      .getByRole("button", { name: "连接其他设备", exact: true })
+      .evaluate((button) => button === document.activeElement),
+    true,
+    "Tab leaves the list and closes it without taking focus back",
+  );
+  await page.setViewportSize({ width: 1200, height: 800 });
+  await page.getByRole("button", { name: "显示工具栏", exact: true }).click();
+  // A native drag can reply after a later fullscreen action. Its old snapshot
+  // must not overwrite window-level state shared by the other sessions.
+  await page.evaluate(() => {
+    window.fixture.deferWindowAction = "drag";
+  });
+  await activePanel()
+    .locator(".viewer-titlebar .window-drag")
+    .dispatchEvent("mousedown", {
+      button: 0,
+      detail: 1,
+    });
+  await page.waitForFunction(() => !!window.fixture.releaseWindowAction);
+  await page.getByRole("button", { name: "全屏切换", exact: true }).click();
+  await page.waitForFunction(
+    () => document.querySelectorAll(".viewer-titlebar").length === 0,
+  );
+  await page.evaluate(async () => {
+    window.fixture.releaseWindowAction();
+    window.fixture.deferWindowAction = null;
+    await new Promise(requestAnimationFrame);
+  });
+  assert.equal(
+    await page.locator(".viewer-titlebar").count(),
+    0,
+    "a late non-fullscreen action cannot restore an outdated fullscreen snapshot",
+  );
+  await activePanel().locator(".remote-screen").focus();
+  await page.getByRole("button", { name: "退出全屏", exact: true }).hover();
+  await activePanel().locator(".viewer-toolbar").waitFor({ state: "hidden" });
+  for (const letter of ["E", "C", "B", "D", "A"]) {
+    await deviceSwitcher().click();
+    await popup()
+      .getByRole("button", { name: `测试手机 ${letter}`, exact: true })
+      .click();
+    await popup().waitFor({ state: "hidden" });
+    await page.waitForFunction(
+      (letter) =>
+        document.querySelector(".viewer-tab-panel:not([hidden])")?.id ===
+        `panel-phone-${letter.toLowerCase()}`,
+      letter,
+    );
+    await activePanel().getByAltText("远端桌面").waitFor();
+    await page.waitForFunction(
+      () =>
+        document.querySelector(
+          ".viewer-tab-panel:not([hidden]) .viewer-tab-menu-trigger",
+        ) === document.activeElement,
+    );
+    assert.equal(await page.evaluate(() => window.fixture.fullscreen), true);
+    assert.equal(
+      await page.locator(".viewer-titlebar").count(),
+      0,
+      "switching a fullscreen session cannot restore ordinary titlebars",
+    );
+    assert(
+      !(await activePanel().locator(".viewer-toolbar").isVisible()),
+      "switching devices keeps remote tools hidden",
+    );
+    const canvas = await activePanel().locator(".remote-screen").boundingBox();
+    assert(
+      canvas && canvas.y === 0 && canvas.height === 800,
+      "fullscreen canvas must not retain the ordinary titlebar padding",
+    );
+    assert(
+      (
+        await page.locator(".viewer-fullscreen-device-name").innerText()
+      ).includes(`测试手机 ${letter}`),
+    );
+  }
+  await page.setViewportSize({ width: 440, height: 900 });
+  await deviceSwitcher().click();
+  const fullscreenMenuBounds = await popup().boundingBox();
+  assert(
+    fullscreenMenuBounds &&
+      fullscreenMenuBounds.x >= 0 &&
+      fullscreenMenuBounds.x + fullscreenMenuBounds.width <= 440,
+  );
+  assert(
+    fullscreenMenuBounds.y >= 0 &&
+      fullscreenMenuBounds.y + fullscreenMenuBounds.height <= 900,
+  );
+  await page.screenshot({
+    path: ".local/ui-verification/viewer-five-fullscreen-menu.png",
+  });
+  // The first click on the canvas dismisses the popup; it is not a remote click.
+  await page.mouse.click(350, 600);
+  await popup().waitFor({ state: "hidden" });
+  assert(!(await activePanel().locator(".viewer-toolbar").isVisible()));
+  const localMenuCalls = await page.evaluate(
+    (before) => window.fixture.calls.slice(before),
+    beforeLocalMenu,
+  );
+  assert.equal(
+    localMenuCalls.filter(
+      (call) => call.cmd === "remote_input" && call.args.input != null,
+    ).length,
+    0,
+    "menu keys and backdrop clicks must not reach any remote device",
+  );
+  assert.equal(
+    localMenuCalls.filter((call) => call.cmd === "viewer_reconnect").length,
+    0,
+    "fullscreen switching keeps existing sessions connected",
+  );
+  assert.equal(
+    localMenuCalls.filter((call) => call.cmd === "viewer_close_tab").length,
+    0,
+    "choosing a device must not close another connection",
+  );
+  await page.getByRole("button", { name: "退出全屏", exact: true }).click();
+  await page.getByRole("tab", { name: "测试手机 A", exact: true }).waitFor();
+  assert.equal(await page.evaluate(() => window.fixture.fullscreen), false);
+  assert(
+    !(await activePanel().locator(".viewer-toolbar").isVisible()),
+    "independent fullscreen exit keeps remote tools hidden",
+  );
+  await page.setViewportSize({ width: 1200, height: 800 });
   // Frame failure and timer polling must share a single status request, even
   // when StrictMode replays effects or a slow native status call is in flight.
   await load();
@@ -2180,7 +2390,7 @@ const fs = require("node:fs");
   assert.deepEqual(errors, []);
   await browser.close();
   console.log(
-    "PASS repeated left/right pairs, multi-button capture, queued outside UP then release-all, external held entry, blur/lost-capture cancellation, ordered remote Alt+Tab and view/paused/ended guards; fit/quality/FPS/pause/terminal/read-only and screenshot coverage. Synthetic IPC only.",
+    "PASS repeated left/right pairs, multi-button capture, queued outside UP then release-all, external held entry, blur/lost-capture cancellation, ordered remote Alt+Tab and view/paused/ended guards; fit/quality/FPS/pause/terminal/read-only, five-session fullscreen navigation and local popup isolation coverage. Synthetic IPC only.",
   );
 })().catch((e) => {
   console.error(e);

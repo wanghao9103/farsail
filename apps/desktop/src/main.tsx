@@ -11,6 +11,7 @@ import {
   UpdateSettings,
 } from "./updates";
 import { FilesPanel } from "./files";
+import { ViewerSessionMenu, type ViewerTab } from "./viewer-session-menu";
 import { PageActions } from "./page-actions";
 import "./style.css";
 import "./desktop-theme.css";
@@ -2983,17 +2984,47 @@ type Picture = {
   width: number;
   height: number;
 };
-type ViewerTab = {
-  instance: string;
-  id: string;
-  name: string;
-  selected: boolean;
-};
 function ViewerWorkspace({ initialId }: { initialId: string }) {
   const [tabs, setTabs] = useState<ViewerTab[]>([
     { instance: "initial", id: initialId, name: "远程设备", selected: true },
   ]);
   const [problem, setProblem] = useState("");
+  // Fullscreen belongs to the native window, shared by all its sessions.
+  const [fullscreen, setFullscreen] = useState(false);
+  const windowStateVersion = useRef(0);
+  const updateFullscreen = useCallback((next: boolean) => {
+    windowStateVersion.current++;
+    setFullscreen(next);
+  }, []);
+  const exitFullscreen = useCallback(() => {
+    void invoke<{ fullscreen: boolean }>("viewer_window_action", {
+      action: "fullscreen",
+    })
+      .then((state) => updateFullscreen(state.fullscreen))
+      .catch((e) => setProblem(errorText(e)));
+  }, [updateFullscreen]);
+  useEffect(() => {
+    let live = true;
+    const read = () => {
+      const version = ++windowStateVersion.current;
+      void invoke<{ fullscreen: boolean }>("viewer_window_action", {
+        action: "state",
+      })
+        .then((state) => {
+          if (live && version === windowStateVersion.current)
+            setFullscreen(state.fullscreen);
+        })
+        .catch((e) => {
+          if (live) setProblem(errorText(e));
+        });
+    };
+    read();
+    window.addEventListener("resize", read);
+    return () => {
+      live = false;
+      window.removeEventListener("resize", read);
+    };
+  }, []);
   const refresh = useCallback(async () => {
     const next = await invoke<ViewerTab[]>("viewer_tabs");
     if (Array.isArray(next)) setTabs(next);
@@ -3034,6 +3065,27 @@ function ViewerWorkspace({ initialId }: { initialId: string }) {
     },
     [refresh],
   );
+  const menuFocus = useRef<string | null>(null);
+  const selectFromMenu = useCallback(
+    (tab: ViewerTab) => {
+      menuFocus.current = tab.instance;
+      select(tab);
+    },
+    [select],
+  );
+  useEffect(() => {
+    const instance = menuFocus.current;
+    if (
+      !instance ||
+      !tabs.some((tab) => tab.instance === instance && tab.selected)
+    )
+      return;
+    document
+      .getElementById(`panel-${instance}`)
+      ?.querySelector<HTMLButtonElement>(".viewer-tab-menu-trigger")
+      ?.focus({ preventScroll: true });
+    menuFocus.current = null;
+  }, [tabs]);
   const close = useCallback(
     (tab: ViewerTab) => {
       void invoke("viewer_close_tab", { instance: tab.instance })
@@ -3123,30 +3175,7 @@ function ViewerWorkspace({ initialId }: { initialId: string }) {
           </div>
         ))}
       </div>
-      <details className="viewer-tab-menu">
-        <summary aria-label="切换远程设备" title="切换远程设备">
-          <ChevronDown16Regular />
-        </summary>
-        <div className="viewer-tab-menu-list">
-          <strong>已连接设备 · {tabs.length}</strong>
-          {tabs.map((tab) => (
-            <button
-              key={tab.instance}
-              type="button"
-              aria-label={tab.name}
-              aria-current={tab.selected ? "true" : undefined}
-              onClick={(event) => {
-                const menu = event.currentTarget.closest("details");
-                if (menu) menu.open = false;
-                select(tab);
-              }}
-            >
-              <Desktop20Regular aria-hidden="true" />
-              <span>{tab.name}</span>
-            </button>
-          ))}
-        </div>
-      </details>
+      <ViewerSessionMenu tabs={tabs} onSelect={selectFromMenu} />
       <button
         className="viewer-add"
         aria-label="连接其他设备"
@@ -3175,7 +3204,8 @@ function ViewerWorkspace({ initialId }: { initialId: string }) {
           key={tab.instance}
           id={`panel-${tab.instance}`}
           role="tabpanel"
-          aria-labelledby={`tab-${tab.instance}`}
+          aria-labelledby={fullscreen ? undefined : `tab-${tab.instance}`}
+          aria-label={fullscreen ? tab.name : undefined}
           className="viewer-tab-panel"
           hidden={!tab.selected}
         >
@@ -3184,6 +3214,18 @@ function ViewerWorkspace({ initialId }: { initialId: string }) {
             instance={tab.instance === "initial" ? undefined : tab.instance}
             active={tab.selected}
             tabStrip={tab.selected ? strip : null}
+            sessionSwitcher={
+              tab.selected ? (
+                <ViewerSessionMenu
+                  tabs={tabs}
+                  onSelect={selectFromMenu}
+                  fullscreen
+                  onExitFullscreen={exitFullscreen}
+                />
+              ) : null
+            }
+            fullscreen={fullscreen}
+            onFullscreenChange={updateFullscreen}
             onClose={() => close(tab)}
           />
         </div>
@@ -3199,12 +3241,18 @@ function ViewerWindow({
   instance,
   active,
   tabStrip,
+  sessionSwitcher,
+  fullscreen,
+  onFullscreenChange,
   onClose,
 }: {
   initialId: string;
   instance?: string;
   active: boolean;
   tabStrip: React.ReactNode;
+  sessionSwitcher: React.ReactNode;
+  fullscreen: boolean;
+  onFullscreenChange: (fullscreen: boolean) => void;
   onClose: () => void;
 }) {
   const [phoneTurns, setPhoneTurns] = useState(0);
@@ -3250,6 +3298,9 @@ function ViewerWindow({
       instance={instance}
       active={active}
       tabStrip={tabStrip}
+      sessionSwitcher={sessionSwitcher}
+      fullscreen={fullscreen}
+      onFullscreenChange={onFullscreenChange}
       phoneTurns={phoneTurns}
       setPhoneTurns={setPhoneTurns}
       onReconnect={reconnected}
@@ -3270,6 +3321,9 @@ function Viewer({
   instance,
   active,
   tabStrip,
+  sessionSwitcher,
+  fullscreen,
+  onFullscreenChange,
   phoneTurns,
   setPhoneTurns,
   onStop,
@@ -3285,6 +3339,9 @@ function Viewer({
   instance?: string;
   active: boolean;
   tabStrip: React.ReactNode;
+  sessionSwitcher: React.ReactNode;
+  fullscreen: boolean;
+  onFullscreenChange: (fullscreen: boolean) => void;
   phoneTurns: number;
   setPhoneTurns: React.Dispatch<React.SetStateAction<number>>;
   onStop: () => void;
@@ -3389,7 +3446,6 @@ function Viewer({
   const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
   // Display-only and owned by this viewer, so other phones/windows are unaffected.
   const displayTurns = status?.platform === "android" ? phoneTurns : 0;
-  const [fullscreen, setFullscreen] = useState(false);
   // Phone and desktop choices are independent: the legacy desktop fill
   // preference must never stretch a newly connected portrait phone.
   const [fitChoices, setFitChoices] = useState(() => {
@@ -3433,7 +3489,13 @@ function Viewer({
       ...options,
     })
       .then((s) => {
-        if (typeof s.fullscreen === "boolean") setFullscreen(s.fullscreen);
+        // Other actions report a snapshot too, but a delayed drag/phone-layout
+        // result must not undo a more recent fullscreen choice.
+        if (
+          (action === "fullscreen" || action === "cascade") &&
+          typeof s.fullscreen === "boolean"
+        )
+          onFullscreenChange(s.fullscreen);
       })
       .catch((e) => setProblem(errorText(e)));
   const requestProfile = (profile: number) => {
@@ -3446,12 +3508,6 @@ function Viewer({
         setProblem(errorText(err));
       });
   };
-  useEffect(() => {
-    const refresh = () => windowAction("state");
-    refresh();
-    window.addEventListener("resize", refresh);
-    return () => window.removeEventListener("resize", refresh);
-  }, []);
   const showToolbar =
     toolbarVisible ||
     toolsOpen ||
@@ -4220,6 +4276,7 @@ function Viewer({
           </div>
         </header>
       )}
+      {fullscreen && sessionSwitcher}
       {!showToolbar && (
         <button
           className="viewer-reveal"
