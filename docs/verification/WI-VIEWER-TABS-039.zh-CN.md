@@ -36,3 +36,11 @@
 安卓 [0.1.12](https://github.com/wanghao9103/farsail/releases/tag/android-v0.1.12) / code 13 使用源码 `82066f9fc8687ee0beb33af0b2f77361148b2228`，[发布流程](https://github.com/wanghao9103/farsail/actions/runs/41959560575)成功。4 个公开附件、签名清单、原证书、两个原生 ABI 和固定通道均通过核验。专用模拟器从 code 1 自动下载并经系统安装器升级到 code 13，已安装 APK 与公开摘要一致，数据和身份连续性验证通过；见[手机更新验收](WI-ANDROID-UPDATES-040.zh-CN.md)。
 
 追加模拟发现并修复状态查询路径重叠，以及安卓连接未就绪时发送输入释放的问题。最终三手机压力测试执行 60 次切换、6 次独立重连，各会话最多一个在途状态查询。手机控制测试故意延迟 peer 查询 450 ms，真实 JNI/QUIC、静止帧控制、旋转输入、仅查看拒绝和取消均通过。安装条件提醒补修以安卓 0.1.12 发布；此前 0.1.11 候选在发布前取消，没有移动标签。四份原有 Markdown 格式问题单独修正。未部署生产协调服务，未进行实体整夜测试。
+
+## 0.1.38：标题栏拖动与工具栏展开分离
+
+桌面 [0.1.38](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.38) 已作为正式版发布并设为 GitHub Latest，源码 `a3497794ff682b699e78d2be0a3b8b26bf1ad887`。删除查看器根节点的顶部鼠标移动展开逻辑，悬停或开始拖标题栏不再把隐藏的远程按钮展开；独立下拉按钮和 Enter 仍可展开并转移焦点。原生拖动、标签及必要恢复 / 输入提示保留既有处理。
+
+应用内浏览器 targeted 检查使用合成原生 IPC，验证发出 drag 请求但不展开工具栏、不注入远端鼠标 / 按键。原 Windows 浏览器套件发现输入恢复测试的文案选择器匹配两处元素；仅修改测试，把定位收窄到可见标题状态，随后[完整 Windows CI](https://github.com/wanghao9103/farsail/actions/runs/41987128858)通过。后续提交记录于 `.local/client-public-0.1.38/ui-selector-fix.json`，已证明 apps/desktop、crates、packages 中产品文件与发布标签相同，仅浏览器测试变化；不算用户实体桌面拖动验收。
+
+[发布流程](https://github.com/wanghao9103/farsail/actions/runs/41985606172)成功。12 个公开附件、三个平台签名、11 条校验和、原生托盘证据、逐字节重建及普通固定更新通道均通过。首轮仅最终清单比对失败，普通地址下载匹配后仅重试失败发布；全部版本附件 ID、摘要、大小及时间保持不变。慢速 Ubuntu 下载通过匿名分段 / 断点读取完成，先核对完整 SHA-256，再验证签名，保留中断下载日志。证据：`.local/client-public-0.1.38/delivery-verification.json`、`verification.json`、`ranged-download-provenance.json`、`immutable-assets-final.json`。没有发布安卓、部署协调服务或安装个人设备。
