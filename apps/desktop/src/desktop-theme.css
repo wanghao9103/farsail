@@ -1629,7 +1629,7 @@ td {
   flex: 0 1 auto;
   align-self: stretch;
   min-width: 0;
-  max-width: calc(100% - 248px);
+  max-width: calc(100% - 284px);
 }
 .viewer-tab-navigation .viewer-tabs {
   flex: 1;
@@ -1995,6 +1995,9 @@ td {
   }
 }
 @media (max-width: 480px) {
+  .viewer-detach {
+    display: none;
+  }
   .viewer-tab {
     flex-basis: min(170px, calc(100vw - 236px));
     min-width: 84px;

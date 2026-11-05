@@ -567,9 +567,19 @@ impl Host {
         }
         session.close();
     }
-    pub(crate) fn video_requested(&self) -> bool {
+    #[cfg(test)]
+    fn video_requested(&self) -> bool {
         let local = self.local.lock().unwrap();
         local.capture && local.video_demand.active
+    }
+    fn rgba_demand(&self, width: u32, height: u32, layout: u64) -> Option<bool> {
+        let local = self.local.lock().unwrap();
+        (local.capture && local.width == width && local.height == height && local.layout == layout)
+            .then_some(local.video_demand.active)
+    }
+    fn screenshot_demand(&self, epoch: u64) -> Option<bool> {
+        let local = self.local.lock().unwrap();
+        (local.capture && local.epoch == epoch).then_some(local.video_demand.active)
     }
     async fn ensure_transport(&self) -> Result<(), String> {
         let _guard = self.endpoint.lock().await;

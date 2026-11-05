@@ -1048,7 +1048,7 @@ pub fn smoke_probe(webview: &tauri::Webview) {
         await new Promise(r=>setTimeout(r,500));
         const detached=await invoke('ipc_viewer_state');
         if(detached.viewers.length!==4 || (await invoke('viewer_tabs')).some(t=>t.instance===moving.instance)) throw Error('native tab transfer failed');
-        let movedDenied=false;try{await invoke('remote_status',{id:moving.id})}catch{movedDenied=true}
+        let movedDenied=false;try{await invoke('remote_status',{id:moving.id})}catch(e){movedDenied=String(e).includes('无权操作')}
         if(!movedDenied) throw Error('old window retained moved-session permission');
         await invoke('viewer_window_action',{action:'connect'});
         const connectMain=await invoke('ipc_viewer_state');

@@ -441,10 +441,18 @@ async fn projection_stop_invalidates_delayed_enable_and_old_geometry() {
     let next = h.begin();
     assert!(next > old);
     let l = h.geometry(16, 16);
+    assert_eq!(h.rgba_demand(16, 16, l), Some(true));
+    h.local.lock().unwrap().video_demand.active = false;
+    assert_eq!(h.rgba_demand(16, 16, l), Some(false));
     let jpeg = image(&h);
     h.geometry(32, 16);
+    assert!(
+        h.rgba_demand(16, 16, l).is_none(),
+        "pausing must not accept stale capture geometry"
+    );
     assert!(!h.publish(jpeg, 16, 16, l));
     h.stop_local();
+    assert!(h.screenshot_demand(next).is_none());
     h.client.stop_transport().await;
     s.abort();
 }
@@ -456,6 +464,9 @@ async fn stale_accessibility_frames_cannot_change_new_capture_geometry() {
     let jpeg = image(&h);
     h.stop_local();
     let next = h.begin();
+    assert!(h.screenshot_demand(old).is_none());
+    h.local.lock().unwrap().video_demand.active = false;
+    assert_eq!(h.screenshot_demand(next), Some(false));
     h.geometry(32, 16);
     assert!(!h.publish_accessibility(jpeg.clone(), 16, 16, old));
     {

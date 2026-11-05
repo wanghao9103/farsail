@@ -3166,7 +3166,7 @@ function ViewerWorkspace({ initialId }: { initialId: string }) {
       <ViewerSessionMenu tabs={tabs} onSelect={selectFromMenu} onDetach={detach} />
       <button
         type="button"
-        className="viewer-add"
+        className="viewer-add viewer-detach"
         aria-label="当前标签在独立窗口打开"
         title="当前标签在独立窗口打开"
         disabled={tabs.length < 2}
