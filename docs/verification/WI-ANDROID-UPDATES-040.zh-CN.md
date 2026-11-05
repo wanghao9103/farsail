@@ -29,3 +29,7 @@
 [0.1.12 发布页](https://github.com/wanghao9103/farsail/releases/tag/android-v0.1.12)及[发布流程](https://github.com/wanghao9103/farsail/actions/runs/41959560575)均成功，源码 `82066f9fc8687ee0beb33af0b2f77361148b2228`。公开下载的 4 个 API 附件摘要、Ed25519 清单、原安装证书、非调试包、两个 ABI 的 16 KB 对齐及普通固定通道字节均通过（`.local/android-public-0.1.12/final-verification.json`）。普通地址一致后仅重试失败的发布步骤，版本附件没有改变。该版本与桌面 0.1.36 均作为正式版本发布。
 
 随后专用模拟器在未点击下载的情况下自动获取准确公开包，系统安装器把 code 1 基线升级为 code 13；检查了连续性标记、首次安装时间及应用 UID。已安装 APK SHA-256 为 `b7edc3ba4ca7b7edc3db91bf788630715b76d9c7200c5c7a35c235342b21085f`，与公开包完全一致。测试准备使用 ADB，升级本身通过 App 和系统安装器完成。证据：`.local/release-tabs-20261105/exact-public-update-verification.json`、`exact-012-update-prepare.log`、`exact-012-update-verify.log`。未覆盖实体手机。0.1.11 候选因首页安装条件提示被遮住而在发布前取消，旧标签保留。
+
+## 后续实体安装
+
+按用户要求，准确公开的 0.1.12 / code 13 APK 已在 PJE110（Android 16 / API 36）原地覆盖 0.1.9-a11y-preview4 / code 10。原安装证书一致，应用 UID 与首次安装时间保留，没有卸载或清数据；实读已安装 APK 摘要与公开包相同，正常启动 Activity 成功。这只验收安装与打开，不代表厂商持续后台或远控已通过。证据：`.local/physical-0.1.12/verification.json`。

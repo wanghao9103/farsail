@@ -47,23 +47,36 @@ async fn approved_view_pair(
     source_device: &str,
     target_device: &str,
 ) -> (Session, Session) {
+    approved_screen_pair(
+        source,
+        target,
+        source_device,
+        target_device,
+        RemotePermission::View,
+    )
+    .await
+}
+async fn approved_screen_pair(
+    source: &Arc<NativeClient>,
+    target: &Arc<NativeClient>,
+    source_device: &str,
+    target_device: &str,
+    permission: RemotePermission,
+) -> (Session, Session) {
     let invite = target
         .call(
             "invite",
-            json!({"target_device_id":target_device,"permission":"view"}),
+            json!({"target_device_id":target_device,"permission":permission}),
         )
         .await
         .unwrap();
-    let request = source.call("request", json!({"source_device_id":source_device,"target_device_id":target_device,"permission":"view","invitation_code":invite["code"]})).await.unwrap();
+    let request = source.call("request", json!({"source_device_id":source_device,"target_device_id":target_device,"permission":permission,"invitation_code":invite["code"]})).await.unwrap();
     let id = request["id"].as_str().unwrap();
     target
         .call("decide", json!({"id":id,"approve":true}))
         .await
         .unwrap();
-    source
-        .connect_transport(id, RemotePermission::View)
-        .await
-        .unwrap();
+    source.connect_transport(id, permission).await.unwrap();
     let viewer = source.transport_session(id).await.unwrap().unwrap();
     let host = tokio::time::timeout(std::time::Duration::from_secs(5), async {
         loop {
@@ -677,4 +690,286 @@ async fn native_client_against_real_coordinator() {
         .execute(&admin)
         .await
         .unwrap();
+}
+
+// Real HTTP coordinator + encrypted QUIC. Android platform rows and media/input
+// payloads are synthetic; no phone capture or host OS input is injected.
+async fn android_protocol_fanout(count: usize, same_owner: bool) {
+    let Ok(url) = std::env::var("FARSAIL_TEST_DATABASE_URL") else {
+        eprintln!("skipping fanout integration: FARSAIL_TEST_DATABASE_URL not set");
+        return;
+    };
+    let admin = PgPool::connect(&url).await.unwrap();
+    let schema = format!("fs_fanout_{}_{}", count, Uuid::new_v4().simple());
+    sqlx::query(&format!("CREATE SCHEMA {schema}"))
+        .execute(&admin)
+        .await
+        .unwrap();
+    let search_path = schema.clone();
+    let pool = PgPoolOptions::new()
+        .max_connections(20)
+        .after_connect(move |conn, _| {
+            let sql = format!("SET search_path TO {search_path}");
+            Box::pin(async move {
+                sqlx::query(&sql).execute(conn).await?;
+                Ok(())
+            })
+        })
+        .connect(&url)
+        .await
+        .unwrap();
+    let migrations =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../services/coordinator/migrations");
+    sqlx::migrate::Migrator::new(migrations.as_path())
+        .await
+        .unwrap()
+        .run(&pool)
+        .await
+        .unwrap();
+    let mail = Mailer::memory();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let app = router(AppState {
+        pool: pool.clone(),
+        mailer: mail.clone(),
+        allowed_relays: Arc::new(vec![]),
+    });
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    let source_dir = tempfile::tempdir().unwrap();
+    let source = Arc::new(client(source_dir.path().to_path_buf(), &base));
+    source.set_server(&base).await.unwrap();
+    account(&source, &mail, "fanout-source@example.test").await;
+    let source_device = source
+        .call("bind", json!({"name":"One synthetic desktop controller"}))
+        .await
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    source
+        .start_transport(TransportConfig::default())
+        .await
+        .unwrap();
+    let mut directories = Vec::new();
+    let mut hosts = Vec::new();
+    let mut devices = Vec::new();
+    let mut pairs = Vec::new();
+    for index in 0..count {
+        let directory = tempfile::tempdir().unwrap();
+        let host = Arc::new(client(directory.path().to_path_buf(), &base));
+        host.set_server(&base).await.unwrap();
+        if same_owner {
+            host.call("login", json!({"email":"fanout-source@example.test","password":"correct horse battery staple"})).await.unwrap();
+        } else {
+            account(&host, &mail, &format!("fanout-phone-{index}@example.test")).await;
+        }
+        let device = host
+            .call("bind", json!({"name":format!("Synthetic Android {index}")}))
+            .await
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        sqlx::query("UPDATE devices SET platform='android' WHERE id=$1")
+            .bind(Uuid::parse_str(&device).unwrap())
+            .execute(&pool)
+            .await
+            .unwrap();
+        host.start_transport(TransportConfig::default())
+            .await
+            .unwrap();
+        host.set_host_capability(true).await.unwrap();
+        let pair = approved_screen_pair(
+            &source,
+            &host,
+            &source_device,
+            &device,
+            RemotePermission::Control,
+        )
+        .await;
+        directories.push(directory);
+        hosts.push(host);
+        devices.push(device);
+        pairs.push(pair);
+    }
+    if same_owner {
+        assert_eq!(
+            source
+                .call("devices", Value::Null)
+                .await
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .len(),
+            count + 1,
+            "one account must retain the desktop and every phone"
+        );
+    }
+    let original: Vec<_> = pairs.iter().map(|(viewer, _)| viewer.stable_id()).collect();
+    assert_eq!(
+        original
+            .iter()
+            .copied()
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        count
+    );
+    let initial_expiry = source
+        .call("remote_status", json!({"id":pairs[0].0.id()}))
+        .await
+        .unwrap()["grant_expires_at"]
+        .clone();
+    let started = std::time::Instant::now();
+    let mut ticks = 0u64;
+    let mut frames = 0u64;
+    for round in 0..8 {
+        source.call("heartbeat", Value::Null).await.unwrap();
+        for host in &hosts {
+            host.call("heartbeat", Value::Null).await.unwrap();
+        }
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        while tokio::time::Instant::now() < deadline {
+            let mut tasks = Vec::new();
+            for (index, (viewer, host)) in pairs.iter().enumerate() {
+                assert!(
+                    viewer.is_open().await && host.is_open().await,
+                    "{count} peers: closed at round {round}, peer {index}: {} / {}",
+                    viewer.end_reason(),
+                    host.end_reason()
+                );
+                let viewer = viewer.clone();
+                let host = host.clone();
+                tasks.push(tokio::spawn(async move {
+                    let label = format!("fanout-{count}-peer-{index}-tick-{ticks}");
+                    let mut media = vec![index as u8; 64 * 1024];
+                    media[..label.len()].copy_from_slice(label.as_bytes());
+                    exchange_media(&viewer, &host, &media).await;
+                    let mut input = b"FSI1".to_vec();
+                    input.extend_from_slice(&(ticks + 1).to_be_bytes());
+                    input.extend_from_slice(
+                        &serde_json::to_vec(&json!({"kind":"key","vk":65+index,"down":true}))
+                            .unwrap(),
+                    );
+                    viewer
+                        .send(Frame {
+                            channel: Channel::Control,
+                            bytes: input.clone(),
+                        })
+                        .await
+                        .unwrap();
+                    let received =
+                        tokio::time::timeout(std::time::Duration::from_secs(5), host.receive())
+                            .await
+                            .unwrap()
+                            .unwrap();
+                    assert_eq!(received.channel, Channel::Control);
+                    assert_eq!(received.bytes, input, "input crossed phone sessions");
+                }));
+            }
+            for task in tasks {
+                task.await.unwrap();
+            }
+            ticks += 1;
+            frames += count as u64;
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        if round == 3 {
+            // One peer restarts while every other connection keeps exchanging data.
+            let old = pairs[count - 1].0.stable_id();
+            hosts[count - 1].stop_transport().await;
+            assert!(!pairs[count - 1].1.is_open().await);
+            let (replacement, ()) = tokio::join!(
+                async {
+                    hosts[count - 1]
+                        .start_transport(TransportConfig::default())
+                        .await
+                        .unwrap();
+                    hosts[count - 1].set_host_capability(true).await.unwrap();
+                    approved_screen_pair(
+                        &source,
+                        &hosts[count - 1],
+                        &source_device,
+                        &devices[count - 1],
+                        RemotePermission::Control,
+                    )
+                    .await
+                },
+                async {
+                    for _ in 0..6 {
+                        for (viewer, host) in &pairs[..count - 1] {
+                            exchange_media(viewer, host, b"unaffected phone during peer restart")
+                                .await;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    }
+                }
+            );
+            assert_ne!(replacement.0.stable_id(), old);
+            pairs[count - 1] = replacement;
+        }
+        for index in 0..count - 1 {
+            assert_eq!(
+                pairs[index].0.stable_id(),
+                original[index],
+                "unaffected phone reconnected"
+            );
+        }
+    }
+    assert_ne!(
+        source
+            .call("remote_status", json!({"id":pairs[0].0.id()}))
+            .await
+            .unwrap()["grant_expires_at"],
+        initial_expiry
+    );
+    hosts[count - 1].stop_transport().await;
+    for (viewer, host) in &pairs[..count - 1] {
+        exchange_media(viewer, host, b"other phones survive final peer close").await;
+    }
+    let elapsed = started.elapsed().as_secs_f64();
+    let report = json!({"verification":"passed","controllers":1,"syntheticAndroidPeers":count,"sameAccount":same_owner,"realCoordinator":true,"realQuic":true,"elapsedSeconds":elapsed,"frames":frames,"payloadBytesPerFrame":65536,"mediaBytes":frames*65536,"controlPackets":frames,"restartedPeers":1,"survivorReconnects":0,"leaseRotated":true,"hostOsInputInjected":false,"physicalPhones":false});
+    if let Ok(directory) = std::env::var("FARSAIL_FANOUT_REPORT_DIR") {
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            PathBuf::from(directory).join(format!(
+                "fanout-{count}{}.json",
+                if same_owner { "-same-account" } else { "" }
+            )),
+            serde_json::to_vec_pretty(&report).unwrap(),
+        )
+        .unwrap();
+    }
+    println!("{report}");
+    source.stop_transport().await;
+    for host in hosts {
+        host.stop_transport().await;
+    }
+    drop(directories);
+    server.abort();
+    pool.close().await;
+    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+        .execute(&admin)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn four_android_protocol_fanout() {
+    android_protocol_fanout(4, false).await;
+}
+
+#[tokio::test]
+async fn five_android_protocol_fanout() {
+    android_protocol_fanout(5, false).await;
+}
+
+#[tokio::test]
+async fn four_android_same_account_fanout() {
+    android_protocol_fanout(4, true).await;
+}
+#[tokio::test]
+async fn five_android_same_account_fanout() {
+    android_protocol_fanout(5, true).await;
 }
