@@ -321,6 +321,26 @@ async fn four_window_sizes_reduce_payload_and_restore_native_quality_without_cha
         !h.publish_accessibility_encoded(full.clone(), source.0, source.1, 0, settings),
         "late encoded callback cannot undo newer viewport settings"
     );
+    // Auto mode normally keeps only one frame in flight. Losing that ACK must
+    // still permit a fresh probe and must not force a new authorized session.
+    assert!(h.publish_rgba(&rgba, source.0, source.1, source.0 as usize * 4, *layout));
+    let dropped = JpegFrame::from_wire(&packet(viewer, b"FSM1").await).unwrap();
+    let producer = tokio::spawn({
+        let h = h.clone();
+        let settings = Host::settings(&h.local.lock().unwrap());
+        let image = dropped.clone();
+        async move {
+            loop {
+                let _ =
+                    h.publish_accessibility_encoded(image.clone(), source.0, source.1, 0, settings);
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+    });
+    let fresh = acknowledged_image(viewer, source).await;
+    producer.abort();
+    assert!(fresh.meta.sequence > dropped.meta.sequence);
+    assert_eq!(fresh.meta.layout, *layout);
     assert_eq!(viewer.stable_id(), *original);
     for (index, (viewer, original, edge)) in viewers.iter().enumerate() {
         assert!(viewer.is_open_now());

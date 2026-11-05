@@ -174,7 +174,9 @@ async fn phase(adaptive: bool, rgba: &[u8], source: (u32, u32)) -> ResultSet {
     });
     tokio::time::sleep(Duration::from_secs(if adaptive { 4 } else { 1 })).await;
     measuring.store(true, Ordering::SeqCst);
-    let duration = if adaptive { 12 } else { 5 };
+    // Cover several real authorization renewals and many more than the
+    // 15-second no-progress deadline on the original four connections.
+    let duration = if adaptive { 120 } else { 5 };
     tokio::time::sleep(Duration::from_secs(duration)).await;
     measuring.store(false, Ordering::SeqCst);
     let result = ResultSet {
