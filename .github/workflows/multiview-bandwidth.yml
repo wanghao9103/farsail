@@ -1,0 +1,26 @@
+name: Four-view bandwidth acceptance
+on:
+  pull_request:
+    paths: ['crates/android/**', 'crates/media/**', 'crates/transport/**', '.github/workflows/multiview-bandwidth.yml']
+permissions:
+  contents: read
+jobs:
+  shaped-four-streams:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.93.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Compile isolated transport acceptance
+        run: cargo test --locked -p farsail-android --lib --no-run
+      - name: Share 35 Mbit/s and 30-ms base RTT across four real QUIC sessions
+        env:
+          FARSAIL_SHAPED_TEST: '1'
+        run: |
+          sudo tc qdisc replace dev lo root handle 1: tbf rate 35mbit burst 64kb latency 100ms
+          sudo tc qdisc add dev lo parent 1:1 handle 10: netem delay 15ms loss 0.1%
+          trap 'sudo tc qdisc del dev lo root || true' EXIT
+          cargo test --locked -p farsail-android --lib four_streams_share_35mbit -- --ignored --nocapture --test-threads=1

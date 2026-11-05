@@ -10,6 +10,7 @@ use farsail_client::NativeClient;
 use farsail_core::RemotePermission;
 use farsail_media::{
     BASELINE_PAYLOAD_BPS, ByteBudget, FrameMeta, JpegFrame, MediaWindow, StreamDemand,
+    VideoProfile, ViewportRequest,
 };
 use farsail_transport::{Channel, Frame, Session};
 use protocol::InputOrder;
@@ -30,6 +31,9 @@ struct MediaDiagnostics {
     publish_to_send_ms: u64,
     ack_ms: u64,
     input_wait_ms: u64,
+    encode_ms: u64,
+    encoded_width: u32,
+    encoded_height: u32,
     pending: VecDeque<(u64, Instant)>,
 }
 
@@ -45,6 +49,9 @@ struct Local {
     inputs: VecDeque<(Instant, Value)>,
     media: MediaDiagnostics,
     video_demand: StreamDemand,
+    video_profile: VideoProfile,
+    viewport_edge: Option<u16>,
+    delivery_quality: capture::DeliveryQuality,
 }
 
 pub struct Host {
@@ -56,6 +63,35 @@ pub struct Host {
     screenshot_encoder: Mutex<capture::ScreenshotEncoder>,
 }
 impl Host {
+    fn settings(local: &Local) -> capture::Settings {
+        capture::Settings {
+            profile: local.video_profile,
+            edge: local.viewport_edge,
+            quality: if local.viewport_edge.is_some() {
+                local.delivery_quality.value
+            } else {
+                90
+            },
+        }
+    }
+    fn profile_packet(local: &Local) -> Vec<u8> {
+        local
+            .viewport_edge
+            .map(|edge| {
+                ViewportRequest {
+                    generation: local.video_profile.generation,
+                    edge,
+                }
+                .packet(b"FSZ2")
+            })
+            .unwrap_or_else(|| local.video_profile.packet(b"FSP1"))
+    }
+    fn native_profile() -> VideoProfile {
+        VideoProfile {
+            profile: 2,
+            generation: 0,
+        }
+    }
     pub fn new(client: Arc<NativeClient>) -> Arc<Self> {
         let (frames, _) = watch::channel(None);
         Arc::new(Self {
@@ -76,6 +112,9 @@ impl Host {
                 inputs: VecDeque::new(),
                 media: MediaDiagnostics::default(),
                 video_demand: StreamDemand::default(),
+                video_profile: Self::native_profile(),
+                viewport_edge: None,
+                delivery_quality: capture::DeliveryQuality::default(),
             }),
         })
     }
@@ -85,6 +124,9 @@ impl Host {
         l.capture = true;
         l.media = MediaDiagnostics::default();
         l.video_demand = StreamDemand::default();
+        l.video_profile = Self::native_profile();
+        l.viewport_edge = None;
+        l.delivery_quality = capture::DeliveryQuality::default();
         l.layout += 1;
         l.epoch
     }
@@ -146,12 +188,77 @@ impl Host {
         height: u32,
         stride: usize,
         epoch: u64,
-    ) -> Option<JpegFrame> {
+    ) -> Option<(JpegFrame, capture::Settings)> {
+        let profile = {
+            let local = self.local.lock().unwrap();
+            if !local.capture || local.epoch != epoch {
+                return None;
+            }
+            Self::settings(&local)
+        };
         let mut encoder = self.screenshot_encoder.lock().unwrap();
         if !self.current(epoch) {
             return None;
         }
-        encoder.encode(bytes, width, height, stride)
+        encoder
+            .encode_profile(bytes, width, height, stride, profile)
+            .map(|image| (image, profile))
+    }
+    fn publish_rgba(
+        &self,
+        bytes: &[u8],
+        width: u32,
+        height: u32,
+        stride: usize,
+        layout: u64,
+    ) -> bool {
+        let profile = {
+            let local = self.local.lock().unwrap();
+            if !local.capture
+                || (local.width, local.height, local.layout) != (width, height, layout)
+            {
+                return false;
+            }
+            if !local.video_demand.active {
+                return true;
+            }
+            Self::settings(&local)
+        };
+        let started = Instant::now();
+        let Some(image) =
+            capture::encode_rgba_profile(bytes, width, height, stride, layout, profile)
+        else {
+            return false;
+        };
+        let mut local = self.local.lock().unwrap();
+        if !local.capture
+            || (local.width, local.height, local.layout) != (width, height, layout)
+            || Self::settings(&local) != profile
+        {
+            return false;
+        }
+        local.media.encode_ms = started.elapsed().as_millis() as u64;
+        self.publish_locked(&mut local, image.jpeg, image.meta.width, image.meta.height)
+    }
+    fn publish_accessibility_encoded(
+        &self,
+        image: JpegFrame,
+        width: u32,
+        height: u32,
+        epoch: u64,
+        profile: capture::Settings,
+    ) -> bool {
+        let mut local = self.local.lock().unwrap();
+        if !local.capture || local.epoch != epoch || Self::settings(&local) != profile {
+            return false;
+        }
+        if (local.width, local.height) != (width, height) {
+            local.width = width;
+            local.height = height;
+            local.layout += 1;
+            local.inputs.clear();
+        }
+        self.publish_locked(&mut local, image.jpeg, image.meta.width, image.meta.height)
     }
     /// Screenshot callbacks may outlive stop, account changes or a new capture.
     /// Validate their epoch and update geometry atomically before publishing.
@@ -195,6 +302,8 @@ impl Host {
         match image.to_wire() {
             Ok(wire) => {
                 l.media.bytes = wire.len();
+                l.media.encoded_width = width;
+                l.media.encoded_height = height;
                 self.frames.send_replace(Some(Arc::new(wire)));
                 true
             }
@@ -301,6 +410,12 @@ impl Host {
                 .is_some_and(|s| s.stable_id() == session.stable_id())
             {
                 local.video_demand = StreamDemand::default();
+                if local.video_profile != Self::native_profile() {
+                    local.video_profile = Self::native_profile();
+                    local.viewport_edge = None;
+                    local.delivery_quality = capture::DeliveryQuality::default();
+                    self.frames.send_replace(None);
+                }
             }
         }
         let host = self.clone();
@@ -351,6 +466,71 @@ impl Host {
                     {
                         local.video_demand = next;
                     }
+                }
+            } else if frame.channel == Channel::Media
+                && let Some(request) = ViewportRequest::parse(&frame.bytes, b"FSZ1")
+            {
+                let bytes = {
+                    let mut local = self.local.lock().unwrap();
+                    if local
+                        .session
+                        .as_ref()
+                        .is_none_or(|s| s.stable_id() != session.stable_id())
+                    {
+                        break;
+                    }
+                    if request.generation > local.video_profile.generation {
+                        local.video_profile = VideoProfile {
+                            profile: 2,
+                            generation: request.generation,
+                        };
+                        local.viewport_edge = Some(request.edge);
+                        local.delivery_quality =
+                            capture::DeliveryQuality::with_rtt(session.path().1);
+                        self.frames.send_replace(None);
+                    }
+                    Self::profile_packet(&local)
+                };
+                if session
+                    .send(Frame {
+                        channel: Channel::Media,
+                        bytes,
+                    })
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            } else if frame.channel == Channel::Media
+                && let Some(request) = VideoProfile::parse(&frame.bytes, b"FSQ1")
+                && request.profile <= 2
+            {
+                let applied = {
+                    let mut local = self.local.lock().unwrap();
+                    if local
+                        .session
+                        .as_ref()
+                        .is_none_or(|s| s.stable_id() != session.stable_id())
+                    {
+                        break;
+                    }
+                    if request.generation > local.video_profile.generation {
+                        local.video_profile = request;
+                        local.viewport_edge = None;
+                        local.delivery_quality = capture::DeliveryQuality::default();
+                        self.frames.send_replace(None);
+                    }
+                    Self::profile_packet(&local)
+                };
+                if session
+                    .send(Frame {
+                        channel: Channel::Media,
+                        bytes: applied,
+                    })
+                    .await
+                    .is_err()
+                {
+                    break;
                 }
             } else if frame.channel == Channel::Media
                 && frame.bytes.len() == 12
@@ -430,12 +610,29 @@ impl Host {
         {
             return;
         }
+        for bytes in [
+            b"FSV1\x02".to_vec(),
+            b"FSZ0".to_vec(),
+            Self::native_profile().packet(b"FSP1"),
+        ] {
+            if session
+                .send(Frame {
+                    channel: Channel::Media,
+                    bytes,
+                })
+                .await
+                .is_err()
+            {
+                return;
+            }
+        }
         let mut frames = self.frames.subscribe();
         let mut window = MediaWindow::default();
         let mut budget = ByteBudget::new(BASELINE_PAYLOAD_BPS);
         let mut last = 0;
         let mut layout = 0;
         let mut progress = Instant::now();
+        let mut last_attempt = Instant::now();
         let mut send_failures = 0u8;
         loop {
             if !self.client.hosting_enabled() || !session.is_open_now() {
@@ -460,6 +657,15 @@ impl Host {
                             l.media.ack_ms = at.elapsed().as_millis() as u64;
                         }
                         l.media.acknowledged = sequence;
+                        if l.viewport_edge.is_some() {
+                            let (ack_ms, send_ms) = (l.media.ack_ms, l.media.send_ms);
+                            l.delivery_quality.observe(
+                                ack_ms,
+                                send_ms,
+                                session.path().1.unwrap_or(100),
+                                Instant::now(),
+                            );
+                        }
                     }
                 }
                 Err(_) => {
@@ -473,11 +679,53 @@ impl Host {
                 break;
             }
             let video_active = demand.borrow().active;
-            if video_active && window.blocked_on().is_none() {
+            // Receiver read timeouts discard a JPEG without producing FSA1.
+            // If both slots were dropped, send one fresh frame on this same
+            // authorized connection. Never restart the 15-second ACK deadline.
+            if video_active
+                && last_attempt.elapsed() >= Duration::from_secs(4)
+                && let Some(sequence) = window.retry_stalled()
+            {
+                last_attempt = Instant::now();
+                let mut local = self.local.lock().unwrap();
+                if local
+                    .session
+                    .as_ref()
+                    .is_some_and(|s| s.stable_id() == session.stable_id())
+                {
+                    local.media.pending.retain(|(seq, _)| *seq != sequence);
+                }
+            }
+            let auto_mode = self.local.lock().unwrap().viewport_edge.is_some();
+            // A small-window stream needs low latency, not two JPEGs queued
+            // ahead of the latest capture. A bounded probe after four seconds
+            // still recovers a lost single ACK without restarting the lease.
+            let auto_waiting =
+                auto_mode && !window.is_empty() && last_attempt.elapsed() < Duration::from_secs(4);
+            if video_active && !auto_waiting && window.blocked_on().is_none() {
                 let next = frames.borrow_and_update().clone();
                 if let Some(wire) = next {
                     let Ok(image) = JpegFrame::from_wire(&wire) else {
                         break;
+                    };
+                    let source = {
+                        let local = self.local.lock().unwrap();
+                        if !local.capture
+                            || local.layout != image.meta.layout
+                            || Self::settings(&local).output_size(local.width, local.height)
+                                != Some((image.meta.width, image.meta.height))
+                            || local
+                                .session
+                                .as_ref()
+                                .is_none_or(|s| s.stable_id() != session.stable_id())
+                        {
+                            None
+                        } else {
+                            Some((local.width, local.height))
+                        }
+                    };
+                    let Some((source_width, source_height)) = source else {
+                        continue;
                     };
                     let now = SystemTime::now()
                         .duration_since(UNIX_EPOCH)
@@ -492,7 +740,7 @@ impl Host {
                             continue;
                         }
                         if image.meta.layout != layout {
-                            let list = json!([{"id":1,"name":"Android 屏幕","x":0,"y":0,"width":image.meta.width,"height":image.meta.height,"dpi":160,"rotation":0}]);
+                            let list = json!([{"id":1,"name":"Android 屏幕","x":0,"y":0,"width":source_width,"height":source_height,"dpi":160,"rotation":0}]);
                             let mut bytes = b"FSL1".to_vec();
                             bytes.extend(serde_json::to_vec(&list).unwrap());
                             let sent = session
@@ -525,6 +773,7 @@ impl Host {
                             progress = Instant::now();
                         }
                         let sent_at = Instant::now();
+                        last_attempt = sent_at;
                         let sent = session
                             .send(Frame {
                                 channel: Channel::Media,
@@ -665,6 +914,10 @@ impl Host {
                     "published":l.sequence,"sent":l.media.sent,"acknowledged":l.media.acknowledged,
                     "sendMs":l.media.send_ms,"publishToSendMs":l.media.publish_to_send_ms,
                     "ackMs":l.media.ack_ms,"inputWaitMs":l.media.input_wait_ms,
+                    "encodeMs":l.media.encode_ms,"encodedWidth":l.media.encoded_width,"encodedHeight":l.media.encoded_height,
+                    "profile":l.video_profile.profile,"profileGeneration":l.video_profile.generation,
+                    "viewportEdge":l.viewport_edge,
+                    "jpegQuality":Self::settings(&l).quality,
                     "pendingFrames":l.media.pending.len(),
                     "oldestPendingMs":l.media.pending.front().map(|(_, at)| at.elapsed().as_millis() as u64)}));
             }

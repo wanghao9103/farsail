@@ -6,6 +6,7 @@ use std::{
     collections::HashMap,
     sync::atomic::{AtomicBool, Ordering},
 };
+mod bandwidth;
 
 struct Memory(Mutex<HashMap<String, Vec<u8>>>);
 impl SecureStore for Memory {
@@ -126,6 +127,245 @@ fn image(host: &Host) -> Vec<u8> {
     JpegFrame::encode_rgb(meta, &[80; 16 * 16 * 3], 65)
         .unwrap()
         .jpeg
+}
+
+fn textured_rgba(width: u32, height: u32) -> Vec<u8> {
+    let mut state = 17u32;
+    let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
+    for y in 0..height {
+        for x in 0..width {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            let noise = (state & 63) as u8;
+            rgba.extend_from_slice(&[
+                ((x / 8 + y / 16) as u8).wrapping_add(noise),
+                ((x / 16 + y / 8) as u8).wrapping_add(noise),
+                ((x / 32 + y / 32) as u8).wrapping_add(noise),
+                255,
+            ]);
+        }
+    }
+    rgba
+}
+
+async fn packet(viewer: &Session, tag: &[u8]) -> Vec<u8> {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let frame = viewer.receive().await.unwrap();
+            if frame.channel == Channel::Media && frame.bytes.starts_with(tag) {
+                return frame.bytes;
+            }
+        }
+    })
+    .await
+    .unwrap()
+}
+
+async fn acknowledged_image(viewer: &Session, source: (u32, u32)) -> JpegFrame {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let frame = viewer.receive().await.unwrap();
+            if frame.bytes.starts_with(b"FSL1") {
+                let displays: Value = serde_json::from_slice(&frame.bytes[4..]).unwrap();
+                assert_eq!(displays[0]["width"], source.0);
+                assert_eq!(displays[0]["height"], source.1);
+            }
+            if let Ok(image) = JpegFrame::from_wire(&frame.bytes) {
+                let mut bytes = b"FSA1".to_vec();
+                bytes.extend(image.meta.sequence.to_be_bytes());
+                viewer
+                    .send(Frame {
+                        channel: Channel::Media,
+                        bytes,
+                    })
+                    .await
+                    .unwrap();
+                return image;
+            }
+        }
+    })
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn four_window_sizes_reduce_payload_and_restore_native_quality_without_changing_input_geometry()
+ {
+    let source = (2340, 1080);
+    let rgba = textured_rgba(source.0, source.1);
+    let full = capture::encode_rgba(&rgba, source.0, source.1, source.0 as usize * 4, 1).unwrap();
+    let desktop = Transport::bind([120; 32], Config::default()).await.unwrap();
+    let mut hosts = Vec::new();
+    let mut targets = Vec::new();
+    let mut viewers = Vec::new();
+    let mut servers = Vec::new();
+    let mut tasks = Vec::new();
+    for index in 0..4u8 {
+        let (h, server) = host(121 + index).await;
+        let layout = h.geometry(source.0, source.1);
+        let target = Transport::bind([130 + index; 32], Config::default())
+            .await
+            .unwrap();
+        let id = format!("four-size-{index}");
+        let (viewer, peer) = connect(&desktop, &target, &id, RemotePermission::Control).await;
+        h.local.lock().unwrap().session = Some(peer.clone());
+        tasks.push(tokio::spawn({
+            let h = h.clone();
+            async move { h.run(peer).await }
+        }));
+        packet(&viewer, b"FSZ0").await;
+        let request = ViewportRequest {
+            generation: 10,
+            edge: 640 + u16::from(index) * 64,
+        };
+        viewer
+            .send(Frame {
+                channel: Channel::Media,
+                bytes: request.packet(b"FSZ1"),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            ViewportRequest::parse(&packet(&viewer, b"FSZ2").await, b"FSZ2"),
+            Some(request)
+        );
+        hosts.push((h, layout, id));
+        targets.push(target);
+        servers.push(server);
+        viewers.push((viewer.clone(), viewer.stable_id(), request.edge));
+    }
+    for (h, layout, _) in &hosts {
+        assert!(h.publish_rgba(&rgba, source.0, source.1, source.0 as usize * 4, *layout));
+    }
+    let mut compact_bytes = 0;
+    for (index, (viewer, _, edge)) in viewers.iter().enumerate() {
+        let image = acknowledged_image(viewer, source).await;
+        assert_eq!(image.meta.width, u32::from(*edge));
+        assert_eq!(image.meta.layout, hosts[index].1);
+        compact_bytes += image.jpeg.len();
+        assert!(
+            hosts[index]
+                .0
+                .input_valid(&hosts[index].2, 0, hosts[index].1)
+        );
+    }
+    assert!(
+        compact_bytes * 3 < full.jpeg.len() * 4,
+        "four small windows must use less than one third of four native JPEGs"
+    );
+    eprintln!(
+        "synthetic four-window bytes: native={} adaptive={compact_bytes}",
+        full.jpeg.len() * 4
+    );
+    let (viewer, original, _) = &viewers[0];
+    viewer
+        .send(Frame {
+            channel: Channel::Media,
+            bytes: VideoProfile {
+                profile: 2,
+                generation: 100,
+            }
+            .packet(b"FSQ1"),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        VideoProfile::parse(&packet(viewer, b"FSP1").await, b"FSP1")
+            .unwrap()
+            .generation,
+        100
+    );
+    // A reordered old auto-size request must not undo a manual native choice.
+    viewer
+        .send(Frame {
+            channel: Channel::Media,
+            bytes: ViewportRequest {
+                generation: 99,
+                edge: 320,
+            }
+            .packet(b"FSZ1"),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        VideoProfile::parse(&packet(viewer, b"FSP1").await, b"FSP1")
+            .unwrap()
+            .generation,
+        100
+    );
+    let (h, layout, id) = &hosts[0];
+    assert!(h.publish_rgba(&rgba, source.0, source.1, source.0 as usize * 4, *layout));
+    let native = acknowledged_image(viewer, source).await;
+    assert_eq!((native.meta.width, native.meta.height), source);
+    assert_eq!(
+        native.jpeg, full.jpeg,
+        "manual native mode restores exactly the original JPEG quality"
+    );
+    assert_eq!(native.meta.layout, *layout);
+    assert!(h.input_valid(id, 0, *layout));
+    let settings = { Host::settings(&h.local.lock().unwrap()) };
+    let request = ViewportRequest {
+        generation: 101,
+        edge: 704,
+    };
+    viewer
+        .send(Frame {
+            channel: Channel::Media,
+            bytes: request.packet(b"FSZ1"),
+        })
+        .await
+        .unwrap();
+    packet(viewer, b"FSZ2").await;
+    assert!(
+        !h.publish_accessibility_encoded(full.clone(), source.0, source.1, 0, settings),
+        "late encoded callback cannot undo newer viewport settings"
+    );
+    // Auto mode normally keeps only one frame in flight. Losing that ACK must
+    // still permit a fresh probe and must not force a new authorized session.
+    assert!(h.publish_rgba(&rgba, source.0, source.1, source.0 as usize * 4, *layout));
+    let dropped = JpegFrame::from_wire(&packet(viewer, b"FSM1").await).unwrap();
+    let producer = tokio::spawn({
+        let h = h.clone();
+        let settings = Host::settings(&h.local.lock().unwrap());
+        let image = dropped.clone();
+        async move {
+            loop {
+                let _ =
+                    h.publish_accessibility_encoded(image.clone(), source.0, source.1, 0, settings);
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+    });
+    let fresh = acknowledged_image(viewer, source).await;
+    producer.abort();
+    assert!(fresh.meta.sequence > dropped.meta.sequence);
+    assert_eq!(fresh.meta.layout, *layout);
+    assert_eq!(viewer.stable_id(), *original);
+    for (index, (viewer, original, edge)) in viewers.iter().enumerate() {
+        assert!(viewer.is_open_now());
+        assert_eq!(viewer.stable_id(), *original);
+        if index > 0 {
+            assert_eq!(
+                hosts[index].0.local.lock().unwrap().viewport_edge,
+                Some(*edge)
+            );
+        }
+    }
+    for task in tasks {
+        task.abort();
+    }
+    for (h, _, _) in hosts {
+        h.stop_local();
+        h.client.stop_transport().await;
+    }
+    for server in servers {
+        server.abort();
+    }
+    for target in targets {
+        target.close().await;
+    }
+    desktop.close().await;
 }
 #[tokio::test]
 async fn two_android_hosts_receive_isolated_frames_and_input_and_stop_independently() {
@@ -412,6 +652,162 @@ async fn delayed_ack_keeps_capture_alive_but_a_stalled_peer_still_expires() {
     h.client.stop_transport().await;
     source.close().await;
     target.close().await;
+}
+
+#[tokio::test]
+async fn four_android_hosts_recover_dropped_windows_without_reconnecting_or_stalling_others() {
+    // Use large synthetic, full-color frames, not tiny solid-color images.
+    // Two viewers discard both initial frames as a read timeout would. The
+    // other two must keep moving throughout recovery on the shared endpoint.
+    let (width, height) = (1280, 720);
+    let mut state = 17u32;
+    let rgb: Vec<u8> = (0..width * height * 3)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            (state & 127) as u8
+        })
+        .collect();
+    let jpeg = JpegFrame::encode_rgb(
+        FrameMeta {
+            monitor: 1,
+            layout: 1,
+            sequence: 1,
+            captured_ms: 0,
+            width,
+            height,
+            origin_x: 0,
+            origin_y: 0,
+        },
+        &rgb,
+        90,
+    )
+    .unwrap()
+    .jpeg;
+    assert!(jpeg.len() > 500_000);
+    let desktop = Transport::bind([101; 32], Config::default()).await.unwrap();
+    let mut hosts = Vec::new();
+    let mut targets = Vec::new();
+    let mut viewers = Vec::new();
+    let mut servers = Vec::new();
+    let mut tasks = Vec::new();
+    let mut counts = Vec::new();
+    for index in 0..4u8 {
+        let (h, server) = host(102 + index).await;
+        let layout = h.geometry(width, height);
+        let target = Transport::bind([110 + index; 32], Config::default())
+            .await
+            .unwrap();
+        let (viewer, peer) = connect(
+            &desktop,
+            &target,
+            &format!("four-phone-{index}"),
+            RemotePermission::View,
+        )
+        .await;
+        h.local.lock().unwrap().session = Some(peer.clone());
+        tasks.push(tokio::spawn({
+            let h = h.clone();
+            async move { h.run(peer).await }
+        }));
+        let count = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        counts.push(count.clone());
+        tasks.push(tokio::spawn({
+            let viewer = viewer.clone();
+            let expected = jpeg.clone();
+            async move {
+                loop {
+                    let frame = match viewer.receive().await {
+                        Ok(frame) => frame,
+                        Err(farsail_transport::Error::Timeout) => continue,
+                        Err(_) => break,
+                    };
+                    if let Ok(image) = JpegFrame::from_wire(&frame.bytes) {
+                        assert_eq!((image.meta.width, image.meta.height), (width, height));
+                        assert_eq!(image.jpeg, expected, "recovery must preserve image quality");
+                        let received = count.fetch_add(1, Ordering::SeqCst) + 1;
+                        if index % 2 == 0 && received <= 2 {
+                            continue;
+                        }
+                        let mut bytes = b"FSA1".to_vec();
+                        bytes.extend(image.meta.sequence.to_be_bytes());
+                        viewer
+                            .send(Frame {
+                                channel: Channel::Media,
+                                bytes,
+                            })
+                            .await
+                            .unwrap();
+                    }
+                }
+            }
+        }));
+        hosts.push((h, layout));
+        targets.push(target);
+        viewers.push((viewer.clone(), viewer.stable_id()));
+        servers.push(server);
+    }
+    let producer = tokio::spawn({
+        let hosts = hosts.clone();
+        async move {
+            let mut tick = tokio::time::interval(Duration::from_millis(100));
+            loop {
+                tick.tick().await;
+                for (h, layout) in &hosts {
+                    assert!(h.publish(jpeg.clone(), width, height, *layout));
+                }
+            }
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if counts.iter().all(|count| count.load(Ordering::SeqCst) >= 2) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert_eq!(counts[0].load(Ordering::SeqCst), 2);
+    assert_eq!(counts[2].load(Ordering::SeqCst), 2);
+    for index in [1, 3] {
+        assert!(
+            counts[index].load(Ordering::SeqCst) >= 3,
+            "healthy viewer kept moving"
+        );
+    }
+    tokio::time::timeout(Duration::from_secs(7), async {
+        loop {
+            if counts.iter().all(|count| count.load(Ordering::SeqCst) >= 5) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    for (viewer, original) in viewers {
+        assert!(viewer.is_open_now());
+        assert_eq!(viewer.stable_id(), original);
+    }
+    producer.abort();
+    for task in tasks {
+        task.abort();
+    }
+    for (h, _) in hosts {
+        h.stop_local();
+        h.client.stop_transport().await;
+    }
+    for server in servers {
+        server.abort();
+    }
+    for target in targets {
+        target.close().await;
+    }
+    desktop.close().await;
 }
 #[tokio::test]
 async fn view_permission_rejects_control_frames_on_real_quic() {

@@ -10,6 +10,91 @@ pub const MAX_BYTES: usize = 4_000_000;
 pub const BASELINE_PAYLOAD_BPS: u64 = 6_000_000;
 const HEADER: usize = 49;
 
+/// Resolution presets shared by hosts and viewers. Capture geometry and input
+/// coordinates remain physical; this changes only the encoded image size.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VideoProfile {
+    pub profile: u8,
+    pub generation: u64,
+}
+impl Default for VideoProfile {
+    fn default() -> Self {
+        Self {
+            profile: 1,
+            generation: 0,
+        }
+    }
+}
+impl VideoProfile {
+    pub fn packet(self, tag: &[u8; 4]) -> Vec<u8> {
+        let mut bytes = tag.to_vec();
+        bytes.extend(self.generation.to_be_bytes());
+        bytes.push(self.profile);
+        bytes
+    }
+    pub fn parse(bytes: &[u8], tag: &[u8; 4]) -> Option<Self> {
+        if bytes.len() != 13 || &bytes[..4] != tag || bytes[12] > 3 {
+            return None;
+        }
+        Some(Self {
+            generation: u64::from_be_bytes(bytes[4..12].try_into().ok()?),
+            profile: bytes[12],
+        })
+    }
+    pub fn output_size(self, width: u32, height: u32) -> Option<(u32, u32)> {
+        geometry(width, height).ok()?;
+        let (long, short) = match self.profile {
+            0 => (1280u64, 720u64),
+            1 => (1920, 1080),
+            2 => (2560, 1440),
+            3 => (3840, 2160),
+            _ => return None,
+        };
+        let (max_w, max_h) = if width >= height {
+            (long, short)
+        } else {
+            (short, long)
+        };
+        let (w, h) = (u64::from(width), u64::from(height));
+        if w <= max_w && h <= max_h {
+            return Some((width, height));
+        }
+        if w * max_h >= h * max_w {
+            Some((max_w as u32, (h * max_w / w).max(1) as u32))
+        } else {
+            Some(((w * max_h / h).max(1) as u32, max_h as u32))
+        }
+    }
+}
+
+/// Optional viewport-size negotiation. Peers advertise FSZ0 before accepting it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ViewportRequest {
+    pub generation: u64,
+    pub edge: u16,
+}
+impl ViewportRequest {
+    pub fn valid_edge(edge: u16) -> bool {
+        (320..=2560).contains(&edge)
+    }
+    pub fn packet(self, tag: &[u8; 4]) -> Vec<u8> {
+        let mut bytes = tag.to_vec();
+        bytes.extend(self.generation.to_be_bytes());
+        bytes.extend(self.edge.to_be_bytes());
+        bytes
+    }
+    pub fn parse(bytes: &[u8], tag: &[u8; 4]) -> Option<Self> {
+        if bytes.len() != 14 || &bytes[..4] != tag {
+            return None;
+        }
+        let edge = u16::from_be_bytes(bytes[12..14].try_into().ok()?);
+        Self::valid_edge(edge).then_some(Self {
+            generation: u64::from_be_bytes(bytes[4..12].try_into().ok()?),
+            edge,
+        })
+    }
+}
+
 /// Optional per-session subscription. Peers advertise FSW0 before accepting it.
 /// Pausing video does not pause authorization, input, files, or transport ACKs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -78,6 +163,16 @@ impl MediaWindow {
 
     pub fn failed(&mut self, sequence: u64) {
         self.pending.retain(|pending| *pending != sequence);
+    }
+
+    /// Reopen one slot after a bounded wait without acknowledging discarded
+    /// frames. A receiver can drop both JPEG streams on read timeout; waiting
+    /// only for their ACKs would then prevent any fresh frame from reaching it.
+    /// Keep the other outstanding frame so the caller's no-progress deadline
+    /// remains armed. Repeated retries must never reset that deadline.
+    pub fn retry_stalled(&mut self) -> Option<u64> {
+        self.blocked_on()?;
+        self.pending.pop_front()
     }
 
     pub fn acknowledge(&mut self, sequence: u64) -> Result<bool> {
@@ -288,6 +383,55 @@ impl JpegFrame {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn viewport_and_preset_requests_are_bounded_and_preserve_aspect_ratio() {
+        let request = ViewportRequest {
+            generation: 7,
+            edge: 704,
+        };
+        assert_eq!(
+            ViewportRequest::parse(&request.packet(b"FSZ1"), b"FSZ1"),
+            Some(request)
+        );
+        assert!(ViewportRequest::parse(&request.packet(b"FSZ1"), b"FSZ2").is_none());
+        for edge in [0, 319, 2561, u16::MAX] {
+            assert!(
+                ViewportRequest::parse(
+                    &ViewportRequest { edge, ..request }.packet(b"FSZ1"),
+                    b"FSZ1"
+                )
+                .is_none()
+            );
+        }
+        let mut extra = request.packet(b"FSZ1");
+        extra.push(0);
+        assert!(ViewportRequest::parse(&extra, b"FSZ1").is_none());
+        for (source, preset, expected) in [
+            ((2340, 1080), 0, (1280, 590)),
+            ((1080, 2340), 0, (590, 1280)),
+            ((2340, 1080), 2, (2340, 1080)),
+            ((640, 360), 3, (640, 360)),
+        ] {
+            let profile = VideoProfile {
+                profile: preset,
+                generation: 2,
+            };
+            assert_eq!(profile.output_size(source.0, source.1), Some(expected));
+            assert_eq!(
+                VideoProfile::parse(&profile.packet(b"FSQ1"), b"FSQ1"),
+                Some(profile)
+            );
+        }
+        assert!(
+            VideoProfile {
+                profile: 4,
+                generation: 0
+            }
+            .output_size(1920, 1080)
+            .is_none()
+        );
+    }
     #[test]
     fn video_subscription_rejects_stale_reordered_and_malformed_commands() {
         let mut first = StreamDemand::default();
@@ -350,6 +494,26 @@ mod tests {
         assert!(window.acknowledge(2).unwrap());
         window.sent(4).unwrap();
         assert_eq!(window.blocked_on(), Some(3));
+    }
+
+    #[test]
+    fn dropped_receive_window_allows_one_fresh_probe_without_faking_progress() {
+        let mut window = MediaWindow::default();
+        window.sent(1).unwrap();
+        window.sent(2).unwrap();
+        assert_eq!(window.retry_stalled(), Some(1));
+        assert!(
+            !window.is_empty(),
+            "the hard ACK deadline must remain armed"
+        );
+        assert!(!window.acknowledge(1).unwrap());
+        assert!(window.sent(2).is_err(), "never reuse discarded sequences");
+        window.sent(30).unwrap();
+        assert!(window.sent(31).is_err(), "only one retry slot is available");
+        assert!(window.acknowledge(31).is_err());
+        assert!(window.acknowledge(30).unwrap());
+        assert!(window.is_empty());
+        assert_eq!(window.retry_stalled(), None);
     }
     #[test]
     fn hd_sampling_retains_colored_text_edges_and_byte_limit_still_applies() {

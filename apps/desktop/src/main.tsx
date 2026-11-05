@@ -2966,6 +2966,8 @@ type RemoteStatus = {
     generation: number;
     supported: boolean;
     max_profile?: number;
+    viewport_supported?: boolean;
+    viewport_edge?: number;
   };
   input?: { generation: number; blocked: boolean; message: string | null };
   mouse?: { generation: number; rejected: boolean };
@@ -3032,12 +3034,21 @@ function ViewerWorkspace({ initialId }: { initialId: string }) {
   if (!tabsController.current)
     tabsController.current = new ViewerTabsController<ViewerTab>({
       read: () => invoke<ViewerTab[]>("viewer_tabs"),
-      publish: (next) => setTabs((old) =>
-        old.length === next.length && old.every((tab, index) => {
-          const other = next[index];
-          return tab.instance === other.instance && tab.id === other.id && tab.name === other.name && tab.selected === other.selected;
-        }) ? old : next,
-      ),
+      publish: (next) =>
+        setTabs((old) =>
+          old.length === next.length &&
+          old.every((tab, index) => {
+            const other = next[index];
+            return (
+              tab.instance === other.instance &&
+              tab.id === other.id &&
+              tab.name === other.name &&
+              tab.selected === other.selected
+            );
+          })
+            ? old
+            : next,
+        ),
       failed: (error) => setProblem(errorText(error)),
     });
   useEffect(() => {
@@ -3163,7 +3174,11 @@ function ViewerWorkspace({ initialId }: { initialId: string }) {
   const strip = (
     <>
       <ViewerTabStrip tabs={tabs} onSelect={selectFromTab} onClose={close} />
-      <ViewerSessionMenu tabs={tabs} onSelect={selectFromMenu} onDetach={detach} />
+      <ViewerSessionMenu
+        tabs={tabs}
+        onSelect={selectFromMenu}
+        onDetach={detach}
+      />
       <button
         type="button"
         className="viewer-add viewer-detach"
@@ -3505,6 +3520,16 @@ function Viewer({
         setProblem(errorText(err));
       });
   };
+  const requestViewport = (edge: number) => {
+    setProfileWanted(2);
+    void invoke<number>("media_viewport", { id, edge })
+      .then(setProfilePending)
+      .catch((err) => {
+        setProfileWanted(null);
+        setAutoQuality(false);
+        setProblem(errorText(err));
+      });
+  };
   const showToolbar =
     toolbarVisible ||
     toolsOpen ||
@@ -3589,8 +3614,6 @@ function Viewer({
     if (
       !autoQuality ||
       ended ||
-      displayBusy ||
-      !picture ||
       !status?.video?.supported ||
       !viewportEdge ||
       !sourceEdge ||
@@ -3599,6 +3622,21 @@ function Viewer({
     )
       return;
     const edge = Math.min(viewportEdge, sourceEdge);
+    if (status.video.viewport_supported) {
+      // Negotiate from authenticated display metadata, before a potentially
+      // congested native-size first JPEG. Input still waits for a shown frame.
+      if (displayBusy && displaySnapshot.stage !== "awaiting_frame") return;
+      // Slight oversampling retains text detail at this window's actual pixel
+      // size. Quantization avoids restarting capture on every resize pixel.
+      const targetEdge = Math.max(
+        320,
+        Math.min(2560, sourceEdge, Math.ceil((edge * 1.1) / 64) * 64),
+      );
+      if (status.video.viewport_edge !== targetEdge)
+        requestViewport(targetEdge);
+      return;
+    }
+    if (displayBusy || !picture) return;
     const target = Math.min(
       edge <= 1280 ? 0 : edge <= 1920 ? 1 : edge <= 2560 ? 2 : 3,
       status.video.max_profile ?? 1,
@@ -3608,12 +3646,15 @@ function Viewer({
     autoQuality,
     ended,
     displayBusy,
+    displaySnapshot.stage,
     picture?.display,
     viewportEdge,
     sourceEdge,
     status?.video?.supported,
     status?.video?.profile,
     status?.video?.max_profile,
+    status?.video?.viewport_supported,
+    status?.video?.viewport_edge,
     profileWanted,
     profilePending,
   ]);
@@ -3956,7 +3997,12 @@ function Viewer({
       if (gate.fail(ticket, "timeout")) setDisplaySnapshot(gate.snapshot());
     }, 10000);
     return () => window.clearTimeout(timer);
-  }, [active, displaySnapshot.stage, displaySnapshot.epoch, displaySnapshot.target]);
+  }, [
+    active,
+    displaySnapshot.stage,
+    displaySnapshot.epoch,
+    displaySnapshot.target,
+  ]);
   useEffect(() => {
     let live = true;
     const lease = { active: true };
@@ -3997,7 +4043,8 @@ function Viewer({
     let lastStatusPoll = -Infinity;
     const pollStatus = () => {
       if (statusInFlight) return;
-      if (!activeRef.current && performance.now() - lastStatusPoll < 5000) return;
+      if (!activeRef.current && performance.now() - lastStatusPoll < 5000)
+        return;
       lastStatusPoll = performance.now();
       statusInFlight = true;
       void readStatus()

@@ -4,7 +4,8 @@ use crate::input_recovery::InputRecovery;
 use farsail_client::{NativeClient, file_runtime::NativeFiles};
 use farsail_core::RemotePermission;
 use farsail_media::{
-    BASELINE_PAYLOAD_BPS, ByteBudget, JpegFrame, MediaWindow, StreamDemand, wait_for_ack,
+    BASELINE_PAYLOAD_BPS, ByteBudget, JpegFrame, MediaWindow, StreamDemand, VideoProfile,
+    ViewportRequest, wait_for_ack,
 };
 use farsail_transport::{Channel, Frame, Session};
 use farsail_windows::{
@@ -198,36 +199,6 @@ impl MouseState {
         }
     }
 }
-#[derive(Clone, Copy)]
-struct VideoProfile {
-    profile: u8,
-    generation: u64,
-}
-impl Default for VideoProfile {
-    fn default() -> Self {
-        Self {
-            profile: 1,
-            generation: 0,
-        }
-    }
-}
-impl VideoProfile {
-    fn packet(self, tag: &[u8; 4]) -> Vec<u8> {
-        let mut bytes = tag.to_vec();
-        bytes.extend(self.generation.to_be_bytes());
-        bytes.push(self.profile);
-        bytes
-    }
-    fn parse(bytes: &[u8], tag: &[u8; 4]) -> Option<Self> {
-        if bytes.len() != 13 || &bytes[..4] != tag || bytes[12] > 3 {
-            return None;
-        }
-        Some(Self {
-            generation: u64::from_be_bytes(bytes[4..12].try_into().ok()?),
-            profile: bytes[12],
-        })
-    }
-}
 impl InputState {
     fn allows_input(&self, payload: &[u8], observed: Option<u64>) -> bool {
         payload == b"FSR1"
@@ -343,6 +314,11 @@ struct Live {
     video_request: AtomicU64,
     video_supported: AtomicBool,
     video_max_profile: AtomicU32,
+    viewport_supported: AtomicBool,
+    viewport_edge: AtomicU32,
+    frame_width: AtomicU32,
+    frame_height: AtomicU32,
+    frame_bytes: AtomicU64,
     displays: Arc<StdMutex<Vec<Display>>>,
     error: Arc<StdMutex<Option<String>>>,
     frame: watch::Receiver<Option<Vec<u8>>>,
@@ -412,6 +388,10 @@ async fn send_media(
                     session.close_with_reason("media_timeout");
                     break;
                 }
+                // A timed-out receive may have discarded both in-flight
+                // frames. Permit one latest-frame probe instead of waiting
+                // forever for ACKs that cannot arrive. Keep the miss counter.
+                let _ = window.retry_stalled();
             }
             continue;
         }
@@ -555,6 +535,8 @@ impl RemoteRuntime {
         self.trace.record(json!({"at_ms":now,"event":event,"session":live.session.id(),
             "connection":live.session.stable_id(),"host":live.host,"path":path,"rtt_ms":rtt,"detail":detail,
             "video_requested":live.video_demand.borrow().active,"video_demand_supported":live.demand_supported.load(Ordering::SeqCst),
+            "viewport_supported":live.viewport_supported.load(Ordering::SeqCst),"viewport_edge":live.viewport_edge.load(Ordering::SeqCst),
+            "frame_width":live.frame_width.load(Ordering::Relaxed),"frame_height":live.frame_height.load(Ordering::Relaxed),"frame_bytes":live.frame_bytes.load(Ordering::Relaxed),
             "received_frames":live.received_frames.load(Ordering::Relaxed),"delivered_frames":live.delivered_frames.load(Ordering::Relaxed),
             "received_bytes":live.received_bytes.load(Ordering::Relaxed),"frame_age_ms":if last==0 {None}else{Some(now.saturating_sub(last))},
             "display_count":live.displays.lock().unwrap().len(),"error":live.error.lock().unwrap().as_ref().map(|s|s.chars().take(512).collect::<String>()),"reason":if live.session.is_open_now(){None}else{Some(live.session.end_reason())}}));
@@ -615,6 +597,11 @@ impl RemoteRuntime {
             video_request: AtomicU64::new(0),
             video_supported: AtomicBool::new(false),
             video_max_profile: AtomicU32::new(1),
+            viewport_supported: AtomicBool::new(false),
+            viewport_edge: AtomicU32::new(0),
+            frame_width: AtomicU32::new(0),
+            frame_height: AtomicU32::new(0),
+            frame_bytes: AtomicU64::new(0),
             displays: Arc::new(StdMutex::new(Vec::new())),
             error: Arc::new(StdMutex::new(None)),
             frame: rx,
@@ -1387,12 +1374,29 @@ impl RemoteRuntime {
             {
                 live.video_max_profile
                     .store(u32::from(frame.bytes[4]), Ordering::SeqCst);
+            } else if frame.bytes == b"FSZ0" {
+                live.viewport_supported.store(true, Ordering::SeqCst);
+            } else if let Some(applied) = ViewportRequest::parse(&frame.bytes, b"FSZ2") {
+                let mut profile = live.video_profile.lock().unwrap();
+                if live.viewport_supported.load(Ordering::SeqCst)
+                    && applied.generation >= profile.generation
+                    && applied.generation <= live.video_request.load(Ordering::SeqCst)
+                {
+                    *profile = VideoProfile {
+                        profile: 2,
+                        generation: applied.generation,
+                    };
+                    live.viewport_edge
+                        .store(u32::from(applied.edge), Ordering::SeqCst);
+                    live.video_supported.store(true, Ordering::SeqCst);
+                }
             } else if let Some(applied) = VideoProfile::parse(&frame.bytes, b"FSP1") {
                 let mut profile = live.video_profile.lock().unwrap();
                 if applied.generation >= profile.generation
                     && applied.generation <= live.video_request.load(Ordering::SeqCst)
                 {
                     *profile = applied;
+                    live.viewport_edge.store(0, Ordering::SeqCst);
                     live.video_supported.store(true, Ordering::SeqCst);
                 }
             } else if frame.bytes.starts_with(b"FSL1") {
@@ -1401,6 +1405,11 @@ impl RemoteRuntime {
                     self.trace_session(&live, "displays", None);
                 }
             } else if let Ok(image) = JpegFrame::from_wire(&frame.bytes) {
+                live.frame_width.store(image.meta.width, Ordering::Relaxed);
+                live.frame_height
+                    .store(image.meta.height, Ordering::Relaxed);
+                live.frame_bytes
+                    .store(frame.bytes.len() as u64, Ordering::Relaxed);
                 live.received_frames.fetch_add(1, Ordering::Relaxed);
                 live.received_bytes
                     .fetch_add(frame.bytes.len() as u64, Ordering::Relaxed);
@@ -1681,7 +1690,7 @@ impl RemoteRuntime {
         let discovery = self.client.transport_discovery_state(path).await;
         let profile = *live.video_profile.lock().unwrap();
         Ok(
-            json!({"id":id,"state":path,"platform":if live.peer_android.load(Ordering::SeqCst) { "android" } else { "desktop" },"rtt_ms":rtt,"discovery":discovery,"permission":live.session.permission(),"sharing":live.host,"verification_code":live.session.verification_code().map_err(|e|e.to_string())?,"displays":*live.displays.lock().unwrap(),"error":*live.error.lock().unwrap(),"input":*live.input_state.lock().unwrap(),"mouse":*live.mouse_state.lock().unwrap(),"files":{"supported":live.file_supported.load(Ordering::SeqCst),"status":self.files.status(Some(id)).ok()},"video":{"profile":profile.profile,"generation":profile.generation,"supported":live.video_supported.load(Ordering::SeqCst),"max_profile":live.video_max_profile.load(Ordering::SeqCst)}}),
+            json!({"id":id,"state":path,"platform":if live.peer_android.load(Ordering::SeqCst) { "android" } else { "desktop" },"rtt_ms":rtt,"discovery":discovery,"permission":live.session.permission(),"sharing":live.host,"verification_code":live.session.verification_code().map_err(|e|e.to_string())?,"displays":*live.displays.lock().unwrap(),"error":*live.error.lock().unwrap(),"input":*live.input_state.lock().unwrap(),"mouse":*live.mouse_state.lock().unwrap(),"files":{"supported":live.file_supported.load(Ordering::SeqCst),"status":self.files.status(Some(id)).ok()},"video":{"profile":profile.profile,"generation":profile.generation,"supported":live.video_supported.load(Ordering::SeqCst),"max_profile":live.video_max_profile.load(Ordering::SeqCst),"viewport_supported":live.viewport_supported.load(Ordering::SeqCst),"viewport_edge":live.viewport_edge.load(Ordering::SeqCst)}}),
         )
     }
     pub async fn next_frame(&self, id: &str, after: u64) -> Result<Vec<u8>, String> {
@@ -1767,6 +1776,31 @@ impl RemoteRuntime {
                     generation,
                 }
                 .packet(b"FSQ1"),
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(generation)
+    }
+    pub async fn viewport(&self, id: &str, edge: u16) -> Result<u64, String> {
+        let live = self
+            .sessions
+            .lock()
+            .await
+            .get(id)
+            .cloned()
+            .ok_or("remote session not active")?;
+        if live.host
+            || !live.viewport_supported.load(Ordering::SeqCst)
+            || !ViewportRequest::valid_edge(edge)
+        {
+            return Err("被控端不支持此窗口分辨率".into());
+        }
+        let _guard = live.send_lock.lock().await;
+        let generation = live.video_request.fetch_add(1, Ordering::SeqCst) + 1;
+        live.session
+            .send(Frame {
+                channel: Channel::Media,
+                bytes: ViewportRequest { generation, edge }.packet(b"FSZ1"),
             })
             .await
             .map_err(|e| e.to_string())?;
@@ -2339,6 +2373,61 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn lost_two_frame_ack_window_recovers_on_the_same_connection() {
+        let (source, target, _viewer, _host) = media_pair(71).await;
+        let original = target.stable_id();
+        let (frames, rx) = watch::channel(None);
+        let (acks, ack_rx) = watch::channel(0);
+        let alive = Arc::new(AtomicBool::new(true));
+        let sender = tokio::spawn(send_media(
+            target.clone(),
+            alive.clone(),
+            Arc::new(StdMutex::new(VideoProfile::default())),
+            rx,
+            ack_rx,
+            watch::channel(StreamDemand::default()).1,
+        ));
+        for sequence in [1, 2] {
+            frames.send_replace(Some(synthetic_media(sequence)));
+            let frame = tokio::time::timeout(Duration::from_secs(1), source.receive())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                JpegFrame::from_wire(&frame.bytes).unwrap().meta.sequence,
+                sequence
+            );
+            // Deliberately omit both ACKs, as when both receives are discarded.
+        }
+        let producer = tokio::spawn(async move {
+            let mut sequence = 3;
+            loop {
+                frames.send_replace(Some(synthetic_media(sequence)));
+                sequence += 1;
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        });
+        let next = tokio::time::timeout(Duration::from_secs(4), source.receive())
+            .await
+            .unwrap()
+            .unwrap();
+        let fresh = JpegFrame::from_wire(&next.bytes).unwrap();
+        assert!(fresh.meta.sequence > 2);
+        acks.send_replace(fresh.meta.sequence);
+        let next = tokio::time::timeout(Duration::from_secs(1), source.receive())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(JpegFrame::from_wire(&next.bytes).unwrap().meta.sequence > fresh.meta.sequence);
+        assert!(alive.load(Ordering::SeqCst) && target.is_open_now());
+        assert_eq!(target.stable_id(), original);
+        producer.abort();
+        sender.abort();
+        source.close();
+        target.close();
     }
 
     #[tokio::test]

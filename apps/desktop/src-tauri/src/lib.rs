@@ -199,6 +199,16 @@ async fn media_profile(
     remote.profile(&id, profile).await
 }
 #[tauri::command]
+async fn media_viewport(
+    window: tauri::WebviewWindow,
+    remote: tauri::State<'_, Arc<RemoteRuntime>>,
+    id: String,
+    edge: u16,
+) -> Result<u64, String> {
+    viewer::scoped(&window, &id)?;
+    remote.viewport(&id, edge).await
+}
+#[tauri::command]
 async fn transport_start(
     window: tauri::WebviewWindow,
     client: tauri::State<'_, Arc<NativeClient>>,
@@ -513,6 +523,7 @@ pub fn run() {
         media_next,
         media_select,
         media_profile,
+        media_viewport,
         remote_input,
         ipc_viewer_state,
         ipc_smoke_report,
@@ -558,6 +569,7 @@ pub fn run() {
         media_next,
         media_select,
         media_profile,
+        media_viewport,
         remote_input,
         app_exit
     ]);
