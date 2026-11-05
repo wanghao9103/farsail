@@ -1129,8 +1129,9 @@ mod tests {
             Win32::{
                 Foundation::{HWND, POINT},
                 Graphics::Gdi::{
-                    ClientToScreen, GetDC, GetPixel, RDW_ALLCHILDREN, RDW_INVALIDATE,
-                    RDW_UPDATENOW, RedrawWindow, ReleaseDC, ScreenToClient,
+                    COLOR_WINDOW, COLOR_WINDOWFRAME, ClientToScreen, GetDC, GetPixel, GetSysColor,
+                    RDW_ALLCHILDREN, RDW_INVALIDATE, RDW_UPDATENOW, RedrawWindow, ReleaseDC,
+                    ScreenToClient,
                 },
                 UI::WindowsAndMessaging::{
                     BS_DEFPUSHBUTTON, CreateWindowExW, DestroyWindow, DispatchMessageW, GA_ROOT,
@@ -1263,6 +1264,22 @@ mod tests {
             sequence: &mut u64,
         ) {
             expected_window.present();
+            // STATIC rectangles use current system colors, not literal RGB
+            // black/white. SS_BLACKRECT may be gray on the Windows CI theme.
+            // https://learn.microsoft.com/en-us/windows/win32/controls/static-control-styles
+            let color = unsafe {
+                GetSysColor(if white {
+                    COLOR_WINDOW
+                } else {
+                    COLOR_WINDOWFRAME
+                })
+            };
+            assert_ne!(
+                unsafe { GetSysColor(COLOR_WINDOW) },
+                unsafe { GetSysColor(COLOR_WINDOWFRAME) },
+                "capture fixture requires distinguishable system colors"
+            );
+            let expected = [color as u8, (color >> 8) as u8, (color >> 16) as u8];
             println!(
                 "OWNED capture surface {phase}: {:?}",
                 expected_window.describe(point)
@@ -1323,17 +1340,14 @@ mod tests {
                         last_pixel = Some([pixel[0], pixel[1], pixel[2]]);
                         if pixel
                             .iter()
-                            .all(|&value| if white { value > 223 } else { value < 32 })
+                            .zip(expected)
+                            .all(|(&value, expected)| value.abs_diff(expected) <= 24)
                         {
                             let surface = expected_window.describe(point);
                             if surface.visible
                                 && surface.sample_hits_expected
                                 && surface.sample_hits_own_process
-                                && surface.sample_rgb.is_some_and(|pixel| {
-                                    pixel
-                                        .iter()
-                                        .all(|&value| if white { value > 223 } else { value < 32 })
-                                })
+                                && surface.sample_rgb == Some(expected)
                             {
                                 assert!(surface.window_rect[2] > surface.window_rect[0]);
                                 assert!(surface.client_rect[2] > surface.client_rect[0]);
