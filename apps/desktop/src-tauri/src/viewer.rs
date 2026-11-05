@@ -419,6 +419,27 @@ pub fn viewer_select_tab(window: tauri::WebviewWindow, instance: String) -> Resu
     }
     Ok(())
 }
+
+fn detach_tab(map: &mut HashMap<String, Arc<Binding>>, binding: &Arc<Binding>) -> bool {
+    let mut siblings: Vec<_> = map
+        .values()
+        .filter(|b| b.host == binding.host)
+        .cloned()
+        .collect();
+    siblings.sort_by_key(|b| b.instance.parse::<u64>().unwrap_or(0));
+    let index = siblings.iter().position(|b| Arc::ptr_eq(b, binding));
+    map.retain(|_, b| !Arc::ptr_eq(b, binding));
+    siblings.retain(|b| !Arc::ptr_eq(b, binding));
+    if binding.selected.load(Ordering::SeqCst)
+        && let Some(index) = index
+        && let Some(next) = siblings.get(index).or_else(|| siblings.last())
+    {
+        // Keep the user's place: prefer the tab to the right, then the left.
+        next.selected.store(true, Ordering::SeqCst);
+    }
+    siblings.is_empty()
+}
+
 #[tauri::command]
 pub async fn viewer_close_tab(
     window: tauri::WebviewWindow,
@@ -430,15 +451,7 @@ pub async fn viewer_close_tab(
     let empty = {
         let windows = window.state::<Windows>();
         let mut map = windows.0.lock().unwrap();
-        map.retain(|_, b| !Arc::ptr_eq(b, &binding));
-        let mut remaining: Vec<_> = map.values().filter(|b| b.host == window.label()).collect();
-        remaining.sort_by_key(|b| b.instance.parse::<u64>().unwrap_or(0));
-        if binding.selected.load(Ordering::SeqCst)
-            && let Some(next) = remaining.first()
-        {
-            next.selected.store(true, Ordering::SeqCst);
-        }
-        remaining.is_empty()
+        detach_tab(&mut map, &binding)
     };
     let id = binding.id.lock().unwrap().clone();
     let remote = window.state::<Arc<RemoteRuntime>>().inner().clone();
@@ -1054,6 +1067,73 @@ mod tests {
         *b.id.lock().unwrap() = "phone-b-new".into();
         assert!(scoped_binding(&map, "viewer-a", "phone-b").is_err());
         assert!(scoped_binding(&map, "viewer-a", "phone-b-new").is_ok());
+    }
+    fn tab(instance: &str, host: &str, selected: bool) -> Arc<Binding> {
+        let mut tab = binding();
+        tab.instance = instance.into();
+        tab.host = host.into();
+        tab.selected.store(selected, Ordering::SeqCst);
+        Arc::new(tab)
+    }
+    #[test]
+    fn closing_selected_tab_prefers_right_neighbor_then_left_in_numeric_order() {
+        for (closing, expected) in [("2", "10"), ("10", "30"), ("30", "10")] {
+            let tabs =
+                ["30", "2", "10"].map(|instance| tab(instance, "viewer-a", instance == closing));
+            let other = tab("20", "viewer-other", true);
+            let mut map: HashMap<_, _> = tabs
+                .iter()
+                .map(|tab| (format!("viewer-{}", tab.instance), tab.clone()))
+                .collect();
+            map.insert("viewer-other".into(), other.clone());
+            let closing = tabs.iter().find(|tab| tab.instance == closing).unwrap();
+            closing.cancel_recovery();
+            assert!(!detach_tab(&mut map, closing));
+            assert!(closing.cancelled.load(Ordering::SeqCst));
+            assert!(!map.values().any(|tab| Arc::ptr_eq(tab, closing)));
+            assert_eq!(map.len(), 3);
+            let selected: Vec<_> = map
+                .values()
+                .filter(|tab| tab.host == "viewer-a" && tab.selected.load(Ordering::SeqCst))
+                .map(|tab| tab.instance.as_str())
+                .collect();
+            assert_eq!(selected, [expected]);
+            assert!(other.selected.load(Ordering::SeqCst));
+            assert!(!other.cancelled.load(Ordering::SeqCst));
+            assert!(map.values().any(|tab| Arc::ptr_eq(tab, &other)));
+        }
+    }
+    #[test]
+    fn closing_background_tab_keeps_current_selection_and_other_windows() {
+        let current = tab("30", "viewer-a", true);
+        let closing = tab("10", "viewer-a", false);
+        let other = tab("20", "viewer-other", true);
+        let mut map = HashMap::from([
+            ("viewer-current".into(), current.clone()),
+            ("viewer-closing".into(), closing.clone()),
+            ("viewer-other".into(), other.clone()),
+        ]);
+        closing.cancel_recovery();
+        assert!(!detach_tab(&mut map, &closing));
+        assert!(current.selected.load(Ordering::SeqCst));
+        assert!(!current.cancelled.load(Ordering::SeqCst));
+        assert!(other.selected.load(Ordering::SeqCst));
+        assert_eq!(map.len(), 2);
+    }
+    #[test]
+    fn closing_last_tab_reports_only_its_host_empty_and_repeated_close_cannot_select() {
+        let closing = tab("10", "viewer-a", true);
+        let other = tab("20", "viewer-other", false);
+        let mut map = HashMap::from([
+            ("viewer-closing".into(), closing.clone()),
+            ("viewer-other".into(), other.clone()),
+        ]);
+        closing.cancel_recovery();
+        assert!(detach_tab(&mut map, &closing));
+        assert!(detach_tab(&mut map, &closing));
+        assert!(!other.selected.load(Ordering::SeqCst));
+        assert!(!other.cancelled.load(Ordering::SeqCst));
+        assert_eq!(map.len(), 1);
     }
     #[test]
     fn window_instance_survives_fresh_session_recovery() {

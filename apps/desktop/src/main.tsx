@@ -12,6 +12,7 @@ import {
 } from "./updates";
 import { FilesPanel } from "./files";
 import { ViewerSessionMenu, type ViewerTab } from "./viewer-session-menu";
+import { ViewerTabStrip } from "./viewer-tab-strip";
 import { PageActions } from "./page-actions";
 import "./style.css";
 import "./desktop-theme.css";
@@ -3065,35 +3066,78 @@ function ViewerWorkspace({ initialId }: { initialId: string }) {
     },
     [refresh],
   );
-  const menuFocus = useRef<string | null>(null);
+  const selectionFocus = useRef<{ instance: string; selector: string } | null>(
+    null,
+  );
   const selectFromMenu = useCallback(
     (tab: ViewerTab) => {
-      menuFocus.current = tab.instance;
+      selectionFocus.current = {
+        instance: tab.instance,
+        selector: ".viewer-tab-menu-trigger",
+      };
+      select(tab);
+    },
+    [select],
+  );
+  const selectFromTab = useCallback(
+    (tab: ViewerTab) => {
+      selectionFocus.current = {
+        instance: tab.instance,
+        selector: `[role="tab"][aria-selected="true"]`,
+      };
       select(tab);
     },
     [select],
   );
   useEffect(() => {
-    const instance = menuFocus.current;
+    const intent = selectionFocus.current;
     if (
-      !instance ||
-      !tabs.some((tab) => tab.instance === instance && tab.selected)
+      !intent ||
+      !tabs.some((tab) => tab.instance === intent.instance && tab.selected)
     )
       return;
     document
-      .getElementById(`panel-${instance}`)
-      ?.querySelector<HTMLButtonElement>(".viewer-tab-menu-trigger")
+      .getElementById(`panel-${intent.instance}`)
+      ?.querySelector<HTMLButtonElement>(intent.selector)
       ?.focus({ preventScroll: true });
-    menuFocus.current = null;
+    selectionFocus.current = null;
   }, [tabs]);
+  const closingFocus = useRef<{
+    instance: string;
+    element: Element | null;
+  } | null>(null);
   const close = useCallback(
     (tab: ViewerTab) => {
+      closingFocus.current = {
+        instance: tab.instance,
+        element: document.activeElement,
+      };
       void invoke("viewer_close_tab", { instance: tab.instance })
         .then(refresh)
         .catch((e) => setProblem(errorText(e)));
     },
     [refresh],
   );
+  useEffect(() => {
+    const intent = closingFocus.current;
+    if (!intent || tabs.some((tab) => tab.instance === intent.instance)) return;
+    closingFocus.current = null;
+    if (
+      document.activeElement !== document.body &&
+      document.activeElement !== intent.element
+    )
+      return;
+    const selected = tabs.find((tab) => tab.selected);
+    if (!selected) return;
+    document
+      .getElementById(`panel-${selected.instance}`)
+      ?.querySelector<HTMLButtonElement>(
+        fullscreen
+          ? ".viewer-tab-menu-trigger"
+          : '[role="tab"][aria-selected="true"]',
+      )
+      ?.focus({ preventScroll: true });
+  }, [tabs, fullscreen]);
   useEffect(() => {
     const keys = (e: KeyboardEvent) => {
       if (!e.ctrlKey || e.altKey || e.metaKey || !tabs.length) return;
@@ -3123,58 +3167,7 @@ function ViewerWorkspace({ initialId }: { initialId: string }) {
   }, [tabs, select, close]);
   const strip = (
     <>
-      <div className="viewer-tabs" role="tablist" aria-label="远程设备标签">
-        {tabs.map((tab) => (
-          <div
-            key={tab.instance}
-            className={`viewer-tab ${tab.selected ? "selected" : ""}`}
-          >
-            <button
-              role="tab"
-              id={`tab-${tab.instance}`}
-              aria-selected={tab.selected}
-              aria-controls={`panel-${tab.instance}`}
-              tabIndex={tab.selected ? 0 : -1}
-              title={tab.name}
-              onClick={() => select(tab)}
-              onKeyDown={(e) => {
-                if (
-                  ["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)
-                ) {
-                  e.preventDefault();
-                  const index = tabs.indexOf(tab);
-                  const next =
-                    e.key === "Home"
-                      ? tabs[0]
-                      : e.key === "End"
-                        ? tabs[tabs.length - 1]
-                        : tabs[
-                            (index +
-                              (e.key === "ArrowLeft" ? tabs.length - 1 : 1)) %
-                              tabs.length
-                          ];
-                  select(next);
-                  document.getElementById(`tab-${next.instance}`)?.focus();
-                }
-              }}
-            >
-              <Desktop20Regular
-                className="viewer-tab-icon"
-                aria-hidden="true"
-              />
-              <span className="viewer-tab-name">{tab.name}</span>
-            </button>
-            <button
-              className="viewer-tab-close"
-              aria-label={`关闭标签 ${tab.name}`}
-              title="关闭此连接 (Ctrl+W)"
-              onClick={() => close(tab)}
-            >
-              <Dismiss16Regular />
-            </button>
-          </div>
-        ))}
-      </div>
+      <ViewerTabStrip tabs={tabs} onSelect={selectFromTab} onClose={close} />
       <ViewerSessionMenu tabs={tabs} onSelect={selectFromMenu} />
       <button
         className="viewer-add"
@@ -3190,13 +3183,6 @@ function ViewerWorkspace({ initialId }: { initialId: string }) {
       </button>
     </>
   );
-  const selectedInstance = tabs.find((t) => t.selected)?.instance;
-  useEffect(() => {
-    if (selectedInstance)
-      document
-        .getElementById(`tab-${selectedInstance}`)
-        ?.scrollIntoView({ block: "nearest", inline: "nearest" });
-  }, [selectedInstance, tabs.length]);
   return (
     <>
       {tabs.map((tab) => (
@@ -4222,6 +4208,18 @@ function Viewer({
   return (
     <section
       className={`viewer-window ${fitMode === "fill" ? "viewer-fill" : ""} ${showToolbar ? "tools-visible" : ""} ${fullscreen ? "viewer-fullscreen" : ""}`}
+      onPointerMoveCapture={(e) => {
+        // WebKit can miss mouseleave when an overlay changes under the pointer.
+        // Repair only stale hover bookkeeping; moving here never reveals tools.
+        if (
+          toolbarHovered.current &&
+          e.target instanceof Node &&
+          !toolbar.current?.contains(e.target)
+        ) {
+          toolbarHovered.current = false;
+          scheduleHide();
+        }
+      }}
     >
       {!fullscreen && (
         <header className="window-titlebar viewer-titlebar">

@@ -131,11 +131,11 @@ const fs = require("node:fs");
         }
         if (cmd === "viewer_close_tab") {
           if (f.tabs) {
-            const selected = f.tabs.find(
-              (t) => t.instance === args.instance,
-            )?.selected;
+            const index = f.tabs.findIndex((t) => t.instance === args.instance);
+            const selected = f.tabs[index]?.selected;
             f.tabs = f.tabs.filter((t) => t.instance !== args.instance);
-            if (selected && f.tabs[0]) f.tabs[0].selected = true;
+            const neighbor = f.tabs[index] ?? f.tabs.at(-1);
+            if (selected && neighbor) neighbor.selected = true;
           }
           return {};
         }
@@ -2367,6 +2367,186 @@ const fs = require("node:fs");
     "independent fullscreen exit keeps remote tools hidden",
   );
   await page.setViewportSize({ width: 1200, height: 800 });
+  // Overflow navigation browses tabs locally, and closing keeps the user's place.
+  await load();
+  await page.evaluate(() => {
+    window.fixture.tabs = ["A", "B", "C", "D", "E"].map((letter, index) => ({
+      instance: `phone-${letter.toLowerCase()}`,
+      id: `session-${letter.toLowerCase()}`,
+      name: `测试手机 ${letter}`,
+      selected: index === 0,
+    }));
+  });
+  await page.getByRole("tab", { name: "测试手机 A", exact: true }).waitFor();
+  await activePanel().getByAltText("远端桌面").waitFor();
+  await page.mouse.move(500, 600);
+  await activePanel().locator(".remote-screen").focus();
+  await activePanel().locator(".viewer-toolbar").waitFor({ state: "hidden" });
+  const tabViewport = () =>
+    page.getByRole("tablist", { name: "远程设备标签", exact: true });
+  await page.waitForFunction(() => {
+    const list = document.querySelector(
+      ".viewer-tab-panel:not([hidden]) .viewer-tabs",
+    );
+    return list && list.scrollWidth <= list.clientWidth + 1;
+  });
+  assert.equal(
+    await page
+      .getByRole("button", { name: "向右滚动设备标签", exact: true })
+      .count(),
+    0,
+    "five short device names fit without overflow in a wide window",
+  );
+  await page.screenshot({
+    path: ".local/ui-verification/viewer-five-compact-tabs.png",
+  });
+  await page.setViewportSize({ width: 440, height: 900 });
+  const scrollRight = () =>
+    page.getByRole("button", { name: "向右滚动设备标签", exact: true });
+  const scrollLeft = () =>
+    page.getByRole("button", { name: "向左滚动设备标签", exact: true });
+  await scrollRight().waitFor();
+  const beforeBrowsing = await page.evaluate(() => window.fixture.calls.length);
+  await scrollRight().click();
+  await page.waitForFunction(
+    () =>
+      document.querySelector(".viewer-tab-panel:not([hidden]) .viewer-tabs")
+        .scrollLeft > 40,
+  );
+  await scrollLeft().click();
+  await page.waitForFunction(
+    () =>
+      document.querySelector(".viewer-tab-panel:not([hidden]) .viewer-tabs")
+        .scrollLeft < 1,
+  );
+  await tabViewport().hover();
+  await page.mouse.wheel(0, 180);
+  await page.waitForFunction(
+    () =>
+      document.querySelector(".viewer-tab-panel:not([hidden]) .viewer-tabs")
+        .scrollLeft > 100,
+  );
+  assert.equal(
+    await page
+      .getByRole("tab", { name: "测试手机 A", exact: true })
+      .getAttribute("aria-selected"),
+    "true",
+  );
+  const browseCalls = await page.evaluate(
+    (before) => window.fixture.calls.slice(before),
+    beforeBrowsing,
+  );
+  assert.equal(
+    browseCalls.filter((c) => c.cmd === "viewer_select_tab").length,
+    0,
+    "scroll buttons and wheel only browse; they do not switch devices",
+  );
+  assert.equal(
+    browseCalls.filter((c) => c.cmd === "remote_input" && c.args.input != null)
+      .length,
+    0,
+  );
+  assert(!(await activePanel().locator(".viewer-toolbar").isVisible()));
+  await deviceSwitcher().click();
+  await popup()
+    .getByRole("button", { name: "测试手机 E", exact: true })
+    .click();
+  const activeTab = () => page.getByRole("tab", { selected: true });
+  await page.getByRole("tab", { name: "测试手机 E", exact: true }).waitFor();
+  const checkSelectedInView = async () => {
+    await page.waitForFunction(() => {
+      const list = document.querySelector(
+        ".viewer-tab-panel:not([hidden]) .viewer-tabs",
+      );
+      const tab = list?.querySelector(
+        '[role="tab"][aria-selected="true"]',
+      )?.parentElement;
+      if (!list || !tab) return false;
+      const outer = list.getBoundingClientRect(),
+        inner = tab.getBoundingClientRect();
+      return inner.left >= outer.left - 1 && inner.right <= outer.right + 1;
+    });
+  };
+  await checkSelectedInView();
+  await activeTab().press("Home");
+  await page.waitForFunction(
+    () => document.activeElement?.id === "tab-phone-a",
+  );
+  await checkSelectedInView();
+  await activeTab().press("ArrowRight");
+  await page.waitForFunction(
+    () => document.activeElement?.id === "tab-phone-b",
+  );
+  await checkSelectedInView();
+  await activeTab().press("End");
+  await page.waitForFunction(
+    () => document.activeElement?.id === "tab-phone-e",
+  );
+  await checkSelectedInView();
+  await activePanel().getByAltText("远端桌面").waitFor();
+  await page.screenshot({
+    path: ".local/ui-verification/viewer-five-overflow-tabs.png",
+  });
+  for (const width of [440, 320]) {
+    await page.setViewportSize({ width, height: 900 });
+    await checkSelectedInView();
+    const drag = await activePanel()
+      .locator(".viewer-titlebar .window-drag")
+      .boundingBox();
+    assert(
+      drag && drag.width >= 44,
+      "native titlebar dragging keeps a usable hit area",
+    );
+    for (const label of [
+      "连接其他设备",
+      "切换远程设备",
+      "最小化",
+      "最大化或还原",
+      "关闭窗口",
+    ]) {
+      const control = await page
+        .getByRole("button", { name: label, exact: true })
+        .boundingBox();
+      assert(
+        control && control.x >= 0 && control.x + control.width <= width + 1,
+        `${label} stays inside a ${width}px window`,
+      );
+    }
+  }
+  await page.setViewportSize({ width: 1200, height: 800 });
+  const closeAndExpect = async (closing, next) => {
+    await page
+      .getByRole("button", {
+        name: `关闭标签 测试手机 ${closing}`,
+        exact: true,
+      })
+      .click();
+    await page.waitForFunction(
+      (letter) =>
+        document.querySelector('[role="tab"][aria-selected="true"]')?.id ===
+        `tab-phone-${letter.toLowerCase()}`,
+      next,
+    );
+    await page.waitForFunction(
+      (letter) =>
+        document.activeElement?.id === `tab-phone-${letter.toLowerCase()}`,
+      next,
+    );
+  };
+  await closeAndExpect("E", "D");
+  await closeAndExpect("D", "C");
+  await page.getByRole("tab", { name: "测试手机 A", exact: true }).click();
+  await closeAndExpect("B", "A");
+  await closeAndExpect("A", "C");
+  assert.equal(await page.locator(".viewer-tab-panel").count(), 1);
+  assert.equal(
+    await page.evaluate(
+      () =>
+        window.fixture.calls.filter((c) => c.cmd === "viewer_reconnect").length,
+    ),
+    0,
+  );
+  assert(!(await activePanel().locator(".viewer-toolbar").isVisible()));
   // Frame failure and timer polling must share a single status request, even
   // when StrictMode replays effects or a slow native status call is in flight.
   await load();
@@ -2390,7 +2570,7 @@ const fs = require("node:fs");
   assert.deepEqual(errors, []);
   await browser.close();
   console.log(
-    "PASS repeated left/right pairs, multi-button capture, queued outside UP then release-all, external held entry, blur/lost-capture cancellation, ordered remote Alt+Tab and view/paused/ended guards; fit/quality/FPS/pause/terminal/read-only, five-session fullscreen navigation and local popup isolation coverage. Synthetic IPC only.",
+    "PASS repeated left/right pairs, multi-button capture, queued outside UP then release-all, external held entry, blur/lost-capture cancellation, ordered remote Alt+Tab and view/paused/ended guards; fit/quality/FPS/pause/terminal/read-only, five-session fullscreen/overflow navigation, adjacent close and local popup isolation coverage. Synthetic IPC only.",
   );
 })().catch((e) => {
   console.error(e);
