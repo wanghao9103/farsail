@@ -139,8 +139,11 @@ impl Duplication {
             }
             adapter_index += 1;
         }
-        Err(Error::Unavailable(
-            "no DXGI output owns the selected display".into(),
+        // A mode switch can briefly invalidate the HMONITOR obtained just
+        // before DXGI enumerates its outputs. Retry this missing selected route
+        // within the host's existing deadline; do not retry arbitrary API errors.
+        Err(Error::CaptureReset(
+            "selected DXGI output is temporarily absent".into(),
         ))
     }
     pub fn frame(&mut self) -> Result<Option<RawFrame>> {

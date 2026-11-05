@@ -1128,12 +1128,17 @@ mod tests {
         use windows::{
             Win32::{
                 Foundation::{HWND, POINT},
-                Graphics::Gdi::ClientToScreen,
+                Graphics::Gdi::{
+                    ClientToScreen, GetDC, GetPixel, RDW_ALLCHILDREN, RDW_INVALIDATE,
+                    RDW_UPDATENOW, RedrawWindow, ReleaseDC, ScreenToClient,
+                },
                 UI::WindowsAndMessaging::{
-                    BS_DEFPUSHBUTTON, CreateWindowExW, DestroyWindow, DispatchMessageW,
-                    GetClientRect, GetWindowThreadProcessId, IsWindowVisible, MSG, PM_REMOVE,
-                    PeekMessageW, TranslateMessage, WINDOW_STYLE, WS_CHILD, WS_EX_TOPMOST,
-                    WS_OVERLAPPEDWINDOW, WS_POPUP, WS_VISIBLE,
+                    BS_DEFPUSHBUTTON, CreateWindowExW, DestroyWindow, DispatchMessageW, GA_ROOT,
+                    GetAncestor, GetClientRect, GetWindowRect, GetWindowThreadProcessId,
+                    HWND_TOPMOST, IsWindowVisible, MSG, PM_REMOVE, PeekMessageW, SWP_NOACTIVATE,
+                    SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SetWindowPos, TranslateMessage,
+                    WINDOW_STYLE, WS_CHILD, WS_EX_TOPMOST, WS_OVERLAPPEDWINDOW, WS_POPUP,
+                    WS_VISIBLE, WindowFromPoint,
                 },
             },
             core::w,
@@ -1142,7 +1147,19 @@ mod tests {
         // These paint known pixels without injecting input or subclassing another app.
         const BLACK_RECT: WINDOW_STYLE = WINDOW_STYLE(4);
         const WHITE_RECT: WINDOW_STYLE = WINDOW_STYLE(6);
+        // SS_NOTIFY makes STATIC return HTCLIENT instead of HTTRANSPARENT,
+        // so WindowFromPoint can genuinely verify our visible test surface.
+        const STATIC_NOTIFY: WINDOW_STYLE = WINDOW_STYLE(0x100);
         struct OwnedWindow(HWND);
+        #[derive(Debug)]
+        struct OwnedSurface {
+            visible: bool,
+            window_rect: [i32; 4],
+            client_rect: [i32; 4],
+            sample_hits_expected: bool,
+            sample_hits_own_process: bool,
+            sample_rgb: Option<[u8; 3]>,
+        }
         impl OwnedWindow {
             fn check(hwnd: HWND) -> Self {
                 let mut pid = 0;
@@ -1153,7 +1170,60 @@ mod tests {
                     "test window must belong to this process"
                 );
                 assert!(unsafe { IsWindowVisible(hwnd) }.as_bool());
-                Self(hwnd)
+                let window = Self(hwnd);
+                window.present();
+                window
+            }
+            fn present(&self) {
+                unsafe {
+                    SetWindowPos(
+                        self.0,
+                        Some(HWND_TOPMOST),
+                        0,
+                        0,
+                        0,
+                        0,
+                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                    )
+                    .unwrap();
+                    assert!(
+                        RedrawWindow(
+                            Some(self.0),
+                            None,
+                            None,
+                            RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN
+                        )
+                        .as_bool()
+                    );
+                }
+                pump();
+            }
+            fn describe(&self, point: POINT) -> OwnedSurface {
+                let mut rect = RECT::default();
+                let mut client = RECT::default();
+                unsafe { GetWindowRect(self.0, &mut rect) }.unwrap();
+                unsafe { GetClientRect(self.0, &mut client) }.unwrap();
+                let hit = unsafe { WindowFromPoint(point) };
+                let mut hit_pid = 0;
+                unsafe { GetWindowThreadProcessId(hit, Some(&mut hit_pid)) };
+                let expected = hit == self.0 || unsafe { GetAncestor(hit, GA_ROOT) } == self.0;
+                let mut local = point;
+                assert!(unsafe { ScreenToClient(self.0, &mut local) }.as_bool());
+                let dc = unsafe { GetDC(Some(self.0)) };
+                let pixel = unsafe { GetPixel(dc, local.x, local.y) }.0;
+                let _ = unsafe { ReleaseDC(Some(self.0), dc) };
+                OwnedSurface {
+                    visible: unsafe { IsWindowVisible(self.0) }.as_bool(),
+                    window_rect: [rect.left, rect.top, rect.right, rect.bottom],
+                    client_rect: [client.left, client.top, client.right, client.bottom],
+                    sample_hits_expected: expected,
+                    sample_hits_own_process: hit_pid == std::process::id(),
+                    sample_rgb: (pixel != u32::MAX).then_some([
+                        pixel as u8,
+                        (pixel >> 8) as u8,
+                        (pixel >> 16) as u8,
+                    ]),
+                }
             }
             fn sample_point(&self) -> POINT {
                 let mut rect = RECT::default();
@@ -1186,16 +1256,25 @@ mod tests {
         fn await_color(
             capture: &mut Option<Capture>,
             display: &Display,
+            expected_window: &OwnedWindow,
             point: POINT,
             white: bool,
             phase: &str,
             sequence: &mut u64,
         ) {
+            expected_window.present();
+            println!(
+                "OWNED capture surface {phase}: {:?}",
+                expected_window.describe(point)
+            );
             let deadline = Instant::now() + Duration::from_secs(8);
+            let (mut frames, mut empty, mut resets) = (0u32, 0u32, 0u32);
+            let mut last_pixel = None;
             loop {
                 assert!(
                     Instant::now() < deadline,
-                    "no new decoded frame for {phase}"
+                    "no new decoded frame for {phase}; frames={frames}, empty={empty}, resets={resets}, last_capture_rgb={last_pixel:?}, owned_surface={:?}",
+                    expected_window.describe(point),
                 );
                 pump();
                 if capture.is_none() {
@@ -1216,6 +1295,7 @@ mod tests {
                             *capture = Some(next);
                         }
                         Err(Error::CaptureReset(_)) => {
+                            resets += 1;
                             std::thread::sleep(Duration::from_millis(50));
                             continue;
                         }
@@ -1225,6 +1305,7 @@ mod tests {
                 *sequence += 1;
                 match capture.as_mut().unwrap().next_frame(1, *sequence) {
                     Ok(Some(frame)) => {
+                        frames += 1;
                         let wire = frame.to_wire().unwrap();
                         let frame = JpegFrame::from_wire(&wire).unwrap();
                         assert_eq!(frame.meta.monitor, display.id);
@@ -1239,18 +1320,35 @@ mod tests {
                             / u64::from(display.height)) as usize;
                         assert!(x < frame.meta.width as usize && y < frame.meta.height as usize);
                         let pixel = &rgb[(y * frame.meta.width as usize + x) * 3..][..3];
+                        last_pixel = Some([pixel[0], pixel[1], pixel[2]]);
                         if pixel
                             .iter()
                             .all(|&value| if white { value > 223 } else { value < 32 })
                         {
-                            println!(
-                                "PASS owned DXGI capture phase: {phase}; pixels remain in memory"
-                            );
-                            return;
+                            let surface = expected_window.describe(point);
+                            if surface.visible
+                                && surface.sample_hits_expected
+                                && surface.sample_hits_own_process
+                                && surface.sample_rgb.is_some_and(|pixel| {
+                                    pixel
+                                        .iter()
+                                        .all(|&value| if white { value > 223 } else { value < 32 })
+                                })
+                            {
+                                assert!(surface.window_rect[2] > surface.window_rect[0]);
+                                assert!(surface.client_rect[2] > surface.client_rect[0]);
+                                println!(
+                                    "PASS owned DXGI capture phase: {phase}; frames={frames}, empty={empty}, resets={resets}, rgb={pixel:?}; pixels remain in memory"
+                                );
+                                return;
+                            }
                         }
                     }
-                    Ok(None) => {}
-                    Err(Error::CaptureReset(_)) => *capture = None,
+                    Ok(None) => empty += 1,
+                    Err(Error::CaptureReset(_)) => {
+                        resets += 1;
+                        *capture = None;
+                    }
                     Err(error) => panic!("DXGI capture failed during {phase}: {error}"),
                 }
                 std::thread::sleep(Duration::from_millis(15));
@@ -1276,7 +1374,7 @@ mod tests {
                     WS_EX_TOPMOST,
                     w!("STATIC"),
                     w!("FarSail owned capture baseline"),
-                    WS_OVERLAPPEDWINDOW | WS_VISIBLE | BLACK_RECT,
+                    WS_OVERLAPPEDWINDOW | WS_VISIBLE | BLACK_RECT | STATIC_NOTIFY,
                     display.x + 40,
                     display.y + 40,
                     360,
@@ -1293,6 +1391,7 @@ mod tests {
         await_color(
             &mut capture,
             &display,
+            &base,
             base_point,
             false,
             "before confirmation",
@@ -1304,7 +1403,7 @@ mod tests {
                     WS_EX_TOPMOST,
                     w!("STATIC"),
                     w!("FarSail owned confirmation - continue?"),
-                    WS_OVERLAPPEDWINDOW | WS_VISIBLE | WHITE_RECT,
+                    WS_OVERLAPPEDWINDOW | WS_VISIBLE | WHITE_RECT | STATIC_NOTIFY,
                     display.x + 60,
                     display.y + 60,
                     300,
@@ -1341,6 +1440,7 @@ mod tests {
         await_color(
             &mut capture,
             &display,
+            &confirmation,
             confirmation_point,
             true,
             "ordinary confirmation visible",
@@ -1352,12 +1452,12 @@ mod tests {
                     WS_EX_TOPMOST,
                     w!("STATIC"),
                     w!("FarSail owned borderless fullscreen overlay"),
-                    WS_POPUP | WS_VISIBLE | BLACK_RECT,
+                    WS_POPUP | WS_VISIBLE | BLACK_RECT | STATIC_NOTIFY,
                     display.x,
                     display.y,
                     display.width as i32,
                     display.height as i32,
-                    Some(confirmation.0),
+                    None,
                     None,
                     None,
                     None,
@@ -1368,6 +1468,7 @@ mod tests {
         await_color(
             &mut capture,
             &display,
+            &fullscreen,
             confirmation_point,
             false,
             "borderless fullscreen overlay visible",
@@ -1377,6 +1478,7 @@ mod tests {
         await_color(
             &mut capture,
             &display,
+            &confirmation,
             confirmation_point,
             true,
             "fullscreen overlay closed",
@@ -1386,6 +1488,7 @@ mod tests {
         await_color(
             &mut capture,
             &display,
+            &base,
             base_point,
             false,
             "confirmation closed",
