@@ -223,7 +223,10 @@ const fs = require("node:fs");
               permission: f.permission,
               platform: f.platform,
               files: { supported: f.fileSupport, status: { transfers: [] } },
-              video: f.video,
+              // Native IPC serializes a fresh snapshot. Sharing this mutable
+              // fixture object lets later mock requests rewrite React's past
+              // status while a render/effect is still completing.
+              video: { ...f.video },
               input: reportedInput,
               mouse: f.mouse,
               rtt_ms: 23,
@@ -3135,6 +3138,8 @@ const fs = require("node:fs");
     await p.addInitScript(installFixture);
     await p.goto(process.env.UI_URL || "http://127.0.0.1:1420/?viewer=test");
     await p.getByAltText("远端桌面").waitFor();
+    await p.waitForFunction(() => window.fixture.video.generation > 0);
+    await p.waitForTimeout(300);
     await p.evaluate(() => {
       window.fixture.platform = "android";
       window.fixture.video.max_profile = 2;
