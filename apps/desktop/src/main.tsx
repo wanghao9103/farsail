@@ -3032,7 +3032,12 @@ function ViewerWorkspace({ initialId }: { initialId: string }) {
   if (!tabsController.current)
     tabsController.current = new ViewerTabsController<ViewerTab>({
       read: () => invoke<ViewerTab[]>("viewer_tabs"),
-      publish: setTabs,
+      publish: (next) => setTabs((old) =>
+        old.length === next.length && old.every((tab, index) => {
+          const other = next[index];
+          return tab.instance === other.instance && tab.id === other.id && tab.name === other.name && tab.selected === other.selected;
+        }) ? old : next,
+      ),
       failed: (error) => setProblem(errorText(error)),
     });
   useEffect(() => {
@@ -3102,6 +3107,12 @@ function ViewerWorkspace({ initialId }: { initialId: string }) {
       "always",
     );
   }, []);
+  const detach = useCallback((tab: ViewerTab) => {
+    void tabsController.current?.mutate(
+      () => invoke("viewer_detach_tab", { instance: tab.instance }),
+      "always",
+    );
+  }, []);
   useEffect(() => {
     const intent = closingFocus.current;
     if (!intent || tabs.some((tab) => tab.instance === intent.instance)) return;
@@ -3152,7 +3163,20 @@ function ViewerWorkspace({ initialId }: { initialId: string }) {
   const strip = (
     <>
       <ViewerTabStrip tabs={tabs} onSelect={selectFromTab} onClose={close} />
-      <ViewerSessionMenu tabs={tabs} onSelect={selectFromMenu} />
+      <ViewerSessionMenu tabs={tabs} onSelect={selectFromMenu} onDetach={detach} />
+      <button
+        type="button"
+        className="viewer-add viewer-detach"
+        aria-label="当前标签在独立窗口打开"
+        title="当前标签在独立窗口打开"
+        disabled={tabs.length < 2}
+        onClick={() => {
+          const selected = tabs.find((tab) => tab.selected);
+          if (selected) detach(selected);
+        }}
+      >
+        <SquareMultiple20Regular aria-hidden="true" />
+      </button>
       <button
         className="viewer-add"
         aria-label="连接其他设备"
@@ -3189,6 +3213,7 @@ function ViewerWorkspace({ initialId }: { initialId: string }) {
                 <ViewerSessionMenu
                   tabs={tabs}
                   onSelect={selectFromMenu}
+                  onDetach={detach}
                   fullscreen
                   onExitFullscreen={exitFullscreen}
                 />
@@ -3917,6 +3942,7 @@ function Viewer({
   }, [status?.displays, id]);
   useEffect(() => {
     if (
+      !active ||
       displaySnapshot.stage !== "awaiting_frame" ||
       displaySnapshot.target == null
     )
@@ -3930,7 +3956,7 @@ function Viewer({
       if (gate.fail(ticket, "timeout")) setDisplaySnapshot(gate.snapshot());
     }, 10000);
     return () => window.clearTimeout(timer);
-  }, [displaySnapshot.stage, displaySnapshot.epoch, displaySnapshot.target]);
+  }, [active, displaySnapshot.stage, displaySnapshot.epoch, displaySnapshot.target]);
   useEffect(() => {
     let live = true;
     const lease = { active: true };
@@ -3968,8 +3994,11 @@ function Viewer({
       }
     };
     let statusInFlight = false;
+    let lastStatusPoll = -Infinity;
     const pollStatus = () => {
       if (statusInFlight) return;
+      if (!activeRef.current && performance.now() - lastStatusPoll < 5000) return;
+      lastStatusPoll = performance.now();
       statusInFlight = true;
       void readStatus()
         .then((s) => {

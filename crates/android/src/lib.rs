@@ -8,7 +8,9 @@ mod viewer;
 
 use farsail_client::NativeClient;
 use farsail_core::RemotePermission;
-use farsail_media::{BASELINE_PAYLOAD_BPS, ByteBudget, FrameMeta, JpegFrame, MediaWindow};
+use farsail_media::{
+    BASELINE_PAYLOAD_BPS, ByteBudget, FrameMeta, JpegFrame, MediaWindow, StreamDemand,
+};
 use farsail_transport::{Channel, Frame, Session};
 use protocol::InputOrder;
 use serde_json::{Value, json};
@@ -42,6 +44,7 @@ struct Local {
     session: Option<Session>,
     inputs: VecDeque<(Instant, Value)>,
     media: MediaDiagnostics,
+    video_demand: StreamDemand,
 }
 
 pub struct Host {
@@ -72,6 +75,7 @@ impl Host {
                 session: None,
                 inputs: VecDeque::new(),
                 media: MediaDiagnostics::default(),
+                video_demand: StreamDemand::default(),
             }),
         })
     }
@@ -80,6 +84,7 @@ impl Host {
         let mut l = self.local.lock().unwrap();
         l.capture = true;
         l.media = MediaDiagnostics::default();
+        l.video_demand = StreamDemand::default();
         l.layout += 1;
         l.epoch
     }
@@ -287,10 +292,21 @@ impl Host {
     }
     async fn run(self: Arc<Self>, session: Session) {
         let (ack_tx, ack_rx) = watch::channel(0u64);
+        let (demand_tx, demand_rx) = watch::channel(StreamDemand::default());
+        {
+            let mut local = self.local.lock().unwrap();
+            if local
+                .session
+                .as_ref()
+                .is_some_and(|s| s.stable_id() == session.stable_id())
+            {
+                local.video_demand = StreamDemand::default();
+            }
+        }
         let host = self.clone();
         let sent = session.clone();
         let sender = tokio::spawn(async move {
-            host.send_frames(sent, ack_rx).await;
+            host.send_frames(sent, ack_rx, demand_rx).await;
         });
         let mut order = InputOrder::default();
         let mut count = 0;
@@ -324,6 +340,19 @@ impl Host {
                 break;
             }
             if frame.channel == Channel::Media
+                && let Some(next) = StreamDemand::parse(&frame.bytes)
+            {
+                if demand_tx.send_if_modified(|current| current.advance(next)) {
+                    let mut local = self.local.lock().unwrap();
+                    if local
+                        .session
+                        .as_ref()
+                        .is_some_and(|s| s.stable_id() == session.stable_id())
+                    {
+                        local.video_demand = next;
+                    }
+                }
+            } else if frame.channel == Channel::Media
                 && frame.bytes.len() == 12
                 && frame.bytes.starts_with(b"FSA1")
             {
@@ -374,7 +403,12 @@ impl Host {
             l.inputs.clear();
         }
     }
-    async fn send_frames(&self, session: Session, mut ack: watch::Receiver<u64>) {
+    async fn send_frames(
+        &self,
+        session: Session,
+        mut ack: watch::Receiver<u64>,
+        mut demand: watch::Receiver<StreamDemand>,
+    ) {
         if session
             .send(Frame {
                 channel: Channel::Media,
@@ -384,6 +418,16 @@ impl Host {
             .is_err()
         {
             session.close();
+            return;
+        }
+        if session
+            .send(Frame {
+                channel: Channel::Media,
+                bytes: b"FSW0".to_vec(),
+            })
+            .await
+            .is_err()
+        {
             return;
         }
         let mut frames = self.frames.subscribe();
@@ -428,7 +472,8 @@ impl Host {
                 session.close_with_reason("media_timeout");
                 break;
             }
-            if window.blocked_on().is_none() {
+            let video_active = demand.borrow().active;
+            if video_active && window.blocked_on().is_none() {
                 let next = frames.borrow_and_update().clone();
                 if let Some(wire) = next {
                     let Ok(image) = JpegFrame::from_wire(&wire) else {
@@ -515,11 +560,26 @@ impl Host {
             tokio::select! {
                 _ = frames.changed() => (),
                 _ = ack.changed() => (),
+                _ = demand.changed() => (),
                 _ = tokio::time::sleep(Duration::from_millis(50)) => (),
                 _ = session.wait_closed() => break,
             }
         }
         session.close();
+    }
+    #[cfg(test)]
+    fn video_requested(&self) -> bool {
+        let local = self.local.lock().unwrap();
+        local.capture && local.video_demand.active
+    }
+    fn rgba_demand(&self, width: u32, height: u32, layout: u64) -> Option<bool> {
+        let local = self.local.lock().unwrap();
+        (local.capture && local.width == width && local.height == height && local.layout == layout)
+            .then_some(local.video_demand.active)
+    }
+    fn screenshot_demand(&self, epoch: u64) -> Option<bool> {
+        let local = self.local.lock().unwrap();
+        (local.capture && local.epoch == epoch).then_some(local.video_demand.active)
     }
     async fn ensure_transport(&self) -> Result<(), String> {
         let _guard = self.endpoint.lock().await;

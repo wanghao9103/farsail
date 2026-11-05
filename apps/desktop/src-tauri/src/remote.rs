@@ -3,7 +3,9 @@ use crate::clipboard::Packet as ClipboardPacket;
 use crate::input_recovery::InputRecovery;
 use farsail_client::{NativeClient, file_runtime::NativeFiles};
 use farsail_core::RemotePermission;
-use farsail_media::{BASELINE_PAYLOAD_BPS, ByteBudget, JpegFrame, MediaWindow, wait_for_ack};
+use farsail_media::{
+    BASELINE_PAYLOAD_BPS, ByteBudget, JpegFrame, MediaWindow, StreamDemand, wait_for_ack,
+};
 use farsail_transport::{Channel, Frame, Session};
 use farsail_windows::{
     Capture, Display, Input, InputSink, displays, foreground_window, input_context_ready,
@@ -356,6 +358,8 @@ struct Live {
     clipboard_target: StdMutex<Option<(u64, farsail_windows::ForegroundWindow)>>,
     received_frames: AtomicU64,
     delivered_frames: AtomicU64,
+    video_demand: watch::Sender<StreamDemand>,
+    demand_supported: AtomicBool,
     received_bytes: AtomicU64,
     last_frame_ms: AtomicU64,
     last_trace_ms: AtomicU64,
@@ -372,11 +376,13 @@ async fn send_media(
     video_profile: Arc<StdMutex<VideoProfile>>,
     mut rx: watch::Receiver<Option<Vec<u8>>>,
     mut ack_rx: watch::Receiver<u64>,
+    mut demand: watch::Receiver<StreamDemand>,
 ) {
     let mut budget = ByteBudget::new(BASELINE_PAYLOAD_BPS);
     let mut missed = 0;
     let mut window = MediaWindow::default();
     let mut last_progress = tokio::time::Instant::now();
+    let mut demand_open = true;
     'sending: loop {
         if !alive.load(Ordering::SeqCst) {
             break;
@@ -409,7 +415,20 @@ async fn send_media(
             }
             continue;
         }
+        let video_active = demand.borrow().active;
+        if !video_active {
+            tokio::select! {
+                changed = demand.changed(), if demand_open => { demand_open = changed.is_ok(); }
+                _ = ack_rx.changed() => (),
+                _ = tokio::time::sleep(Duration::from_millis(50)) => (),
+            }
+            continue;
+        }
         tokio::select! {
+            changed = demand.changed(), if demand_open => {
+                demand_open = changed.is_ok();
+                continue;
+            }
             changed = rx.changed() => {
                 if changed.is_err() { break; }
             }
@@ -535,6 +554,7 @@ impl RemoteRuntime {
         let last = live.last_frame_ms.load(Ordering::Relaxed);
         self.trace.record(json!({"at_ms":now,"event":event,"session":live.session.id(),
             "connection":live.session.stable_id(),"host":live.host,"path":path,"rtt_ms":rtt,"detail":detail,
+            "video_requested":live.video_demand.borrow().active,"video_demand_supported":live.demand_supported.load(Ordering::SeqCst),
             "received_frames":live.received_frames.load(Ordering::Relaxed),"delivered_frames":live.delivered_frames.load(Ordering::Relaxed),
             "received_bytes":live.received_bytes.load(Ordering::Relaxed),"frame_age_ms":if last==0 {None}else{Some(now.saturating_sub(last))},
             "display_count":live.displays.lock().unwrap().len(),"error":live.error.lock().unwrap().as_ref().map(|s|s.chars().take(512).collect::<String>()),"reason":if live.session.is_open_now(){None}else{Some(live.session.end_reason())}}));
@@ -610,6 +630,8 @@ impl RemoteRuntime {
             clipboard_target: StdMutex::new(None),
             received_frames: AtomicU64::new(0),
             delivered_frames: AtomicU64::new(0),
+            video_demand: watch::channel(StreamDemand::default()).0,
+            demand_supported: AtomicBool::new(false),
             received_bytes: AtomicU64::new(0),
             last_frame_ms: AtomicU64::new(0),
             last_trace_ms: AtomicU64::new(0),
@@ -697,6 +719,13 @@ impl RemoteRuntime {
         }
         let (tx, rx) = watch::channel::<Option<Vec<u8>>>(None);
         let initial_profile = *live.video_profile.lock().unwrap();
+        let _ = live
+            .session
+            .send(Frame {
+                channel: Channel::Media,
+                bytes: b"FSW0".to_vec(),
+            })
+            .await;
         let _ = live
             .session
             .send(Frame {
@@ -923,6 +952,7 @@ impl RemoteRuntime {
             live.video_profile.clone(),
             rx,
             ack_rx,
+            live.video_demand.subscribe(),
         ));
         let mut input_order = InputOrder::default();
         let mut input_window = std::time::Instant::now();
@@ -1025,6 +1055,11 @@ impl RemoteRuntime {
                     continue;
                 }
                 if frame.channel == Channel::Media
+                    && let Some(next) = StreamDemand::parse(&frame.bytes)
+                {
+                    live.video_demand
+                        .send_if_modified(|current| current.advance(next));
+                } else if frame.channel == Channel::Media
                     && frame.bytes.len() == 8
                     && &frame.bytes[..4] == b"FSS1"
                 {
@@ -1250,6 +1285,7 @@ impl RemoteRuntime {
 
     async fn run_viewer(self: &Arc<Self>, live: Arc<Live>, sender: watch::Sender<Option<Vec<u8>>>) {
         let mut last_sequence = 0;
+        let mut demand_task: Option<tokio::task::JoinHandle<()>> = None;
         loop {
             if !live.alive.load(Ordering::SeqCst) || !live.session.is_open().await {
                 break;
@@ -1310,7 +1346,45 @@ impl RemoteRuntime {
             if frame.channel != Channel::Media {
                 continue;
             }
-            if frame.bytes.len() == 5 && frame.bytes.starts_with(b"FSV1") && frame.bytes[4] <= 3 {
+            if frame.bytes == b"FSW0" {
+                if !live.demand_supported.swap(true, Ordering::SeqCst) {
+                    let live = live.clone();
+                    demand_task = Some(tokio::spawn(async move {
+                        let mut demand = live.video_demand.subscribe();
+                        loop {
+                            let next = *demand.borrow_and_update();
+                            match live
+                                .session
+                                .send(Frame {
+                                    channel: Channel::Media,
+                                    bytes: next.packet(),
+                                })
+                                .await
+                            {
+                                Ok(()) => (),
+                                Err(farsail_transport::Error::Timeout) => {
+                                    // A congested stream must not permanently lose
+                                    // the resume request. Retry the latest bounded
+                                    // packet on this same authorized connection.
+                                    tokio::time::sleep(Duration::from_millis(500)).await;
+                                    if !live.alive.load(Ordering::SeqCst) {
+                                        break;
+                                    }
+                                    continue;
+                                }
+                                Err(_) => break,
+                            }
+                            if demand.changed().await.is_err() || !live.alive.load(Ordering::SeqCst)
+                            {
+                                break;
+                            }
+                        }
+                    }));
+                }
+            } else if frame.bytes.len() == 5
+                && frame.bytes.starts_with(b"FSV1")
+                && frame.bytes[4] <= 3
+            {
                 live.video_max_profile
                     .store(u32::from(frame.bytes[4]), Ordering::SeqCst);
             } else if let Some(applied) = VideoProfile::parse(&frame.bytes, b"FSP1") {
@@ -1357,6 +1431,19 @@ impl RemoteRuntime {
                     break;
                 }
             }
+        }
+        if let Some(task) = demand_task {
+            task.abort();
+        }
+    }
+
+    pub async fn visibility(&self, id: &str, generation: u64, active: bool) {
+        let live = self.sessions.lock().await.get(id).cloned();
+        if let Some(live) = live
+            && !live.host
+        {
+            live.video_demand
+                .send_if_modified(|current| current.advance(StreamDemand { generation, active }));
         }
     }
 
@@ -2008,6 +2095,50 @@ mod tests {
         oversized.push(0);
         assert!(VideoProfile::parse(&oversized, b"FSQ1").is_none());
     }
+
+    #[tokio::test]
+    async fn background_subscription_keeps_its_transport_without_sending_video() {
+        let (source, target, _viewer, _host) = media_pair(117).await;
+        let connection = source.stable_id();
+        let (frames, rx) = watch::channel(None);
+        let (acks, ack_rx) = watch::channel(0);
+        let (demand, demand_rx) = watch::channel(StreamDemand {
+            generation: 1,
+            active: false,
+        });
+        let alive = Arc::new(AtomicBool::new(true));
+        let sender = tokio::spawn(send_media(
+            target.clone(),
+            alive.clone(),
+            Arc::new(StdMutex::new(VideoProfile::default())),
+            rx,
+            ack_rx,
+            demand_rx,
+        ));
+        frames.send_replace(Some(synthetic_media(1)));
+        tokio::time::sleep(Duration::from_secs(7)).await;
+        assert!(source.is_open_now() && target.is_open_now());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), source.receive())
+                .await
+                .is_err()
+        );
+        demand.send_replace(StreamDemand {
+            generation: 2,
+            active: true,
+        });
+        frames.send_replace(Some(synthetic_media(2)));
+        let frame = tokio::time::timeout(Duration::from_secs(1), source.receive())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(JpegFrame::from_wire(&frame.bytes).unwrap().meta.sequence, 2);
+        acks.send_replace(2);
+        assert_eq!(source.stable_id(), connection);
+        alive.store(false, Ordering::SeqCst);
+        drop(frames);
+        sender.await.unwrap();
+    }
     struct InputAuthority {
         source: iroh::EndpointId,
         target: iroh::EndpointId,
@@ -2107,6 +2238,7 @@ mod tests {
             Arc::new(StdMutex::new(VideoProfile::default())),
             rx,
             ack_rx,
+            watch::channel(StreamDemand::default()).1,
         ));
         target.close_with_reason("capture_failed");
         drop(frames);
@@ -2151,6 +2283,7 @@ mod tests {
             Arc::new(StdMutex::new(VideoProfile::default())),
             rx,
             ack_rx,
+            watch::channel(StreamDemand::default()).1,
         ));
         let (received, mut viewer_frames) = tokio::sync::mpsc::channel(8);
         let reader = tokio::spawn(async move {
@@ -2220,6 +2353,7 @@ mod tests {
             Arc::new(StdMutex::new(VideoProfile::default())),
             rx,
             ack_rx,
+            watch::channel(StreamDemand::default()).1,
         ));
         frames.send_replace(Some(synthetic_media(1)));
         source.receive().await.unwrap();
@@ -2243,6 +2377,7 @@ mod tests {
             Arc::new(StdMutex::new(VideoProfile::default())),
             rx,
             ack_rx,
+            watch::channel(StreamDemand::default()).1,
         ));
         frames.send_replace(Some(synthetic_media(1)));
         source.receive().await.unwrap();

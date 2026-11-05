@@ -1,7 +1,7 @@
 name: Multi-view client verification
 on:
   push:
-    branches: ["codex/multi-viewer-resilience", "codex/immersive-viewer-cascade", "codex/parallel-viewer-auth-isolation"]
+    branches: ["codex/multi-viewer-resilience", "codex/immersive-viewer-cascade", "codex/parallel-viewer-auth-isolation", "codex/multiview-stream-demand"]
 permissions:
   contents: read
 jobs:

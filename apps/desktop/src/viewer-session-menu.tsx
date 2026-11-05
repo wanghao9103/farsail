@@ -23,11 +23,13 @@ export type ViewerTab = {
 export function ViewerSessionMenu({
   tabs,
   onSelect,
+  onDetach,
   fullscreen = false,
   onExitFullscreen,
 }: {
   tabs: ViewerTab[];
   onSelect: (tab: ViewerTab) => void;
+  onDetach?: (tab: ViewerTab) => void;
   fullscreen?: boolean;
   onExitFullscreen?: () => void;
 }) {
@@ -223,6 +225,11 @@ export function ViewerSessionMenu({
                 <span>{tab.name}</span>
               </button>
             ))}
+            {onDetach && tabs.length > 1 && selected && (
+              <button type="button" onClick={() => { close(); onDetach(selected); }}>
+                当前设备在独立窗口打开
+              </button>
+            )}
           </div>
         </>
       )}

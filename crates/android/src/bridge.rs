@@ -258,6 +258,11 @@ pub extern "system" fn Java_app_farsail_android_NativeBridge_publishRgba(
         if layout < 0 || span > env.get_direct_buffer_capacity(&buffer).ok()? {
             return None;
         }
+        // Keep the authorized connection alive while an invisible tab pauses
+        // video. Do not spend phone CPU encoding frames that nobody will show.
+        if !hst.rgba_demand(width, height, layout as u64)? {
+            return Some(true);
+        }
         let pointer = env.get_direct_buffer_address(&buffer).ok()?;
         // The direct buffer is borrowed only for this synchronous JNI call.
         // Kotlin keeps the acquired Image open until this function returns;
@@ -286,6 +291,9 @@ pub extern "system" fn Java_app_farsail_android_NativeBridge_publishAccessibilit
         let span = crate::capture::rgba_span(width, height, stride, 4)?;
         if epoch < 0 || span > env.get_direct_buffer_capacity(&buffer).ok()? {
             return None;
+        }
+        if !hst.screenshot_demand(epoch as u64)? {
+            return Some(true);
         }
         let pointer = env.get_direct_buffer_address(&buffer).ok()?;
         // Kotlin owns this direct buffer for the duration of the synchronous call.

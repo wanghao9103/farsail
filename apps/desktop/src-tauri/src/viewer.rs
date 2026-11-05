@@ -48,9 +48,10 @@ struct RecoveryProgress {
 }
 
 pub struct Binding {
-    host: String,
+    host: Mutex<String>,
     name: String,
     selected: AtomicBool,
+    visibility_epoch: AtomicU64,
     pub id: Mutex<String>,
     instance: String,
     opened: AtomicBool,
@@ -63,7 +64,19 @@ pub struct Binding {
     recovery_allowed: AtomicBool,
     progress: Mutex<RecoveryProgress>,
 }
+fn next_visibility_epoch() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::SeqCst)
+}
 impl Binding {
+    fn host(&self) -> String {
+        self.host.lock().unwrap().clone()
+    }
+    fn select(&self, selected: bool) {
+        self.selected.store(selected, Ordering::SeqCst);
+        self.visibility_epoch
+            .store(next_visibility_epoch(), Ordering::SeqCst);
+    }
     fn window_active(&self, native_exists: bool) -> bool {
         native_exists
             && self.opened.load(Ordering::SeqCst)
@@ -229,12 +242,7 @@ fn cascade_viewers(app: &tauri::AppHandle) -> Result<(), String> {
         .unwrap()
         .iter()
         .filter(|(_, binding)| binding.window_active(true))
-        .map(|(_, binding)| {
-            (
-                binding.instance.parse::<u64>().unwrap_or(0),
-                binding.host.clone(),
-            )
-        })
+        .map(|(_, binding)| (binding.instance.parse::<u64>().unwrap_or(0), binding.host()))
         .collect();
     viewers.sort_by_key(|(instance, _)| *instance);
     let mut monitors = HashMap::new();
@@ -387,7 +395,7 @@ fn scoped_binding(
 ) -> Result<(), String> {
     let binding = map
         .values()
-        .find(|binding| binding.host == label && *binding.id.lock().unwrap() == id)
+        .find(|binding| binding.host() == label && *binding.id.lock().unwrap() == id)
         .ok_or("此窗口无权操作该会话")?;
     if binding.cancelled.load(Ordering::SeqCst) {
         return Err("此窗口无权操作该会话".into());
@@ -402,40 +410,76 @@ fn window_binding(
     let map = windows.0.lock().unwrap();
     let binding = if let Some(instance) = instance {
         map.values()
-            .find(|binding| binding.host == window.label() && binding.instance == instance)
+            .find(|binding| binding.host() == window.label() && binding.instance == instance)
     } else {
         map.get(window.label())
-            .filter(|binding| binding.host == window.label())
+            .filter(|binding| binding.host() == window.label())
+            .or_else(|| {
+                map.values().find(|binding| {
+                    binding.host() == window.label() && binding.selected.load(Ordering::SeqCst)
+                })
+            })
     };
     binding.cloned().ok_or("查看标签已关闭".into())
 }
 
+async fn sync_visibility(window: &tauri::WebviewWindow) {
+    let snapshots: Vec<_> = {
+        let windows = window.state::<Windows>();
+        let map = windows.0.lock().unwrap();
+        map.values()
+            .filter(|b| b.host() == window.label())
+            .map(|b| {
+                (
+                    b.id.lock().unwrap().clone(),
+                    b.visibility_epoch.load(Ordering::SeqCst),
+                    b.selected.load(Ordering::SeqCst),
+                )
+            })
+            .collect()
+    };
+    let remote = window.state::<Arc<RemoteRuntime>>().inner().clone();
+    for (id, generation, active) in snapshots {
+        remote.visibility(&id, generation, active).await;
+    }
+}
+
 #[tauri::command]
-pub fn viewer_tabs(window: tauri::WebviewWindow) -> Result<Value, String> {
+pub async fn viewer_tabs(window: tauri::WebviewWindow) -> Result<Value, String> {
     if !window.label().starts_with("viewer-") {
         return Err("不是查看窗口".into());
     }
+    sync_visibility(&window).await;
     let windows = window.state::<Windows>();
     let map = windows.0.lock().unwrap();
-    let mut bindings: Vec<_> = map.values().filter(|b| b.host == window.label()).collect();
+    let mut bindings: Vec<_> = map
+        .values()
+        .filter(|b| b.host() == window.label())
+        .collect();
     bindings.sort_by_key(|b| b.instance.parse::<u64>().unwrap_or(0));
     Ok(json!(bindings.iter().map(|b| json!({"instance":b.instance,"id":*b.id.lock().unwrap(),"name":b.name,"selected":b.selected.load(Ordering::SeqCst)})).collect::<Vec<_>>()))
 }
 #[tauri::command]
-pub fn viewer_select_tab(window: tauri::WebviewWindow, instance: String) -> Result<(), String> {
+pub async fn viewer_select_tab(
+    window: tauri::WebviewWindow,
+    instance: String,
+) -> Result<(), String> {
     let binding = window_binding(&window, Some(&instance))?;
-    let windows = window.state::<Windows>();
-    let map = windows.0.lock().unwrap();
-    for b in map.values().filter(|b| b.host == binding.host) {
-        b.selected.store(b.instance == instance, Ordering::SeqCst);
+    {
+        let windows = window.state::<Windows>();
+        let map = windows.0.lock().unwrap();
+        for b in map.values().filter(|b| b.host() == binding.host()) {
+            b.select(b.instance == instance);
+        }
     }
+    sync_visibility(&window).await;
     Ok(())
 }
 
 fn detach_tab(map: &mut HashMap<String, Arc<Binding>>, binding: &Arc<Binding>) -> bool {
     let mut siblings: Vec<_> = map
         .values()
-        .filter(|b| b.host == binding.host)
+        .filter(|b| b.host() == binding.host())
         .cloned()
         .collect();
     siblings.sort_by_key(|b| b.instance.parse::<u64>().unwrap_or(0));
@@ -447,7 +491,7 @@ fn detach_tab(map: &mut HashMap<String, Arc<Binding>>, binding: &Arc<Binding>) -
         && let Some(next) = siblings.get(index).or_else(|| siblings.last())
     {
         // Keep the user's place: prefer the tab to the right, then the left.
-        next.selected.store(true, Ordering::SeqCst);
+        next.select(true);
     }
     siblings.is_empty()
 }
@@ -476,6 +520,127 @@ pub async fn viewer_close_tab(
     Ok(())
 }
 
+fn move_tab(
+    map: &mut HashMap<String, Arc<Binding>>,
+    binding: &Arc<Binding>,
+    host: &str,
+) -> Result<bool, String> {
+    let key = map
+        .iter()
+        .find(|(_, b)| Arc::ptr_eq(b, binding))
+        .map(|(key, _)| key.clone())
+        .ok_or("查看标签已关闭")?;
+    if binding.cancelled.load(Ordering::SeqCst) {
+        return Err("查看标签已关闭".into());
+    }
+    let empty = detach_tab(map, binding);
+    *binding.host.lock().unwrap() = host.to_owned();
+    binding.select(true);
+    map.insert(key, binding.clone());
+    Ok(empty)
+}
+
+#[tauri::command]
+pub async fn viewer_detach_tab(
+    window: tauri::WebviewWindow,
+    instance: String,
+) -> Result<(), String> {
+    let binding = window_binding(&window, Some(&instance))?;
+    if binding.retrying.swap(true, Ordering::SeqCst) {
+        return Err("连接正在恢复，请稍后再拆分窗口".into());
+    }
+    let result = async {
+        let app = window.app_handle();
+        let id = binding.id.lock().unwrap().clone();
+        let remote = app.state::<Arc<RemoteRuntime>>().inner().clone();
+        if binding.permission == RemotePermission::Control {
+            // Release held buttons/keys before transferring the input owner.
+            remote.input(&id, None, None).await?;
+        }
+        let size = window
+            .inner_size()
+            .map_err(|e| e.to_string())?
+            .to_logical::<f64>(window.scale_factor().map_err(|e| e.to_string())?);
+        let host = format!("viewer-detached-{}", next_window_instance());
+        let (empty, previous) = {
+            let windows = app.state::<Windows>();
+            let mut map = windows.0.lock().unwrap();
+            if binding.host() != window.label() {
+                return Err("查看标签已移到其他窗口".into());
+            }
+            let previous: Vec<_> = map
+                .values()
+                .filter(|b| b.host() == window.label())
+                .map(|b| (b.clone(), b.selected.load(Ordering::SeqCst)))
+                .collect();
+            (move_tab(&mut map, &binding, &host)?, previous)
+        };
+        let built = tauri::WebviewWindowBuilder::new(
+            app,
+            &host,
+            tauri::WebviewUrl::App(format!("index.html?viewer={id}").into()),
+        )
+        .title(format!("FarSail · {}", binding.name))
+        .inner_size(
+            size.width.clamp(640.0, 1000.0),
+            size.height.clamp(420.0, 720.0),
+        )
+        .min_inner_size(360.0, 420.0)
+        .decorations(false)
+        .maximized(false)
+        .on_navigation(|url| {
+            let origin = (url.scheme() == "tauri" && url.host_str() == Some("localhost"))
+                || (url.scheme() == "http" && url.host_str() == Some("tauri.localhost"))
+                || (cfg!(debug_assertions)
+                    && url.scheme() == "http"
+                    && url.host_str() == Some("127.0.0.1")
+                    && url.port() == Some(1420));
+            origin && matches!(url.path(), "/" | "/index.html")
+        })
+        .build();
+        let detached = match built {
+            Ok(detached) => detached,
+            Err(error) => {
+                {
+                    let windows = app.state::<Windows>();
+                    let map = windows.0.lock().unwrap();
+                    if map.values().any(|b| Arc::ptr_eq(b, &binding)) {
+                        *binding.host.lock().unwrap() = window.label().to_owned();
+                        for (b, selected) in previous {
+                            b.select(selected);
+                        }
+                    }
+                }
+                sync_visibility(&window).await;
+                return Err(error.to_string());
+            }
+        };
+        if binding.cancelled.load(Ordering::SeqCst) {
+            let _ = detached.close();
+            return Err("查看连接已关闭".into());
+        }
+        // The Arc, session ID, lease and recovery state are preserved. Only
+        // window ownership changes; closing the source cannot stop this stream.
+        sync_visibility(&detached).await;
+        sync_visibility(&window).await;
+        let index = app
+            .webview_windows()
+            .keys()
+            .filter(|label| label.starts_with("viewer-"))
+            .count()
+            .saturating_sub(1);
+        let _ = place_viewer(&detached, index);
+        detached.set_focus().map_err(|e| e.to_string())?;
+        if empty {
+            window.close().map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+    .await;
+    binding.retrying.store(false, Ordering::SeqCst);
+    result
+}
+
 fn focus_existing(
     app: &tauri::AppHandle,
     _label: &str,
@@ -485,7 +650,7 @@ fn focus_existing(
         return Err("查看窗口正在打开，请稍后再试".into());
     }
     let viewer = app
-        .get_webview_window(&binding.host)
+        .get_webview_window(&binding.host())
         .ok_or("查看窗口已关闭")?;
     {
         let windows = app.state::<Windows>();
@@ -494,10 +659,9 @@ fn focus_existing(
             .lock()
             .unwrap()
             .values()
-            .filter(|b| b.host == binding.host)
+            .filter(|b| b.host() == binding.host())
         {
-            b.selected
-                .store(b.instance == binding.instance, Ordering::SeqCst);
+            b.select(b.instance == binding.instance);
         }
     }
     viewer.unminimize().map_err(|e| e.to_string())?;
@@ -505,7 +669,7 @@ fn focus_existing(
         return Err("查看窗口正在关闭，请重新连接".into());
     }
     viewer.set_focus().map_err(|e| e.to_string())?;
-    if !binding.window_active(app.get_webview_window(&binding.host).is_some()) {
+    if !binding.window_active(app.get_webview_window(&binding.host()).is_some()) {
         return Err("查看窗口已关闭".into());
     }
     Ok(binding.instance.clone())
@@ -526,7 +690,7 @@ pub fn viewer_window_active(
             .map(|(label, binding)| (label.clone(), binding.clone()))
     };
     Ok(tracked.is_some_and(|(_label, binding)| {
-        binding.window_active(app.get_webview_window(&binding.host).is_some())
+        binding.window_active(app.get_webview_window(&binding.host()).is_some())
     }))
 }
 
@@ -575,9 +739,9 @@ pub async fn viewer_open(
         let windows = app.state::<Windows>();
         let map = windows.0.lock().unwrap();
         map.values()
-            .filter(|b| b.window_active(app.get_webview_window(&b.host).is_some()))
+            .filter(|b| b.window_active(app.get_webview_window(&b.host()).is_some()))
             .min_by_key(|b| b.instance.parse::<u64>().unwrap_or(0))
-            .map(|b| b.host.clone())
+            .map(|b| b.host())
     }
     .unwrap_or_else(|| label.clone());
     let devices = client.call("devices", json!({})).await.ok();
@@ -599,9 +763,10 @@ pub async fn viewer_open(
             )
         });
     let binding = Arc::new(Binding {
-        host: host.clone(),
+        host: Mutex::new(host.clone()),
         name,
         selected: AtomicBool::new(true),
+        visibility_epoch: AtomicU64::new(next_visibility_epoch()),
         id: Mutex::new(id.clone()),
         instance: next_window_instance(),
         opened: AtomicBool::new(false),
@@ -627,8 +792,8 @@ pub async fn viewer_open(
             drop(map);
             return focus_existing(app, &label, &existing);
         }
-        for b in map.values().filter(|b| b.host == host) {
-            b.selected.store(false, Ordering::SeqCst);
+        for b in map.values().filter(|b| b.host() == host) {
+            b.select(false);
         }
         map.insert(label.clone(), binding.clone());
     }
@@ -733,9 +898,10 @@ pub fn smoke_setup(app: &tauri::AppHandle) -> tauri::Result<()> {
     }
     let id = "00000000-0000-0000-0000-000000000001";
     let binding = Arc::new(Binding {
-        host: "viewer-smoke".into(),
+        host: Mutex::new("viewer-smoke".into()),
         name: "合成手机".into(),
         selected: AtomicBool::new(true),
+        visibility_epoch: AtomicU64::new(next_visibility_epoch()),
         id: Mutex::new(id.into()),
         instance: next_window_instance(),
         opened: AtomicBool::new(false),
@@ -768,9 +934,10 @@ pub fn smoke_setup(app: &tauri::AppHandle) -> tauri::Result<()> {
         let id = format!("00000000-0000-0000-0000-{number:012}");
         let label = format!("viewer-cascade-{number}");
         let binding = Arc::new(Binding {
-            host: label.clone(),
+            host: Mutex::new(label.clone()),
             name: "合成手机".into(),
             selected: AtomicBool::new(true),
+            visibility_epoch: AtomicU64::new(next_visibility_epoch()),
             id: Mutex::new(id.clone()),
             instance: next_window_instance(),
             opened: AtomicBool::new(true),
@@ -798,6 +965,28 @@ pub fn smoke_setup(app: &tauri::AppHandle) -> tauri::Result<()> {
         .decorations(false)
         .build()?;
     }
+    // A synthetic background tab exercises transfer into a real new WebView.
+    // No account, capture permission or transport is created by this fixture.
+    app.state::<Windows>().0.lock().unwrap().insert(
+        "viewer-detach-fixture".into(),
+        Arc::new(Binding {
+            host: Mutex::new("viewer-smoke".into()),
+            name: "可拆分合成标签".into(),
+            selected: AtomicBool::new(false),
+            visibility_epoch: AtomicU64::new(next_visibility_epoch()),
+            id: Mutex::new("00000000-0000-0000-0000-000000000004".into()),
+            instance: next_window_instance(),
+            opened: AtomicBool::new(true),
+            source: "synthetic".into(),
+            target: "synthetic".into(),
+            permission: RemotePermission::View,
+            cancelled: AtomicBool::new(false),
+            retrying: AtomicBool::new(false),
+            attempts: AtomicU32::new(0),
+            recovery_allowed: AtomicBool::new(false),
+            progress: Mutex::new(RecoveryProgress::default()),
+        }),
+    );
     Ok(())
 }
 
@@ -853,6 +1042,14 @@ pub fn smoke_probe(webview: &tauri::Webview) {
         const cascade=await invoke('ipc_viewer_state');
         if(cascade.viewers.length!==3 || new Set(cascade.viewers.map(w=>`${w.x},${w.y}`)).size!==3) throw Error('independent viewers did not cascade');
         if(cascade.viewers.some(w=>w.maximized || w.fullscreen || w.minimized)) throw Error('cascade did not restore viewer windows');
+        const moving=(await invoke('viewer_tabs')).find(t=>t.name==='可拆分合成标签');
+        if(!moving) throw Error('missing synthetic detachable tab');
+        await invoke('viewer_detach_tab',{instance:moving.instance});
+        await new Promise(r=>setTimeout(r,500));
+        const detached=await invoke('ipc_viewer_state');
+        if(detached.viewers.length!==4 || (await invoke('viewer_tabs')).some(t=>t.instance===moving.instance)) throw Error('native tab transfer failed');
+        let movedDenied=false;try{await invoke('remote_status',{id:moving.id})}catch(e){movedDenied=String(e).includes('无权操作')}
+        if(!movedDenied) throw Error('old window retained moved-session permission');
         await invoke('viewer_window_action',{action:'connect'});
         const connectMain=await invoke('ipc_viewer_state');
         if(!connectMain.mainVisible || connectMain.mainMinimized) throw Error('connect did not restore main window');
@@ -860,7 +1057,7 @@ pub fn smoke_probe(webview: &tauri::Webview) {
         await new Promise(r=>setTimeout(r,300));
         const minimized=await invoke('ipc_viewer_state');
         if(!minimized.minimized || !minimized.mainExists) throw Error('minimize/main isolation failed');
-        await invoke('ipc_smoke_report',{result:JSON.stringify({ok:true,denied,initial,restored,maximized,fullscreen,phone,game,preserved,cascade,connectMain,minimized})});
+        await invoke('ipc_smoke_report',{result:JSON.stringify({ok:true,denied,initial,restored,maximized,fullscreen,phone,game,preserved,cascade,detached,connectMain,minimized})});
         await invoke('viewer_window_action',{action:'close'});
       } catch(e) { await invoke('ipc_smoke_report',{result:JSON.stringify({ok:false,error:String(e),denied})}); }
     },800)"#);
@@ -888,7 +1085,7 @@ pub fn cancel(app: &tauri::AppHandle, label: &str) -> Vec<String> {
     let mut map = windows.0.lock().unwrap();
     let mut ids = Vec::new();
     map.retain(|_, b| {
-        if b.host != label {
+        if b.host() != label {
             return true;
         }
         b.cancel_recovery();
@@ -1021,9 +1218,10 @@ mod tests {
     }
     fn binding() -> Binding {
         Binding {
-            host: "viewer-a".into(),
+            host: Mutex::new("viewer-a".into()),
             name: "测试设备".into(),
             selected: AtomicBool::new(true),
+            visibility_epoch: AtomicU64::new(next_visibility_epoch()),
             id: Mutex::new("synthetic".into()),
             instance: next_window_instance(),
             opened: AtomicBool::new(true),
@@ -1041,7 +1239,7 @@ mod tests {
     fn concurrent_windows_keep_session_scope_and_recovery_independent() {
         let a = Arc::new(binding());
         let mut other = binding();
-        other.host = "viewer-b".into();
+        other.host = Mutex::new("viewer-b".into());
         let b = Arc::new(other);
         *a.id.lock().unwrap() = "phone-a".into();
         *b.id.lock().unwrap() = "phone-b".into();
@@ -1063,6 +1261,35 @@ mod tests {
         assert!(scoped_binding(&map, "viewer-b", "phone-b").is_ok());
         assert!(b.window_active(true));
         assert_eq!(b.recovery_status(Instant::now())["phase"], "idle");
+    }
+    #[test]
+    fn moving_a_live_tab_preserves_lease_identity_and_changes_only_window_scope() {
+        let first = tab("1", "viewer-group", false);
+        let moving = tab("2", "viewer-group", true);
+        let other = tab("3", "viewer-other", true);
+        *first.id.lock().unwrap() = "first-session".into();
+        *moving.id.lock().unwrap() = "moving-session".into();
+        *other.id.lock().unwrap() = "other-session".into();
+        let mut map = HashMap::from([
+            ("first".into(), first.clone()),
+            ("moving".into(), moving.clone()),
+            ("other".into(), other.clone()),
+        ]);
+        let before = moving.visibility_epoch.load(Ordering::SeqCst);
+        assert!(!move_tab(&mut map, &moving, "viewer-detached").unwrap());
+        assert!(Arc::ptr_eq(&map["moving"], &moving));
+        assert_eq!(*moving.id.lock().unwrap(), "moving-session");
+        assert!(moving.visibility_epoch.load(Ordering::SeqCst) > before);
+        assert!(
+            first.selected.load(Ordering::SeqCst)
+                && moving.selected.load(Ordering::SeqCst)
+                && other.selected.load(Ordering::SeqCst)
+        );
+        assert!(scoped_binding(&map, "viewer-group", "moving-session").is_err());
+        assert!(scoped_binding(&map, "viewer-detached", "moving-session").is_ok());
+        assert!(scoped_binding(&map, "viewer-detached", "first-session").is_err());
+        assert!(!moving.cancelled.load(Ordering::SeqCst));
+        assert_eq!(moving.recovery_status(Instant::now())["phase"], "idle");
     }
     #[test]
     fn tabs_share_only_their_own_window_and_close_independently() {
@@ -1087,8 +1314,8 @@ mod tests {
     fn tab(instance: &str, host: &str, selected: bool) -> Arc<Binding> {
         let mut tab = binding();
         tab.instance = instance.into();
-        tab.host = host.into();
-        tab.selected.store(selected, Ordering::SeqCst);
+        tab.host = Mutex::new(host.into());
+        tab.select(selected);
         Arc::new(tab)
     }
     #[test]
@@ -1110,7 +1337,7 @@ mod tests {
             assert_eq!(map.len(), 3);
             let selected: Vec<_> = map
                 .values()
-                .filter(|tab| tab.host == "viewer-a" && tab.selected.load(Ordering::SeqCst))
+                .filter(|tab| tab.host() == "viewer-a" && tab.selected.load(Ordering::SeqCst))
                 .map(|tab| tab.instance.as_str())
                 .collect();
             assert_eq!(selected, [expected]);

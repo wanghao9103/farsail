@@ -1258,11 +1258,21 @@ mod tests {
             display: &Display,
             expected_window: &OwnedWindow,
             point: POINT,
-            white: bool,
+            reference: Option<[u8; 3]>,
             phase: &str,
             sequence: &mut u64,
-        ) {
+        ) -> [u8; 3] {
             expected_window.present();
+            // The visual theme can paint STATIC rectangles differently from
+            // GetSysColor as well as literal RGB black/white. Compare with GDI
+            // on this exact owned surface, and require distinct phase colors.
+            // https://learn.microsoft.com/en-us/windows/win32/controls/static-control-styles
+            let surface = expected_window.describe(point);
+            assert!(
+                surface.visible && surface.sample_hits_expected && surface.sample_hits_own_process
+            );
+            let expected =
+                reference.unwrap_or_else(|| surface.sample_rgb.expect("readable owned surface"));
             println!(
                 "OWNED capture surface {phase}: {:?}",
                 expected_window.describe(point)
@@ -1323,24 +1333,21 @@ mod tests {
                         last_pixel = Some([pixel[0], pixel[1], pixel[2]]);
                         if pixel
                             .iter()
-                            .all(|&value| if white { value > 223 } else { value < 32 })
+                            .zip(expected)
+                            .all(|(&value, expected)| value.abs_diff(expected) <= 24)
                         {
                             let surface = expected_window.describe(point);
                             if surface.visible
                                 && surface.sample_hits_expected
                                 && surface.sample_hits_own_process
-                                && surface.sample_rgb.is_some_and(|pixel| {
-                                    pixel
-                                        .iter()
-                                        .all(|&value| if white { value > 223 } else { value < 32 })
-                                })
+                                && surface.sample_rgb == Some(expected)
                             {
                                 assert!(surface.window_rect[2] > surface.window_rect[0]);
                                 assert!(surface.client_rect[2] > surface.client_rect[0]);
                                 println!(
                                     "PASS owned DXGI capture phase: {phase}; frames={frames}, empty={empty}, resets={resets}, rgb={pixel:?}; pixels remain in memory"
                                 );
-                                return;
+                                return expected;
                             }
                         }
                     }
@@ -1388,12 +1395,12 @@ mod tests {
             .unwrap(),
         );
         let base_point = base.sample_point();
-        await_color(
+        let base_color = await_color(
             &mut capture,
             &display,
             &base,
             base_point,
-            false,
+            None,
             "before confirmation",
             &mut sequence,
         );
@@ -1437,14 +1444,21 @@ mod tests {
         unsafe { GetWindowThreadProcessId(button, Some(&mut button_pid)) };
         assert_eq!(button_pid, std::process::id());
         let confirmation_point = confirmation.sample_point();
-        await_color(
+        let confirmation_color = await_color(
             &mut capture,
             &display,
             &confirmation,
             confirmation_point,
-            true,
+            None,
             "ordinary confirmation visible",
             &mut sequence,
+        );
+        assert!(
+            base_color
+                .iter()
+                .zip(confirmation_color)
+                .any(|(&a, b)| a.abs_diff(b) >= 64),
+            "fixture phases must have distinguishable painted colors"
         );
         let fullscreen = OwnedWindow::check(
             unsafe {
@@ -1470,7 +1484,7 @@ mod tests {
             &display,
             &fullscreen,
             confirmation_point,
-            false,
+            Some(base_color),
             "borderless fullscreen overlay visible",
             &mut sequence,
         );
@@ -1480,7 +1494,7 @@ mod tests {
             &display,
             &confirmation,
             confirmation_point,
-            true,
+            Some(confirmation_color),
             "fullscreen overlay closed",
             &mut sequence,
         );
@@ -1490,7 +1504,7 @@ mod tests {
             &display,
             &base,
             base_point,
-            false,
+            Some(base_color),
             "confirmation closed",
             &mut sequence,
         );
