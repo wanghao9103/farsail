@@ -4,7 +4,8 @@ use crate::input_recovery::InputRecovery;
 use farsail_client::{NativeClient, file_runtime::NativeFiles};
 use farsail_core::RemotePermission;
 use farsail_media::{
-    BASELINE_PAYLOAD_BPS, ByteBudget, JpegFrame, MediaWindow, StreamDemand, wait_for_ack,
+    BASELINE_PAYLOAD_BPS, ByteBudget, JpegFrame, MediaWindow, StreamDemand, VideoProfile,
+    ViewportRequest, wait_for_ack,
 };
 use farsail_transport::{Channel, Frame, Session};
 use farsail_windows::{
@@ -198,36 +199,6 @@ impl MouseState {
         }
     }
 }
-#[derive(Clone, Copy)]
-struct VideoProfile {
-    profile: u8,
-    generation: u64,
-}
-impl Default for VideoProfile {
-    fn default() -> Self {
-        Self {
-            profile: 1,
-            generation: 0,
-        }
-    }
-}
-impl VideoProfile {
-    fn packet(self, tag: &[u8; 4]) -> Vec<u8> {
-        let mut bytes = tag.to_vec();
-        bytes.extend(self.generation.to_be_bytes());
-        bytes.push(self.profile);
-        bytes
-    }
-    fn parse(bytes: &[u8], tag: &[u8; 4]) -> Option<Self> {
-        if bytes.len() != 13 || &bytes[..4] != tag || bytes[12] > 3 {
-            return None;
-        }
-        Some(Self {
-            generation: u64::from_be_bytes(bytes[4..12].try_into().ok()?),
-            profile: bytes[12],
-        })
-    }
-}
 impl InputState {
     fn allows_input(&self, payload: &[u8], observed: Option<u64>) -> bool {
         payload == b"FSR1"
@@ -343,6 +314,8 @@ struct Live {
     video_request: AtomicU64,
     video_supported: AtomicBool,
     video_max_profile: AtomicU32,
+    viewport_supported: AtomicBool,
+    viewport_edge: AtomicU32,
     displays: Arc<StdMutex<Vec<Display>>>,
     error: Arc<StdMutex<Option<String>>>,
     frame: watch::Receiver<Option<Vec<u8>>>,
@@ -619,6 +592,8 @@ impl RemoteRuntime {
             video_request: AtomicU64::new(0),
             video_supported: AtomicBool::new(false),
             video_max_profile: AtomicU32::new(1),
+            viewport_supported: AtomicBool::new(false),
+            viewport_edge: AtomicU32::new(0),
             displays: Arc::new(StdMutex::new(Vec::new())),
             error: Arc::new(StdMutex::new(None)),
             frame: rx,
@@ -1391,12 +1366,29 @@ impl RemoteRuntime {
             {
                 live.video_max_profile
                     .store(u32::from(frame.bytes[4]), Ordering::SeqCst);
+            } else if frame.bytes == b"FSZ0" {
+                live.viewport_supported.store(true, Ordering::SeqCst);
+            } else if let Some(applied) = ViewportRequest::parse(&frame.bytes, b"FSZ2") {
+                let mut profile = live.video_profile.lock().unwrap();
+                if live.viewport_supported.load(Ordering::SeqCst)
+                    && applied.generation >= profile.generation
+                    && applied.generation <= live.video_request.load(Ordering::SeqCst)
+                {
+                    *profile = VideoProfile {
+                        profile: 2,
+                        generation: applied.generation,
+                    };
+                    live.viewport_edge
+                        .store(u32::from(applied.edge), Ordering::SeqCst);
+                    live.video_supported.store(true, Ordering::SeqCst);
+                }
             } else if let Some(applied) = VideoProfile::parse(&frame.bytes, b"FSP1") {
                 let mut profile = live.video_profile.lock().unwrap();
                 if applied.generation >= profile.generation
                     && applied.generation <= live.video_request.load(Ordering::SeqCst)
                 {
                     *profile = applied;
+                    live.viewport_edge.store(0, Ordering::SeqCst);
                     live.video_supported.store(true, Ordering::SeqCst);
                 }
             } else if frame.bytes.starts_with(b"FSL1") {
@@ -1685,7 +1677,7 @@ impl RemoteRuntime {
         let discovery = self.client.transport_discovery_state(path).await;
         let profile = *live.video_profile.lock().unwrap();
         Ok(
-            json!({"id":id,"state":path,"platform":if live.peer_android.load(Ordering::SeqCst) { "android" } else { "desktop" },"rtt_ms":rtt,"discovery":discovery,"permission":live.session.permission(),"sharing":live.host,"verification_code":live.session.verification_code().map_err(|e|e.to_string())?,"displays":*live.displays.lock().unwrap(),"error":*live.error.lock().unwrap(),"input":*live.input_state.lock().unwrap(),"mouse":*live.mouse_state.lock().unwrap(),"files":{"supported":live.file_supported.load(Ordering::SeqCst),"status":self.files.status(Some(id)).ok()},"video":{"profile":profile.profile,"generation":profile.generation,"supported":live.video_supported.load(Ordering::SeqCst),"max_profile":live.video_max_profile.load(Ordering::SeqCst)}}),
+            json!({"id":id,"state":path,"platform":if live.peer_android.load(Ordering::SeqCst) { "android" } else { "desktop" },"rtt_ms":rtt,"discovery":discovery,"permission":live.session.permission(),"sharing":live.host,"verification_code":live.session.verification_code().map_err(|e|e.to_string())?,"displays":*live.displays.lock().unwrap(),"error":*live.error.lock().unwrap(),"input":*live.input_state.lock().unwrap(),"mouse":*live.mouse_state.lock().unwrap(),"files":{"supported":live.file_supported.load(Ordering::SeqCst),"status":self.files.status(Some(id)).ok()},"video":{"profile":profile.profile,"generation":profile.generation,"supported":live.video_supported.load(Ordering::SeqCst),"max_profile":live.video_max_profile.load(Ordering::SeqCst),"viewport_supported":live.viewport_supported.load(Ordering::SeqCst),"viewport_edge":live.viewport_edge.load(Ordering::SeqCst)}}),
         )
     }
     pub async fn next_frame(&self, id: &str, after: u64) -> Result<Vec<u8>, String> {
@@ -1771,6 +1763,31 @@ impl RemoteRuntime {
                     generation,
                 }
                 .packet(b"FSQ1"),
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(generation)
+    }
+    pub async fn viewport(&self, id: &str, edge: u16) -> Result<u64, String> {
+        let live = self
+            .sessions
+            .lock()
+            .await
+            .get(id)
+            .cloned()
+            .ok_or("remote session not active")?;
+        if live.host
+            || !live.viewport_supported.load(Ordering::SeqCst)
+            || !ViewportRequest::valid_edge(edge)
+        {
+            return Err("被控端不支持此窗口分辨率".into());
+        }
+        let _guard = live.send_lock.lock().await;
+        let generation = live.video_request.fetch_add(1, Ordering::SeqCst) + 1;
+        live.session
+            .send(Frame {
+                channel: Channel::Media,
+                bytes: ViewportRequest { generation, edge }.packet(b"FSZ1"),
             })
             .await
             .map_err(|e| e.to_string())?;

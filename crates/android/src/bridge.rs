@@ -268,8 +268,7 @@ pub extern "system" fn Java_app_farsail_android_NativeBridge_publishRgba(
         // Kotlin keeps the acquired Image open until this function returns;
         // the checked span excludes final-row padding not mapped by ImageReader.
         let bytes = unsafe { std::slice::from_raw_parts(pointer, span) };
-        let image = crate::capture::encode_rgba(bytes, width, height, stride, layout as u64)?;
-        Some(hst.publish(image.jpeg, width, height, layout as u64))
+        Some(hst.publish_rgba(bytes, width, height, stride, layout as u64))
     })()
     .unwrap_or(false);
     if accepted { JNI_TRUE } else { JNI_FALSE }
@@ -298,8 +297,8 @@ pub extern "system" fn Java_app_farsail_android_NativeBridge_publishAccessibilit
         let pointer = env.get_direct_buffer_address(&buffer).ok()?;
         // Kotlin owns this direct buffer for the duration of the synchronous call.
         let bytes = unsafe { std::slice::from_raw_parts(pointer, span) };
-        let image = hst.encode_screenshot(bytes, width, height, stride, epoch as u64)?;
-        Some(hst.publish_accessibility(image.jpeg, width, height, epoch as u64))
+        let (image, profile) = hst.encode_screenshot(bytes, width, height, stride, epoch as u64)?;
+        Some(hst.publish_accessibility_encoded(image, width, height, epoch as u64, profile))
     })()
     .unwrap_or(false);
     if accepted { JNI_TRUE } else { JNI_FALSE }

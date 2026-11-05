@@ -6,6 +6,7 @@ use std::{
     collections::HashMap,
     sync::atomic::{AtomicBool, Ordering},
 };
+mod bandwidth;
 
 struct Memory(Mutex<HashMap<String, Vec<u8>>>);
 impl SecureStore for Memory {
@@ -126,6 +127,225 @@ fn image(host: &Host) -> Vec<u8> {
     JpegFrame::encode_rgb(meta, &[80; 16 * 16 * 3], 65)
         .unwrap()
         .jpeg
+}
+
+fn textured_rgba(width: u32, height: u32) -> Vec<u8> {
+    let mut state = 17u32;
+    let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
+    for y in 0..height {
+        for x in 0..width {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            let noise = (state & 63) as u8;
+            rgba.extend_from_slice(&[
+                ((x / 8 + y / 16) as u8).wrapping_add(noise),
+                ((x / 16 + y / 8) as u8).wrapping_add(noise),
+                ((x / 32 + y / 32) as u8).wrapping_add(noise),
+                255,
+            ]);
+        }
+    }
+    rgba
+}
+
+async fn packet(viewer: &Session, tag: &[u8]) -> Vec<u8> {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let frame = viewer.receive().await.unwrap();
+            if frame.channel == Channel::Media && frame.bytes.starts_with(tag) {
+                return frame.bytes;
+            }
+        }
+    })
+    .await
+    .unwrap()
+}
+
+async fn acknowledged_image(viewer: &Session, source: (u32, u32)) -> JpegFrame {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let frame = viewer.receive().await.unwrap();
+            if frame.bytes.starts_with(b"FSL1") {
+                let displays: Value = serde_json::from_slice(&frame.bytes[4..]).unwrap();
+                assert_eq!(displays[0]["width"], source.0);
+                assert_eq!(displays[0]["height"], source.1);
+            }
+            if let Ok(image) = JpegFrame::from_wire(&frame.bytes) {
+                let mut bytes = b"FSA1".to_vec();
+                bytes.extend(image.meta.sequence.to_be_bytes());
+                viewer
+                    .send(Frame {
+                        channel: Channel::Media,
+                        bytes,
+                    })
+                    .await
+                    .unwrap();
+                return image;
+            }
+        }
+    })
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn four_window_sizes_reduce_payload_and_restore_native_quality_without_changing_input_geometry()
+ {
+    let source = (2340, 1080);
+    let rgba = textured_rgba(source.0, source.1);
+    let full = capture::encode_rgba(&rgba, source.0, source.1, source.0 as usize * 4, 1).unwrap();
+    let desktop = Transport::bind([120; 32], Config::default()).await.unwrap();
+    let mut hosts = Vec::new();
+    let mut targets = Vec::new();
+    let mut viewers = Vec::new();
+    let mut servers = Vec::new();
+    let mut tasks = Vec::new();
+    for index in 0..4u8 {
+        let (h, server) = host(121 + index).await;
+        let layout = h.geometry(source.0, source.1);
+        let target = Transport::bind([130 + index; 32], Config::default())
+            .await
+            .unwrap();
+        let id = format!("four-size-{index}");
+        let (viewer, peer) = connect(&desktop, &target, &id, RemotePermission::Control).await;
+        h.local.lock().unwrap().session = Some(peer.clone());
+        tasks.push(tokio::spawn({
+            let h = h.clone();
+            async move { h.run(peer).await }
+        }));
+        packet(&viewer, b"FSZ0").await;
+        let request = ViewportRequest {
+            generation: 10,
+            edge: 640 + u16::from(index) * 64,
+        };
+        viewer
+            .send(Frame {
+                channel: Channel::Media,
+                bytes: request.packet(b"FSZ1"),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            ViewportRequest::parse(&packet(&viewer, b"FSZ2").await, b"FSZ2"),
+            Some(request)
+        );
+        hosts.push((h, layout, id));
+        targets.push(target);
+        servers.push(server);
+        viewers.push((viewer.clone(), viewer.stable_id(), request.edge));
+    }
+    for (h, layout, _) in &hosts {
+        assert!(h.publish_rgba(&rgba, source.0, source.1, source.0 as usize * 4, *layout));
+    }
+    let mut compact_bytes = 0;
+    for (index, (viewer, _, edge)) in viewers.iter().enumerate() {
+        let image = acknowledged_image(viewer, source).await;
+        assert_eq!(image.meta.width, u32::from(*edge));
+        assert_eq!(image.meta.layout, hosts[index].1);
+        compact_bytes += image.jpeg.len();
+        assert!(
+            hosts[index]
+                .0
+                .input_valid(&hosts[index].2, 0, hosts[index].1)
+        );
+    }
+    assert!(
+        compact_bytes * 3 < full.jpeg.len() * 4,
+        "four small windows must use less than one third of four native JPEGs"
+    );
+    eprintln!(
+        "synthetic four-window bytes: native={} adaptive={compact_bytes}",
+        full.jpeg.len() * 4
+    );
+    let (viewer, original, _) = &viewers[0];
+    viewer
+        .send(Frame {
+            channel: Channel::Media,
+            bytes: VideoProfile {
+                profile: 2,
+                generation: 100,
+            }
+            .packet(b"FSQ1"),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        VideoProfile::parse(&packet(viewer, b"FSP1").await, b"FSP1")
+            .unwrap()
+            .generation,
+        100
+    );
+    // A reordered old auto-size request must not undo a manual native choice.
+    viewer
+        .send(Frame {
+            channel: Channel::Media,
+            bytes: ViewportRequest {
+                generation: 99,
+                edge: 320,
+            }
+            .packet(b"FSZ1"),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        VideoProfile::parse(&packet(viewer, b"FSP1").await, b"FSP1")
+            .unwrap()
+            .generation,
+        100
+    );
+    let (h, layout, id) = &hosts[0];
+    assert!(h.publish_rgba(&rgba, source.0, source.1, source.0 as usize * 4, *layout));
+    let native = acknowledged_image(viewer, source).await;
+    assert_eq!((native.meta.width, native.meta.height), source);
+    assert_eq!(
+        native.jpeg, full.jpeg,
+        "manual native mode restores exactly the original JPEG quality"
+    );
+    assert_eq!(native.meta.layout, *layout);
+    assert!(h.input_valid(id, 0, *layout));
+    let settings = { Host::settings(&h.local.lock().unwrap()) };
+    let request = ViewportRequest {
+        generation: 101,
+        edge: 704,
+    };
+    viewer
+        .send(Frame {
+            channel: Channel::Media,
+            bytes: request.packet(b"FSZ1"),
+        })
+        .await
+        .unwrap();
+    packet(viewer, b"FSZ2").await;
+    assert!(
+        !h.publish_accessibility_encoded(full.clone(), source.0, source.1, 0, settings),
+        "late encoded callback cannot undo newer viewport settings"
+    );
+    assert_eq!(viewer.stable_id(), *original);
+    for (index, (viewer, original, edge)) in viewers.iter().enumerate() {
+        assert!(viewer.is_open_now());
+        assert_eq!(viewer.stable_id(), *original);
+        if index > 0 {
+            assert_eq!(
+                hosts[index].0.local.lock().unwrap().viewport_edge,
+                Some(*edge)
+            );
+        }
+    }
+    for task in tasks {
+        task.abort();
+    }
+    for (h, _, _) in hosts {
+        h.stop_local();
+        h.client.stop_transport().await;
+    }
+    for server in servers {
+        server.abort();
+    }
+    for target in targets {
+        target.close().await;
+    }
+    desktop.close().await;
 }
 #[tokio::test]
 async fn two_android_hosts_receive_isolated_frames_and_input_and_stop_independently() {
