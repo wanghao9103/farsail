@@ -25,7 +25,7 @@ class UpdateNoticeView(activity: Activity, action: () -> Unit) : LinearLayout(ac
         visibility = if (state.phase in listOf("available", "downloading", "ready")) View.VISIBLE else View.GONE
         title.text = if (state.phase == "ready") "新版本 ${state.version} 已就绪" else "发现新版本 ${state.version}"
         detail.text = when (state.phase) {
-            "ready" -> "在手机上确认安装即可，账号与设置会保留。"
+            "ready" -> state.message.ifBlank { "在手机上确认安装即可，账号与设置会保留。" }
             "downloading" -> "正在下载 ${state.progress}%，可继续使用。"
             else -> "可直接在手机上更新，无需连接电脑。"
         }

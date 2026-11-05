@@ -2,7 +2,7 @@
 
 # Phone updates without a computer
 
-Date: 2026-11-05. Candidate: Android 0.1.11 / code 12, desktop 0.1.36.
+Date: 2026-11-05. Candidate: Android 0.1.12 / code 13, desktop 0.1.36.
 
 ## Behavior
 
@@ -24,4 +24,4 @@ Evidence: `.local/release-tabs-20261105/`.
 
 ## Remaining release acceptance
 
-The published 0.1.11 APK, signature, source provenance, fixed feed and an update to that exact release are checked after publication. Physical vendor background policies, arbitrary captive/metered networks and unattended background downloads are outside this test. This implementation checks when the app starts or returns to the foreground; it does not promise a permanently running background updater or silent package installation.
+The published 0.1.12 APK, signature, source provenance, fixed feed and an update to that exact release are checked after publication. Physical vendor background policies, arbitrary captive/metered networks and unattended background downloads are outside this test. This implementation checks when the app starts or returns to the foreground; it does not promise a permanently running background updater or silent package installation.

@@ -40,6 +40,10 @@ class UpdateNoticeTest {
                 assertEquals("查看下载进度", button.text.toString()); button.performClick(); assertEquals(2, actions)
                 reminder.render(UpdateState("ready", version = "99.0.0"))
                 assertEquals("安装更新", button.text.toString()); button.performClick(); assertEquals(3, actions)
+                for (message in listOf("请先停止屏幕共享，再安装更新。", "允许此应用安装更新后，返回点击“安装更新”。")) {
+                    reminder.render(UpdateState("ready", message, "99.0.0"))
+                    assertTrue((0 until reminder.childCount).map(reminder::getChildAt).filterIsInstance<android.widget.TextView>().any { it.text.toString() == message })
+                }
                 reminder.render(UpdateState("error")); assertEquals(View.GONE, reminder.visibility)
             }
         } finally {
