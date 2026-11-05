@@ -2,7 +2,7 @@
 
 # Windows capture interruption and session-scoped recovery
 
-Date: 2026-11-05. Unreleased changes after desktop 0.1.36.
+Date: 2026-11-05. Implemented after desktop 0.1.36 and released in desktop 0.1.37; acceptance is below.
 
 ## Observed incident
 
@@ -27,4 +27,12 @@ Evidence: `.local/viewer-compact-20261105/`.
 - Native Linux smoke: 23 unauthorized commands denied; retained geometry, fullscreen and new connection action restoring the existing main window passed (`native-final/report.json`). Failed native setup/old-selector attempts are retained.
 - In-app browser exercised reference-based viewer changes, 1280/440/natural 571px layouts, tabs, device list, close, fullscreen, tool reveal/collapse and active-session Alt+Tab. See [visual comparison](../../design-qa.md).
 
-No Windows GPU reset was injected or reproduced on the physical host, and its host log was not obtained. These tests do not establish the incident’s exact cause, real multi-monitor driver recovery, games, WAN or overnight acceptance. No public package/channel or installed personal-device app changed in this turn. The current installed version can use “Retry remote connection” on the host to reinitialize sharing.
+No Windows GPU reset was injected or reproduced on the physical host, and its host log was not obtained. These tests do not establish the incident’s exact cause, real multi-monitor driver recovery, games, WAN or overnight acceptance. The initial implementation did not change the public package/channel or installed personal-device apps; publication was accepted subsequently below. The current installed version can use “Retry remote connection” on the host to reinitialize sharing.
+
+## Release acceptance
+
+Desktop [0.1.37](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.37) is a regular release and GitHub Latest, from source `9e0ee37b8dafcbf9c7e621506ad7f32aa0be6922`. Its [release workflow](https://github.com/wanghao9103/farsail/actions/runs/41980249187) succeeded. Windows x64 and both native Ubuntu architectures passed their package checks, including installation/restart/reinstall/uninstall on the Windows runner, native IPC, retained window geometry and unauthorized-command denial.
+
+All 12 public assets were independently downloaded and matched API SHA-256 digests. Three platform signatures, source metadata, 11 checksum entries, native tray evidence and byte-for-byte publication reconstruction passed; the ordinary fixed update URL returns the same 0.1.37 manifest. The first attempt failed only its final channel comparison. A subsequent ordinary-URL check matched; only failed publication was retried, with all 12 version assets retaining their IDs, digests, sizes and timestamps. The initial failed job response body was not captured, so its exact mismatch content is unknown. A slow redundant Windows download was replaced with an independently verified anonymous HTTP/1.1 transfer of the same public URL; the original interrupted-download log remains.
+
+Evidence: `.local/client-public-0.1.37/delivery-verification.json`, `verification.json`, `download-provenance.json`, `windows-http1-provenance.json`, `package-attempt1-status.json` and `immutable-assets-final.json`. The Windows installer SHA-256 is `5b0e0adad38246653b0fd519dde361ff35494b322c8f2bde1e7b3d890641ae34`. Update both controller and Windows host to receive both interface and capture fixes. No Android package or coordinator was released. This does not accept the original physical GPU fault or overnight operation.
