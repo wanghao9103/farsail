@@ -10,6 +10,8 @@ pub use input_context::{
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("Windows capture needs recreation: {0}")]
+    CaptureReset(String),
     #[error("Windows interactive desktop unavailable: {0}")]
     Unavailable(String),
     #[error("invalid monitor or coordinates")]

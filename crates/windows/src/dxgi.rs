@@ -13,9 +13,10 @@ use windows::{
             },
             Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM,
             Dxgi::{
-                CreateDXGIFactory1, DXGI_ERROR_ACCESS_LOST, DXGI_ERROR_NOT_FOUND,
-                DXGI_ERROR_WAIT_TIMEOUT, DXGI_OUTDUPL_FRAME_INFO, IDXGIAdapter1, IDXGIFactory1,
-                IDXGIOutput5, IDXGIOutputDuplication,
+                CreateDXGIFactory1, DXGI_ERROR_ACCESS_LOST, DXGI_ERROR_DEVICE_REMOVED,
+                DXGI_ERROR_DEVICE_RESET, DXGI_ERROR_NOT_FOUND, DXGI_ERROR_WAIT_TIMEOUT,
+                DXGI_OUTDUPL_FRAME_INFO, IDXGIAdapter1, IDXGIFactory1, IDXGIOutput5,
+                IDXGIOutputDuplication,
             },
         },
     },
@@ -52,8 +53,15 @@ impl Drop for Mapped<'_> {
         unsafe { self.context.Unmap(self.texture, 0) };
     }
 }
-fn unavailable(e: impl std::fmt::Display) -> Error {
-    Error::Unavailable(e.to_string())
+fn unavailable(e: windows::core::Error) -> Error {
+    if matches!(
+        e.code(),
+        DXGI_ERROR_ACCESS_LOST | DXGI_ERROR_DEVICE_REMOVED | DXGI_ERROR_DEVICE_RESET
+    ) {
+        Error::CaptureReset(e.to_string())
+    } else {
+        Error::Unavailable(e.to_string())
+    }
 }
 impl Duplication {
     pub fn new(hmonitor: *mut std::ffi::c_void) -> Result<Self> {
@@ -128,9 +136,7 @@ impl Duplication {
             Ok(()) => (),
             Err(e) if e.code() == DXGI_ERROR_WAIT_TIMEOUT => return Ok(None),
             Err(e) if e.code() == DXGI_ERROR_ACCESS_LOST => {
-                return Err(Error::Unavailable(
-                    "DXGI access lost; select display again after desktop or mode change".into(),
-                ));
+                return Err(Error::CaptureReset("DXGI access lost".into()));
             }
             Err(e) => return Err(unavailable(e)),
         }

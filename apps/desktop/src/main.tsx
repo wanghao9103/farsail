@@ -47,6 +47,10 @@ import {
   ChevronLeft16Regular,
   ArrowSync20Regular,
   ArrowRotateClockwise20Regular,
+  Add20Regular,
+  ChevronDown16Regular,
+  ChevronUp16Regular,
+  FullScreenMaximize20Regular,
 } from "@fluentui/react-icons";
 
 type Tab =
@@ -334,6 +338,11 @@ function App() {
   });
   const [me, setMe] = useState<Me | null>(null);
   const [tab, setTab] = useState<Tab>("overview");
+  useEffect(() => {
+    const connect = () => setTab("devices");
+    window.addEventListener("farsail:connect-device", connect);
+    return () => window.removeEventListener("farsail:connect-device", connect);
+  }, []);
   const [fileSession, setFileSession] = useState<string | null>(null);
   const openFiles = (id: string) => {
     setFileSession(id);
@@ -1921,7 +1930,7 @@ function Devices({
         : !device?.can_host
           ? device.platform === "android"
             ? "手机在线，但屏幕尚未共享或共享已中断。请在手机上解锁并恢复屏幕共享，确认系统授权后再连接。"
-            : "对方尚未允许屏幕连接，请检查对方的远程连接设置。"
+            : "对方屏幕共享未开启或已中断，请检查对方的远程连接设置；若设置已开启，可在对方设备点击“重试远程连接”。"
           : "";
   return (
     <section
@@ -3061,53 +3070,104 @@ function ViewerWorkspace({ initialId }: { initialId: string }) {
     return () => window.removeEventListener("keydown", keys, true);
   }, [tabs, select, close]);
   const strip = (
-    <div className="viewer-tabs" role="tablist" aria-label="远程设备标签">
-      {tabs.map((tab) => (
-        <div
-          key={tab.instance}
-          className={`viewer-tab ${tab.selected ? "selected" : ""}`}
-        >
-          <button
-            role="tab"
-            id={`tab-${tab.instance}`}
-            aria-selected={tab.selected}
-            aria-controls={`panel-${tab.instance}`}
-            tabIndex={tab.selected ? 0 : -1}
-            title={tab.name}
-            onClick={() => select(tab)}
-            onKeyDown={(e) => {
-              if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) {
-                e.preventDefault();
-                const index = tabs.indexOf(tab);
-                const next =
-                  e.key === "Home"
-                    ? tabs[0]
-                    : e.key === "End"
-                      ? tabs[tabs.length - 1]
-                      : tabs[
-                          (index +
-                            (e.key === "ArrowLeft" ? tabs.length - 1 : 1)) %
-                            tabs.length
-                        ];
-                select(next);
-                document.getElementById(`tab-${next.instance}`)?.focus();
-              }
-            }}
+    <>
+      <div className="viewer-tabs" role="tablist" aria-label="远程设备标签">
+        {tabs.map((tab) => (
+          <div
+            key={tab.instance}
+            className={`viewer-tab ${tab.selected ? "selected" : ""}`}
           >
-            {tab.name}
-          </button>
-          <button
-            className="viewer-tab-close"
-            aria-label={`关闭标签 ${tab.name}`}
-            title="关闭此连接 (Ctrl+W)"
-            onClick={() => close(tab)}
-          >
-            <Dismiss16Regular />
-          </button>
+            <button
+              role="tab"
+              id={`tab-${tab.instance}`}
+              aria-selected={tab.selected}
+              aria-controls={`panel-${tab.instance}`}
+              tabIndex={tab.selected ? 0 : -1}
+              title={tab.name}
+              onClick={() => select(tab)}
+              onKeyDown={(e) => {
+                if (
+                  ["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)
+                ) {
+                  e.preventDefault();
+                  const index = tabs.indexOf(tab);
+                  const next =
+                    e.key === "Home"
+                      ? tabs[0]
+                      : e.key === "End"
+                        ? tabs[tabs.length - 1]
+                        : tabs[
+                            (index +
+                              (e.key === "ArrowLeft" ? tabs.length - 1 : 1)) %
+                              tabs.length
+                          ];
+                  select(next);
+                  document.getElementById(`tab-${next.instance}`)?.focus();
+                }
+              }}
+            >
+              <Desktop20Regular
+                className="viewer-tab-icon"
+                aria-hidden="true"
+              />
+              <span className="viewer-tab-name">{tab.name}</span>
+            </button>
+            <button
+              className="viewer-tab-close"
+              aria-label={`关闭标签 ${tab.name}`}
+              title="关闭此连接 (Ctrl+W)"
+              onClick={() => close(tab)}
+            >
+              <Dismiss16Regular />
+            </button>
+          </div>
+        ))}
+      </div>
+      <details className="viewer-tab-menu">
+        <summary aria-label="切换远程设备" title="切换远程设备">
+          <ChevronDown16Regular />
+        </summary>
+        <div className="viewer-tab-menu-list">
+          <strong>已连接设备 · {tabs.length}</strong>
+          {tabs.map((tab) => (
+            <button
+              key={tab.instance}
+              type="button"
+              aria-label={tab.name}
+              aria-current={tab.selected ? "true" : undefined}
+              onClick={(event) => {
+                const menu = event.currentTarget.closest("details");
+                if (menu) menu.open = false;
+                select(tab);
+              }}
+            >
+              <Desktop20Regular aria-hidden="true" />
+              <span>{tab.name}</span>
+            </button>
+          ))}
         </div>
-      ))}
-    </div>
+      </details>
+      <button
+        className="viewer-add"
+        aria-label="连接其他设备"
+        title="连接其他设备"
+        onClick={() => {
+          void invoke("viewer_window_action", { action: "connect" }).catch(
+            (e) => setProblem(errorText(e)),
+          );
+        }}
+      >
+        <Add20Regular />
+      </button>
+    </>
   );
+  const selectedInstance = tabs.find((t) => t.selected)?.instance;
+  useEffect(() => {
+    if (selectedInstance)
+      document
+        .getElementById(`tab-${selectedInstance}`)
+        ?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [selectedInstance, tabs.length]);
   return (
     <>
       {tabs.map((tab) => (
@@ -4107,13 +4167,22 @@ function Viewer({
     <section
       className={`viewer-window ${fitMode === "fill" ? "viewer-fill" : ""} ${showToolbar ? "tools-visible" : ""} ${fullscreen ? "viewer-fullscreen" : ""}`}
       onMouseMove={(e) => {
-        if (e.clientY <= (fullscreen ? 10 : 46) && !e.buttons)
+        if (e.clientY <= (fullscreen ? 8 : 32) && !e.buttons)
           setToolbarVisible(true);
       }}
     >
       {!fullscreen && (
         <header className="window-titlebar viewer-titlebar">
           {tabStrip}
+          <span className="viewer-title-status" role="status">
+            {reconnecting
+              ? "正在重连…"
+              : ended
+                ? "已断开"
+                : inputBlocked
+                  ? "控制已暂停"
+                  : `${pathLabel(status?.state, status?.discovery)} · ${status?.rtt_ms ?? "—"} 毫秒`}
+          </span>
           <div
             className="window-drag"
             onMouseDown={(e) => {
@@ -4158,13 +4227,14 @@ function Viewer({
       {!showToolbar && (
         <button
           className="viewer-reveal"
-          onMouseEnter={() => setToolbarVisible(true)}
+          aria-label="显示工具栏"
+          title="显示工具栏"
           onClick={(e) => {
             focusToolbarOnReveal.current = e.detail === 0;
             setToolbarVisible(true);
           }}
         >
-          显示工具栏
+          <ChevronDown16Regular aria-hidden="true" />
         </button>
       )}
       <div className="viewer-body">
@@ -4296,6 +4366,16 @@ function Viewer({
           )}
 
           <div className="viewer-toolbar-actions">
+            {control && status?.platform !== "android" && (
+              <button
+                type="button"
+                title="切换远端程序窗口 (Alt+Tab)"
+                onClick={switchRemoteWindow}
+              >
+                <SquareMultiple20Regular aria-hidden="true" />
+                切换窗口
+              </button>
+            )}
             {status?.permission === "control" &&
               (status.platform !== "android" || status.files?.supported) && (
                 <button
@@ -4438,9 +4518,35 @@ function Viewer({
                 <p className="hint">系统授权与登录画面需在被控电脑上处理。</p>
               </div>
             </details>
-            <button onClick={() => windowAction("fullscreen")}>全屏切换</button>
+            <button
+              title="全屏切换"
+              aria-label="全屏切换"
+              onClick={() => windowAction("fullscreen")}
+            >
+              <FullScreenMaximize20Regular aria-hidden="true" />
+            </button>
             <button className="danger-text" onClick={onStop}>
               {reconnecting ? "取消重连" : "结束连接"}
+            </button>
+            <button
+              className="viewer-collapse"
+              aria-label="收起工具栏"
+              title={toolbarPinned ? "先取消保持工具栏显示" : "收起工具栏"}
+              disabled={
+                toolbarPinned ||
+                toolsOpen ||
+                reconnecting ||
+                displayBusy ||
+                fileBusy
+              }
+              onClick={() => {
+                toolbarFocused.current = false;
+                toolbarHovered.current = false;
+                setToolbarVisible(false);
+                screen.current?.focus({ preventScroll: true });
+              }}
+            >
+              <ChevronUp16Regular aria-hidden="true" />
             </button>
           </div>
         </header>

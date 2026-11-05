@@ -1,5 +1,35 @@
 **English** | [简体中文](design-qa.zh-CN.md)
 
+# Viewer workspace comparison — 2026-11-05
+
+final result: passed
+
+Scope: the remote viewer chrome requested in this turn, inspired by the supplied Sunlogin screenshot. This does not accept the older DESIGN-023 main-page work or the physical Windows capture fault; those limits and historical evidence remain below.
+
+Source visual truth: `/tmp/codex-clipboard-7761b9b7-6d2c-4c97-94bf-deef62dfe7d9.png` (2995×1737 pixels). Implementation: `.local/viewer-compact-20261105/collapsed-final.png`, `expanded-final.png` (1280×720), and `chrome-final.png` (1280×110). The source and implementation were opened together in one comparison input, including the focused chrome capture. The source’s live desktop/game/account content is outside the viewer-chrome brief and is neither copied into the app nor committed. The implementation uses synthetic session media, not a screenshot wallpaper or a performance claim.
+
+Normalization: compare the source’s top bar/reveal handle and content proportions at the 1280-wide implementation scale, not its inner FarSail application window. Browser screenshots use CSS pixels at density 1. This is reference-based improvement, not a pixel-identical clone: the native 36px titlebar, existing graphite/teal tokens and Fluent icons are intentional. The full normal-view canvas remains 684px of a 720px viewport (95%); expanding the toolbar overlays it rather than changing its bounds. Additional responsiveness checks used 440×900 and the natural 571×571 in-app viewport.
+
+**Findings and comparison history**
+
+- [P2, fixed] Early 440px capture `narrow.png` showed a horizontal scrollbar and a vertical scrollbar competing inside the 36px tab strip. The final strip hides scrollbars while preserving scroll/focus behavior; a named device list provides access to all tabs. `narrow-final.png` confirms the repaired titlebar.
+- [P2, fixed] The toolbar used translated slide transitions while rapid reveal/click testing could target moving controls. It now fades at its final coordinates; the reveal action is explicit and outside the titlebar hover zone. Repeated native browser interaction verified reveal did not add remote pointer input; Switch window produced only the intended ordered Alt/Tab presses and releases for the active session.
+- No actionable P0/P1/P2 findings remain within this chrome scope. Fonts use the product’s platform-aware UI stack (12px tabs, compact labels), with truncation and explicit accessible names. Spacing keeps a narrow floating toolbar, separate title controls and an overflow device list. Colors use graphite surfaces with teal selection and readable disabled states. Assets are existing Fluent icons; the remote frame remains actual session content in production. Copy describes available actions, measured network RTT and genuine connection state; no invented CPU/GPU telemetry is shown.
+
+**Interactions and limits**
+
+The in-app browser exercised tab clicks, ArrowRight switching, closing one tab, the overflow device list, new-connection IPC intent, toolbar collapse/reveal and fullscreen return. The synthetic IPC record confirmed release followed by Alt-down, Tab-down, Tab-up, Alt-up for only the selected session. Final fresh reload had zero new console errors; earlier hot-reload createRoot warnings are retained and not claimed as a production failure. The full older CLI browser suite was not run in this turn.
+
+The native Linux Xvfb/Openbox smoke passed 23 unauthorized-command denials, fullscreen/window geometry preservation and the new action restoring the existing main window. Initial native attempts lacked the dev server and then used an outdated text-only fullscreen selector; both failures remain in the evidence directory. The final native report is `native-final/report.json`. Windows module compilation passed; actual Windows capture reset and overnight physical operation remain unaccepted.
+
+**Implementation checklist**
+
+- Completed: compact tabs, overflow list, add-connection action, floating tools, direct remote Alt+Tab and viewport checks.
+- Completed: focused and full-view comparison after fixes; final browser capture and native window checks.
+- Follow-up P3: evaluate native Windows font metrics and very long device names on the user’s display during installation acceptance.
+
+## Historical QA evidence (earlier scope)
+
 # DESIGN-023 visual comparison
 
 final result: blocked

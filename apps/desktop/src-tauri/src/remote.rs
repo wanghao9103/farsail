@@ -1,3 +1,4 @@
+use crate::capture_recovery::CaptureRecovery;
 use crate::clipboard::Packet as ClipboardPacket;
 use crate::input_recovery::InputRecovery;
 use farsail_client::{NativeClient, file_runtime::NativeFiles};
@@ -20,8 +21,8 @@ use std::{
 use tokio::sync::{Mutex, Semaphore, watch};
 type ClipboardReply = (u64, tokio::sync::oneshot::Sender<Result<(), String>>);
 
-#[derive(Default)]
-struct ConnectionTrace(StdMutex<Option<std::sync::mpsc::SyncSender<Value>>>);
+#[derive(Default, Clone)]
+struct ConnectionTrace(Arc<StdMutex<Option<std::sync::mpsc::SyncSender<Value>>>>);
 impl ConnectionTrace {
     fn start(&self, path: std::path::PathBuf) {
         let (sender, receiver) = std::sync::mpsc::sync_channel::<Value>(128);
@@ -259,10 +260,13 @@ fn ended_message(reason: &str) -> &'static str {
         "renewal_failed" => "授权续期失败，会话已安全结束；请检查双方到协调服务的连接",
         "input_failed" => "被控端无法执行输入；请检查窗口权限、UAC 或桌面切换",
         "input_sequence" => "输入消息缺失或顺序异常，会话已安全结束",
-        "capture_failed" => "被控端屏幕采集已停止",
+        "capture_failed" => "被控端屏幕采集中断，请重试连接",
         "stopped" => "会话已结束，画面与输入已停止",
         _ => "对方已结束连接或授权失效，画面与输入已停止",
     }
+}
+fn retryable_end(reason: &str) -> bool {
+    matches!(reason, "network_timeout" | "media_timeout")
 }
 
 /// Independent QUIC streams can arrive out of order. Retain at most 32 small
@@ -504,7 +508,7 @@ impl RemoteRuntime {
             "connection":live.session.stable_id(),"host":live.host,"path":path,"rtt_ms":rtt,"detail":detail,
             "received_frames":live.received_frames.load(Ordering::Relaxed),"delivered_frames":live.delivered_frames.load(Ordering::Relaxed),
             "received_bytes":live.received_bytes.load(Ordering::Relaxed),"frame_age_ms":if last==0 {None}else{Some(now.saturating_sub(last))},
-            "display_count":live.displays.lock().unwrap().len(),"reason":if live.session.is_open_now(){None}else{Some(live.session.end_reason())}}));
+            "display_count":live.displays.lock().unwrap().len(),"error":live.error.lock().unwrap().as_ref().map(|s|s.chars().take(512).collect::<String>()),"reason":if live.session.is_open_now(){None}else{Some(live.session.end_reason())}}));
     }
 
     async fn attach(self: &Arc<Self>, session: Session, host: bool) {
@@ -620,7 +624,7 @@ impl RemoteRuntime {
             {
                 finished.remove(&old);
             }
-            finished.insert(live.session.id().into(),json!({"id":live.session.id(),"state":"closed","rtt_ms":null,"permission":live.session.permission(),"sharing":live.host,"verification_code":live.session.verification_code().ok(),"displays":*live.displays.lock().unwrap(),"error":reason,"reason":code,"retryable":matches!(code,"network_timeout" | "media_timeout")}));
+            finished.insert(live.session.id().into(),json!({"id":live.session.id(),"state":"closed","rtt_ms":null,"permission":live.session.permission(),"sharing":live.host,"verification_code":live.session.verification_code().ok(),"displays":*live.displays.lock().unwrap(),"error":reason,"reason":code,"retryable":retryable_end(code)}));
             drop(finished);
             let mut sessions = owner.sessions.lock().await;
             if sessions
@@ -685,6 +689,9 @@ impl RemoteRuntime {
         let error = live.error.clone();
         let capture_failed = Arc::new(AtomicBool::new(false));
         let worker_failed = capture_failed.clone();
+        let worker_live = live.clone();
+        let trace = self.trace.clone();
+        let client = self.client.clone();
         let layout = live.layout.clone();
         let video_profile = live.video_profile.clone();
         let capture_revision = live.capture_revision.clone();
@@ -696,41 +703,70 @@ impl RemoteRuntime {
             let mut sequence = 0;
             let mut last_frame: Option<JpegFrame> = None;
             let mut last_emit = std::time::Instant::now();
-            while alive.load(Ordering::SeqCst) {
+            let mut recovery = CaptureRecovery::default();
+            while alive.load(Ordering::SeqCst)
+                && client.hosting_enabled()
+                && worker_live.session.is_open_now()
+            {
                 let frame_started = std::time::Instant::now();
                 let id = selected.load(Ordering::SeqCst);
                 let profile = video_profile.lock().unwrap().profile;
                 let revision = capture_revision.load(Ordering::SeqCst);
-                if id != last_id
-                    || profile != last_profile
-                    || revision != last_revision
-                    || capture.is_none()
-                {
-                    if id != last_id || revision != last_revision {
-                        *current.lock().unwrap() = None;
+                let result = (|| -> farsail_windows::Result<Option<JpegFrame>> {
+                    if id != last_id
+                        || profile != last_profile
+                        || revision != last_revision
+                        || capture.is_none()
+                    {
+                        if id != last_id || revision != last_revision {
+                            *current.lock().unwrap() = None;
+                        }
+                        drop(capture.take());
+                        last_frame = None;
+                        let next = Capture::new_with_profile(id, profile)?;
+                        // Do not silently capture another monitor after an enumeration/layout change.
+                        let expected = worker_live
+                            .displays
+                            .lock()
+                            .unwrap()
+                            .iter()
+                            .find(|d| d.id == id)
+                            .cloned();
+                        if expected.is_none_or(|d| {
+                            d.name != next.display().name
+                                || d.x != next.display().x
+                                || d.y != next.display().y
+                                || d.width != next.display().width
+                                || d.height != next.display().height
+                        }) {
+                            return Err(farsail_windows::Error::Unavailable(
+                                "display layout changed; reconnect and select the screen".into(),
+                            ));
+                        }
+                        capture = Some(next);
+                        last_id = id;
+                        last_profile = profile;
+                        last_revision = revision;
                     }
-                    drop(capture.take());
-                    last_frame = None;
-                    capture = match Capture::new_with_profile(id, profile) {
-                        Ok(c) => {
-                            activate_capture(&current, &layout, c.display());
-                            Some(c)
-                        }
-                        Err(e) => {
-                            *error.lock().unwrap() = Some(e.to_string());
-                            worker_failed.store(true, Ordering::SeqCst);
-                            break;
-                        }
-                    };
-                    last_id = id;
-                    last_profile = profile;
-                    last_revision = revision;
-                }
-                if let Some(c) = capture.as_mut() {
                     sequence += 1;
-                    match c.next_frame(layout.load(Ordering::SeqCst), sequence) {
-                        Ok(Some(frame)) => match frame.to_wire() {
+                    let capture = capture.as_mut().unwrap();
+                    let mut frame = capture.next_frame(layout.load(Ordering::SeqCst), sequence)?;
+                    if let Some(frame) = &mut frame {
+                        frame.meta.layout = activate_capture(&current, &layout, capture.display());
+                    }
+                    Ok(frame)
+                })();
+                match result {
+                    Ok(Some(frame)) => {
+                        recovery.frame(std::time::Instant::now());
+                        match frame.to_wire() {
                             Ok(bytes) => {
+                                if !alive.load(Ordering::SeqCst)
+                                    || !client.hosting_enabled()
+                                    || !worker_live.session.is_open_now()
+                                {
+                                    break;
+                                }
                                 tx.send_replace(Some(bytes));
                                 last_frame = Some(frame);
                                 last_emit = std::time::Instant::now();
@@ -738,32 +774,51 @@ impl RemoteRuntime {
                             Err(e) => {
                                 *error.lock().unwrap() = Some(e.to_string());
                                 worker_failed.store(true, Ordering::SeqCst);
+                                worker_live.session.close_with_reason("capture_failed");
                                 break;
                             }
-                        },
-                        Ok(None) => {
-                            if last_emit.elapsed() >= Duration::from_secs(1)
-                                && let Some(frame) = last_frame.as_mut()
-                            {
-                                frame.meta.sequence = sequence;
-                                frame.meta.captured_ms = SystemTime::now()
-                                    .duration_since(UNIX_EPOCH)
-                                    .map_or(0, |time| time.as_millis() as u64);
-                                if let Ok(bytes) = frame.to_wire() {
-                                    tx.send_replace(Some(bytes));
-                                    last_emit = std::time::Instant::now();
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            *error.lock().unwrap() = Some(e.to_string());
-                            worker_failed.store(true, Ordering::SeqCst);
-                            break;
                         }
                     }
+                    Ok(None) => {
+                        if last_emit.elapsed() >= Duration::from_secs(1)
+                            && let Some(frame) = last_frame.as_mut()
+                        {
+                            frame.meta.sequence = sequence;
+                            frame.meta.captured_ms = SystemTime::now()
+                                .duration_since(UNIX_EPOCH)
+                                .map_or(0, |time| time.as_millis() as u64);
+                            if let Ok(bytes) = frame.to_wire() {
+                                tx.send_replace(Some(bytes));
+                                last_emit = std::time::Instant::now();
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        *current.lock().unwrap() = None;
+                        drop(capture.take());
+                        last_frame = None;
+                        tx.send_replace(None);
+                        // Release held input while coordinates are invalid; no stale frame/geometry reuse.
+                        if let Err(input_error) = worker_live.input.lock().unwrap().release_all() {
+                            *error.lock().unwrap() =
+                                Some(format!("input cleanup incomplete: {input_error}"));
+                            worker_live.session.close_with_reason("input_failed");
+                            break;
+                        }
+                        if matches!(e, farsail_windows::Error::CaptureReset(_))
+                            && let Some(delay) = recovery.retry()
+                        {
+                            trace.record(json!({"at_ms":trace_time_ms(),"event":"capture_reset","host":true,"detail":e.to_string().chars().take(512).collect::<String>()}));
+                            std::thread::sleep(delay);
+                            continue;
+                        }
+                        *error.lock().unwrap() = Some(e.to_string());
+                        worker_failed.store(true, Ordering::SeqCst);
+                        // Publish the cause before the media channel drops and closes the session.
+                        worker_live.session.close_with_reason("capture_failed");
+                        break;
+                    }
                 }
-                // Capture and encoding consume the frame interval rather than
-                // adding a fixed pause after every frame. Never catch up in bursts.
                 std::thread::sleep(
                     Duration::from_nanos(1_000_000_000 / 30)
                         .saturating_sub(frame_started.elapsed()),
@@ -1017,6 +1072,11 @@ impl RemoteRuntime {
                                     }
                                 }
                                 let current = live.current.lock().unwrap().clone();
+                                if current.is_none() {
+                                    // Capture reset released held input. Wait for fresh pixels and
+                                    // their new layout before applying keyboard or pointer input.
+                                    continue;
+                                }
                                 let mouse = matches!(
                                     &input,
                                     Input::Move { .. }
@@ -1091,8 +1151,8 @@ impl RemoteRuntime {
         sender.abort();
         if capture_failed.load(Ordering::SeqCst) {
             live.session.close_with_reason("capture_failed");
-            self.client.disable_host_local();
-            let _ = self.client.set_host_capability(false).await;
+            // This session failed, not the user's global permission. A fresh,
+            // approved connection may retry capture without toggling sharing off/on.
         }
     }
 
@@ -1425,7 +1485,7 @@ impl RemoteRuntime {
         if !live.alive.load(Ordering::SeqCst) || !live.session.is_open().await {
             let reason = live.session.end_reason();
             return Ok(
-                json!({"id":id,"state":"closed","permission":live.session.permission(),"displays":[],"rtt_ms":null,"verification_code":null,"error":ended_message(reason),"reason":reason,"retryable":matches!(reason,"network_timeout" | "media_timeout")}),
+                json!({"id":id,"state":"closed","permission":live.session.permission(),"displays":[],"rtt_ms":null,"verification_code":null,"error":ended_message(reason),"reason":reason,"retryable":retryable_end(reason)}),
             );
         }
         let (path, rtt) = live.session.path();
@@ -1930,6 +1990,50 @@ mod tests {
         .unwrap()
         .to_wire()
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn capture_failure_survives_media_producer_cleanup_and_peer_close() {
+        let (source, target, _viewer, _host) = media_pair(65).await;
+        let (frames, rx) = watch::channel(None);
+        let (_acks, ack_rx) = watch::channel(0);
+        let alive = Arc::new(AtomicBool::new(true));
+        let sender = tokio::spawn(send_media(
+            target.clone(),
+            alive.clone(),
+            Arc::new(StdMutex::new(VideoProfile::default())),
+            rx,
+            ack_rx,
+        ));
+        target.close_with_reason("capture_failed");
+        drop(frames);
+        tokio::time::timeout(Duration::from_secs(1), sender)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!alive.load(Ordering::SeqCst));
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), source.receive())
+                .await
+                .unwrap()
+                .is_err()
+        );
+        assert_eq!(source.end_reason(), "capture_failed");
+        assert_eq!(target.end_reason(), "capture_failed");
+        assert!(
+            !retryable_end(source.end_reason()),
+            "persistent capture failure must not start an endless chain of fresh sessions"
+        );
+        for reason in [
+            "stopped",
+            "input_failed",
+            "authorization_failed",
+            "lease_expired",
+            "renewal_failed",
+            "session_ended",
+        ] {
+            assert!(!retryable_end(reason));
+        }
     }
 
     #[tokio::test]

@@ -264,6 +264,18 @@ pub async fn viewer_window_action(
         return Err("不是查看窗口".into());
     }
     let result = match action.as_str() {
+        "connect" => {
+            let main = window
+                .app_handle()
+                .get_webview_window("main")
+                .ok_or("主窗口不存在")?;
+            main.eval("window.dispatchEvent(new Event('farsail:connect-device'))")
+                .map_err(|e| e.to_string())?;
+            main.show().map_err(|e| e.to_string())?;
+            main.unminimize().map_err(|e| e.to_string())?;
+            main.set_focus().map_err(|e| e.to_string())?;
+            Ok(())
+        }
         "phone_layout" => {
             // Window lifetime, rather than session lifetime: recovery, tab switches
             // and remote rotation must never override the user's chosen geometry.
@@ -790,7 +802,7 @@ pub fn smoke_probe(webview: &tauri::Webview) {
         await new Promise(r=>setTimeout(r,300));
         const maximized=await invoke('ipc_viewer_state');
         if(!maximized.maximized) throw Error('maximize failed');
-        const toggleFullscreen=()=>[...document.querySelectorAll('button')].find(b=>b.textContent==='全屏切换').click();
+        const toggleFullscreen=()=>[...document.querySelectorAll('button')].find(b=>b.getAttribute('aria-label')==='全屏切换').click();
         toggleFullscreen();
         await new Promise(r=>setTimeout(r,300));
         const fullscreen=await invoke('ipc_viewer_state');
@@ -816,11 +828,14 @@ pub fn smoke_probe(webview: &tauri::Webview) {
         const cascade=await invoke('ipc_viewer_state');
         if(cascade.viewers.length!==3 || new Set(cascade.viewers.map(w=>`${w.x},${w.y}`)).size!==3) throw Error('independent viewers did not cascade');
         if(cascade.viewers.some(w=>w.maximized || w.fullscreen || w.minimized)) throw Error('cascade did not restore viewer windows');
+        await invoke('viewer_window_action',{action:'connect'});
+        const connectMain=await invoke('ipc_viewer_state');
+        if(!connectMain.mainVisible || connectMain.mainMinimized) throw Error('connect did not restore main window');
         await invoke('viewer_window_action',{action:'minimize'});
         await new Promise(r=>setTimeout(r,300));
         const minimized=await invoke('ipc_viewer_state');
         if(!minimized.minimized || !minimized.mainExists) throw Error('minimize/main isolation failed');
-        await invoke('ipc_smoke_report',{result:JSON.stringify({ok:true,denied,initial,restored,maximized,fullscreen,phone,game,preserved,cascade,minimized})});
+        await invoke('ipc_smoke_report',{result:JSON.stringify({ok:true,denied,initial,restored,maximized,fullscreen,phone,game,preserved,cascade,connectMain,minimized})});
         await invoke('viewer_window_action',{action:'close'});
       } catch(e) { await invoke('ipc_smoke_report',{result:JSON.stringify({ok:false,error:String(e),denied})}); }
     },800)"#);
@@ -840,7 +855,7 @@ pub fn ipc_viewer_state(window: tauri::WebviewWindow) -> Result<Value, String> {
             Some(json!({"x":position.x,"y":position.y,"maximized":viewer.is_maximized().ok()?,"fullscreen":viewer.is_fullscreen().ok()?,"minimized":viewer.is_minimized().ok()?}))
         }).collect();
     Ok(
-        json!({"width":size.width,"height":size.height,"decorations":window.is_decorated().map_err(|e|e.to_string())?,"maximized":window.is_maximized().map_err(|e|e.to_string())?,"fullscreen":window.is_fullscreen().map_err(|e|e.to_string())?,"minimized":window.is_minimized().map_err(|e|e.to_string())?,"mainExists":window.app_handle().get_webview_window("main").is_some(),"viewers":viewers}),
+        json!({"width":size.width,"height":size.height,"decorations":window.is_decorated().map_err(|e|e.to_string())?,"maximized":window.is_maximized().map_err(|e|e.to_string())?,"fullscreen":window.is_fullscreen().map_err(|e|e.to_string())?,"minimized":window.is_minimized().map_err(|e|e.to_string())?,"mainExists":window.app_handle().get_webview_window("main").is_some(),"mainVisible":window.app_handle().get_webview_window("main").and_then(|main|main.is_visible().ok()),"mainMinimized":window.app_handle().get_webview_window("main").and_then(|main|main.is_minimized().ok()),"viewers":viewers}),
     )
 }
 pub fn cancel(app: &tauri::AppHandle, label: &str) -> Vec<String> {

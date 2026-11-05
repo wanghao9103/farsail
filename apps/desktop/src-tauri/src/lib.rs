@@ -18,6 +18,7 @@ mod files;
 use files::{files_accept, files_cancel, files_reject, files_send, files_status};
 mod updater;
 use updater::{update_check, update_download, update_install, update_preferences, update_status};
+mod capture_recovery;
 mod input_recovery;
 mod remote;
 mod viewer;

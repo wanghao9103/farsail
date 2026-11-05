@@ -283,7 +283,7 @@ const fs = require("node:fs");
     );
     await page.locator(".remote-screen").focus();
     await page.locator(".viewer-toolbar").waitFor({ state: "hidden" });
-    await page.getByRole("button", { name: "显示工具栏", exact: true }).hover();
+    await page.getByRole("button", { name: "显示工具栏", exact: true }).click();
     await page.locator(".viewer-toolbar").hover();
   };
   await load();
@@ -559,12 +559,12 @@ const fs = require("node:fs");
   await page.locator(".remote-screen").focus();
   await page.locator(".viewer-toolbar").waitFor({ state: "hidden" });
   assert((await page.locator(".remote-screen").boundingBox()).height >= 763);
-  await page.getByRole("button", { name: "显示工具栏", exact: true }).hover();
+  await page.getByRole("button", { name: "显示工具栏", exact: true }).click();
   await page.locator(".viewer-toolbar").waitFor({ state: "visible" });
-  await page.getByText("全屏切换", { exact: true }).click();
+  await page.getByRole("button", { name: "全屏切换", exact: true }).click();
   assert.equal(await page.locator(".viewer-titlebar").count(), 0);
   assert((await page.locator(".remote-screen").boundingBox()).height >= 799);
-  await page.getByText("全屏切换", { exact: true }).click();
+  await page.getByRole("button", { name: "全屏切换", exact: true }).click();
   assert(await page.locator(".viewer-titlebar").isVisible());
   await page.waitForFunction(() =>
     /[1-9][\d.]* 帧\/秒/.test(
@@ -676,15 +676,15 @@ const fs = require("node:fs");
   await page.screenshot({
     path: ".local/ui-verification/viewer-fill-tall.png",
   });
-  await page.getByRole("button", { name: "显示工具栏", exact: true }).hover();
-  await page.getByText("全屏切换", { exact: true }).click();
+  await page.getByRole("button", { name: "显示工具栏", exact: true }).click();
+  await page.getByRole("button", { name: "全屏切换", exact: true }).click();
   await page.setViewportSize({ width: 1920, height: 1080 });
   await verifyFillPixels();
   await page.screenshot({
     path: ".local/ui-verification/viewer-fill-wide.png",
   });
-  await page.getByRole("button", { name: "显示工具栏", exact: true }).hover();
-  await page.getByText("全屏切换", { exact: true }).click();
+  await page.getByRole("button", { name: "显示工具栏", exact: true }).click();
+  await page.getByRole("button", { name: "全屏切换", exact: true }).click();
   await page.setViewportSize({ width: 1200, height: 800 });
   await verifyFillPixels();
   const filled = await page.getByAltText("远端桌面").boundingBox();
@@ -718,7 +718,7 @@ const fs = require("node:fs");
       Math.abs(mappedFill.y - 0.75) < 0.005,
     "fill coordinates must follow independent axis scaling",
   );
-  await page.getByRole("button", { name: "显示工具栏", exact: true }).hover();
+  await page.getByRole("button", { name: "显示工具栏", exact: true }).click();
   await page.getByText("更多操作", { exact: true }).click();
   assert.equal(
     await page
@@ -1917,7 +1917,7 @@ const fs = require("node:fs");
     "keyboard activation cannot leak Enter into the phone",
   );
   await revealToolbar();
-  await page.getByText("全屏切换", { exact: true }).click();
+  await page.getByRole("button", { name: "全屏切换", exact: true }).click();
   assert(
     await page
       .getByRole("group", { name: "手机导航", exact: true })
@@ -1928,7 +1928,7 @@ const fs = require("node:fs");
     path: ".local/ui-verification/viewer-phone-navigation-fullscreen.png",
   });
   await revealToolbar();
-  await page.getByText("全屏切换", { exact: true }).click();
+  await page.getByRole("button", { name: "全屏切换", exact: true }).click();
   await page.setViewportSize({ width: 640, height: 900 });
   await page.mouse.move(400, 300);
   await page.locator(".remote-screen").focus();
