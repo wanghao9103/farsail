@@ -20,6 +20,47 @@ use std::{
 use tokio::sync::{Mutex, Semaphore, watch};
 type ClipboardReply = (u64, tokio::sync::oneshot::Sender<Result<(), String>>);
 
+#[derive(Default)]
+struct ConnectionTrace(StdMutex<Option<std::sync::mpsc::SyncSender<Value>>>);
+impl ConnectionTrace {
+    fn start(&self, path: std::path::PathBuf) {
+        let (sender, receiver) = std::sync::mpsc::sync_channel::<Value>(128);
+        if std::thread::Builder::new()
+            .name("farsail-connection-trace".into())
+            .spawn(move || {
+                use std::io::Write;
+                for entry in receiver {
+                    if std::fs::metadata(&path).is_ok_and(|m| m.len() >= 2 * 1024 * 1024) {
+                        let previous = path.with_file_name("connections.previous.jsonl");
+                        let _ = std::fs::remove_file(&previous);
+                        let _ = std::fs::rename(&path, previous);
+                    }
+                    if let Ok(mut file) = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&path)
+                    {
+                        let _ = writeln!(file, "{entry}");
+                    }
+                }
+            })
+            .is_ok()
+        {
+            *self.0.lock().unwrap() = Some(sender);
+        }
+    }
+    fn record(&self, entry: Value) {
+        if let Some(sender) = self.0.lock().unwrap().as_ref() {
+            let _ = sender.try_send(entry);
+        }
+    }
+}
+fn trace_time_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |now| now.as_millis() as u64)
+}
+
 #[derive(Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct InputState {
@@ -280,6 +321,11 @@ struct Live {
     clipboard_gate: Mutex<()>,
     clipboard_reply: StdMutex<Option<ClipboardReply>>,
     clipboard_target: StdMutex<Option<(u64, farsail_windows::ForegroundWindow)>>,
+    received_frames: AtomicU64,
+    delivered_frames: AtomicU64,
+    received_bytes: AtomicU64,
+    last_frame_ms: AtomicU64,
+    last_trace_ms: AtomicU64,
 }
 impl Live {
     fn active(&self) -> bool {
@@ -409,6 +455,7 @@ async fn send_media(
 }
 
 pub struct RemoteRuntime {
+    trace: ConnectionTrace,
     updating: AtomicBool,
     client: Arc<NativeClient>,
     sessions: Mutex<HashMap<String, Arc<Live>>>,
@@ -421,6 +468,7 @@ pub struct RemoteRuntime {
 impl RemoteRuntime {
     pub fn new(client: Arc<NativeClient>, files: Arc<NativeFiles>) -> Arc<Self> {
         let runtime = Arc::new(Self {
+            trace: ConnectionTrace::default(),
             client,
             sessions: Mutex::new(HashMap::new()),
             updating: AtomicBool::new(false),
@@ -443,6 +491,20 @@ impl RemoteRuntime {
             }
         });
         runtime
+    }
+
+    pub fn enable_diagnostics(&self, path: std::path::PathBuf) {
+        self.trace.start(path);
+    }
+    fn trace_session(&self, live: &Live, event: &str, detail: Option<&str>) {
+        let now = trace_time_ms();
+        let (path, rtt) = live.session.path();
+        let last = live.last_frame_ms.load(Ordering::Relaxed);
+        self.trace.record(json!({"at_ms":now,"event":event,"session":live.session.id(),
+            "connection":live.session.stable_id(),"host":live.host,"path":path,"rtt_ms":rtt,"detail":detail,
+            "received_frames":live.received_frames.load(Ordering::Relaxed),"delivered_frames":live.delivered_frames.load(Ordering::Relaxed),
+            "received_bytes":live.received_bytes.load(Ordering::Relaxed),"frame_age_ms":if last==0 {None}else{Some(now.saturating_sub(last))},
+            "display_count":live.displays.lock().unwrap().len(),"reason":if live.session.is_open_now(){None}else{Some(live.session.end_reason())}}));
     }
 
     async fn attach(self: &Arc<Self>, session: Session, host: bool) {
@@ -513,9 +575,15 @@ impl RemoteRuntime {
             clipboard_gate: Mutex::new(()),
             clipboard_reply: StdMutex::new(None),
             clipboard_target: StdMutex::new(None),
+            received_frames: AtomicU64::new(0),
+            delivered_frames: AtomicU64::new(0),
+            received_bytes: AtomicU64::new(0),
+            last_frame_ms: AtomicU64::new(0),
+            last_trace_ms: AtomicU64::new(0),
         });
         sessions.insert(session.id().into(), live.clone());
         drop(sessions);
+        self.trace_session(&live, "attached", None);
         let owner = self.clone();
         tokio::spawn(async move {
             if file_ready && host {
@@ -538,6 +606,7 @@ impl RemoteRuntime {
                 *live.error.lock().unwrap() = Some(format!("input cleanup incomplete: {e}"));
             }
             let code = live.session.end_reason();
+            owner.trace_session(&live, "closed", Some(code));
             live.session.close();
             let reason = live
                 .error
@@ -1103,23 +1172,36 @@ impl RemoteRuntime {
             } else if frame.bytes.starts_with(b"FSL1") {
                 if let Ok(list) = serde_json::from_slice::<Vec<Display>>(&frame.bytes[4..]) {
                     *live.displays.lock().unwrap() = list;
+                    self.trace_session(&live, "displays", None);
                 }
             } else if let Ok(image) = JpegFrame::from_wire(&frame.bytes) {
+                live.received_frames.fetch_add(1, Ordering::Relaxed);
+                live.received_bytes
+                    .fetch_add(frame.bytes.len() as u64, Ordering::Relaxed);
+                live.last_frame_ms.store(trace_time_ms(), Ordering::Relaxed);
                 if image.meta.sequence > last_sequence {
                     last_sequence = image.meta.sequence;
                     sender.send_replace(Some(frame.bytes));
                 }
                 let mut ack = b"FSA1".to_vec();
                 ack.extend_from_slice(&last_sequence.to_be_bytes());
-                if live
+                let acknowledged = live
                     .session
                     .send(Frame {
                         channel: Channel::Media,
                         bytes: ack,
                     })
-                    .await
-                    .is_err()
-                {
+                    .await;
+                if let Err(error) = acknowledged {
+                    self.trace_session(
+                        &live,
+                        "ack_failed",
+                        Some(if matches!(error, farsail_transport::Error::Timeout) {
+                            "timeout"
+                        } else {
+                            "transport_error"
+                        }),
+                    );
                     break;
                 }
             }
@@ -1347,6 +1429,16 @@ impl RemoteRuntime {
             );
         }
         let (path, rtt) = live.session.path();
+        let now = trace_time_ms();
+        let previous = live.last_trace_ms.load(Ordering::Relaxed);
+        if now.saturating_sub(previous) >= 5000
+            && live
+                .last_trace_ms
+                .compare_exchange(previous, now, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+        {
+            self.trace_session(&live, "status", None);
+        }
         let discovery = self.client.transport_discovery_state(path).await;
         let profile = *live.video_profile.lock().unwrap();
         Ok(
@@ -1373,6 +1465,7 @@ impl RemoteRuntime {
                 && let Ok(frame) = JpegFrame::from_wire(bytes)
                 && frame.meta.sequence > after
             {
+                live.delivered_frames.fetch_add(1, Ordering::Relaxed);
                 return Ok(bytes.clone());
             }
             match tokio::time::timeout(Duration::from_millis(450), receiver.changed()).await {

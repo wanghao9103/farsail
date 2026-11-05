@@ -3135,9 +3135,9 @@ function Viewer({
       /* This session remains usable without storage. */
     }
   };
-  const phoneWindowConfigured = useRef(false);
-  const windowAction = (action: string) =>
-    void invoke<{ fullscreen?: boolean }>("viewer_window_action", { action })
+  const phoneWindowConfigured = useRef<boolean | null>(null);
+  const windowAction = (action: string, options: { landscape?: boolean } = {}) =>
+    void invoke<{ fullscreen?: boolean }>("viewer_window_action", { action, ...options })
       .then((s) => {
         if (typeof s.fullscreen === "boolean") setFullscreen(s.fullscreen);
       })
@@ -3422,10 +3422,12 @@ function Viewer({
     releaseInputs();
   }, [fitMode]);
   useEffect(() => {
-    if (status?.platform !== "android" || phoneWindowConfigured.current) return;
-    phoneWindowConfigured.current = true;
-    windowAction("phone_layout");
-  }, [status?.platform]);
+    if (status?.platform !== "android" || !picture) return;
+    const landscape = phoneTurns % 2 ? picture.height > picture.width : picture.width > picture.height;
+    if (phoneWindowConfigured.current === landscape) return;
+    phoneWindowConfigured.current = landscape;
+    windowAction("phone_layout", { landscape });
+  }, [status?.platform, picture?.width, picture?.height, phoneTurns]);
   const recoverMouse = () => {
     generation.current++;
     clearPointer();
@@ -3689,14 +3691,30 @@ function Viewer({
             if (intent) onDisplayIntent(intent);
           }
           if (pending) setDisplaySnapshot(gate.snapshot());
+          const next = URL.createObjectURL(
+            new Blob([data.slice(49)], { type: "image/jpeg" }),
+          );
+          // Present only a decoded frame. Otherwise a busy multi-view renderer
+          // can keep replacing/revoking images before any of them is displayed.
+          // Awaiting here also bounds decode work independently for each window;
+          // native transport keeps ACKing and retains the newest available frame.
+          try {
+            const decoded = new Image();
+            decoded.src = next;
+            await decoded.decode();
+          } catch {
+            URL.revokeObjectURL(next);
+            continue;
+          }
+          if (!live || !receiving || !gate.acceptFrame(display)) {
+            URL.revokeObjectURL(next);
+            continue;
+          }
           if (resumePending.current) {
             resumePending.current = false;
             setRestoringConnection(false);
             onRestored(id, gate.intent());
           }
-          const next = URL.createObjectURL(
-            new Blob([data.slice(49)], { type: "image/jpeg" }),
-          );
           const old = url.current;
           url.current = next;
           frameTimes.current.push(performance.now());

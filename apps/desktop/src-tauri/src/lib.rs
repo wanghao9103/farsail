@@ -405,10 +405,12 @@ pub fn run() {
             app.manage(instance);
             let updater=updater::Runtime::new(dir.join("updates.json"),app.package_info().version.to_string()).map_err(std::io::Error::other)?;
             app.manage(updater.clone());
+            let diagnostics_path=dir.join("connections.jsonl");
             let store = Arc::new(PlatformStore::new(dir)?);
             let client = Arc::new(NativeClient::new(store)?);
             let files=NativeFiles::new(client.clone());
             let remote=RemoteRuntime::new(client.clone(), files.clone());
+            remote.enable_diagnostics(diagnostics_path);
             tauri::async_runtime::spawn(files.clone().listen());
             app.manage(files);
             let heartbeat = client.clone();

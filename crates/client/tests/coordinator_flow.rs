@@ -4,7 +4,7 @@ use farsail_client::{NativeClient, SecureStore};
 use farsail_coordinator::{AppState, Mailer, router};
 use farsail_core::RemotePermission;
 use farsail_media::{FrameMeta, JpegFrame};
-use farsail_transport::{Channel, Config as TransportConfig, Frame};
+use farsail_transport::{Channel, Config as TransportConfig, Frame, Session};
 use serde_json::{Value, json};
 use sqlx::{PgPool, postgres::PgPoolOptions};
 use std::{path::PathBuf, sync::Arc};
@@ -40,6 +40,63 @@ fn client(dir: PathBuf, base: &str) -> NativeClient {
     // Set server through a runtime call below; this helper is synchronous to keep setup small.
     assert!(!base.is_empty());
     client
+}
+async fn approved_view_pair(
+    source: &Arc<NativeClient>,
+    target: &Arc<NativeClient>,
+    source_device: &str,
+    target_device: &str,
+) -> (Session, Session) {
+    let invite = target
+        .call(
+            "invite",
+            json!({"target_device_id":target_device,"permission":"view"}),
+        )
+        .await
+        .unwrap();
+    let request = source.call("request", json!({"source_device_id":source_device,"target_device_id":target_device,"permission":"view","invitation_code":invite["code"]})).await.unwrap();
+    let id = request["id"].as_str().unwrap();
+    target
+        .call("decide", json!({"id":id,"approve":true}))
+        .await
+        .unwrap();
+    source
+        .connect_transport(id, RemotePermission::View)
+        .await
+        .unwrap();
+    let viewer = source.transport_session(id).await.unwrap().unwrap();
+    let host = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if let Some(host) = target.transport_session(id).await.unwrap() {
+                break host;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("second host accepted its independent connection");
+    (viewer, host)
+}
+async fn exchange_media(viewer: &Session, host: &Session, payload: &[u8]) {
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        host.send(Frame {
+            channel: Channel::Media,
+            bytes: payload.to_vec(),
+        })
+        .await
+        .unwrap();
+        assert_eq!(viewer.receive().await.unwrap().bytes, payload);
+        viewer
+            .send(Frame {
+                channel: Channel::Media,
+                bytes: b"independent ACK".to_vec(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(host.receive().await.unwrap().bytes, b"independent ACK");
+    })
+    .await
+    .expect("each live peer keeps exchanging media and ACKs");
 }
 #[cfg(not(windows))]
 struct TestStore(PathBuf);
@@ -243,14 +300,43 @@ async fn native_client_against_real_coordinator() {
         .await
         .unwrap();
     assert_eq!(source.receive().await.unwrap().bytes, b"ack");
+    // One desktop controls two independent clients against the real HTTP
+    // coordinator and QUIC endpoints, including grant rotation and peer restart.
+    let second_dir = tempfile::tempdir().unwrap();
+    let second = Arc::new(client(second_dir.path().to_path_buf(), &base));
+    second.set_server(&base).await.unwrap();
+    account(&second, &mail, "native-second-host@example.test").await;
+    let second_device = second
+        .call("bind", json!({"name":"Second independent host"}))
+        .await
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    #[cfg(not(windows))]
+    sqlx::query("UPDATE devices SET platform='windows' WHERE id=$1")
+        .bind(Uuid::parse_str(&second_device).unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    second
+        .start_transport(TransportConfig::default())
+        .await
+        .unwrap();
+    second.set_host_capability(true).await.unwrap();
+    let (mut second_source, mut second_target) =
+        approved_view_pair(&a, &second, &dev_a, &second_device).await;
+    let first_connection = source.stable_id();
+    assert_ne!(first_connection, second_source.stable_id());
     // Production lease cadence (transport is a dependency, without cfg(test)).
     // Cross several 30s grant lifetimes with real HTTP token rotation and heartbeats.
     let first_expiry =
         a.call("remote_status", json!({"id":id})).await.unwrap()["grant_expires_at"].clone();
-    for _ in 0..7 {
+    for iteration in 0..7 {
         tokio::time::sleep(std::time::Duration::from_secs(10)).await;
         a.call("heartbeat", Value::Null).await.unwrap();
         b.call("heartbeat", Value::Null).await.unwrap();
+        second.call("heartbeat", Value::Null).await.unwrap();
         assert!(
             source.is_open().await,
             "source survived lease rotation: {}",
@@ -261,19 +347,48 @@ async fn native_client_against_real_coordinator() {
             "target survived lease rotation: {}",
             target.end_reason()
         );
-        target
-            .send(Frame {
-                channel: Channel::Media,
-                bytes: b"lease alive".to_vec(),
-            })
-            .await
-            .unwrap();
-        assert_eq!(source.receive().await.unwrap().bytes, b"lease alive");
+        tokio::join!(
+            exchange_media(&source, &target, b"first host lease alive"),
+            exchange_media(&second_source, &second_target, b"second host lease alive")
+        );
+        if iteration == 2 {
+            let old_connection = second_source.stable_id();
+            second.stop_transport().await;
+            assert!(!second_target.is_open().await);
+            let (reconnected, ()) = tokio::join!(
+                async {
+                    second
+                        .start_transport(TransportConfig::default())
+                        .await
+                        .unwrap();
+                    second.set_host_capability(true).await.unwrap();
+                    approved_view_pair(&a, &second, &dev_a, &second_device).await
+                },
+                async {
+                    for _ in 0..6 {
+                        exchange_media(&source, &target, b"first host survives other peer restart")
+                            .await;
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    }
+                }
+            );
+            (second_source, second_target) = reconnected;
+            assert_ne!(second_source.stable_id(), old_connection);
+        }
+        assert_eq!(source.stable_id(), first_connection);
+        assert!(second_source.is_open().await && second_target.is_open().await);
     }
     assert_ne!(
         a.call("remote_status", json!({"id":id})).await.unwrap()["grant_expires_at"],
         first_expiry
     );
+    second.stop_transport().await;
+    exchange_media(
+        &source,
+        &target,
+        b"first host survives second host shutdown",
+    )
+    .await;
     // Same-account consent is checked by the host against authoritative requester identity.
     let c_dir = tempfile::tempdir().unwrap();
     let c = Arc::new(client(c_dir.path().to_path_buf(), &base));
@@ -453,7 +568,7 @@ async fn native_client_against_real_coordinator() {
             .as_array()
             .unwrap()
             .len(),
-        2
+        3 // Controller, original host, and the independent second host.
     );
     assert!(
         !b.call("admin_audit", Value::Null)

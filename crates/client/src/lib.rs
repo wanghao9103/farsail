@@ -266,6 +266,7 @@ struct State {
     grant: std::collections::HashMap<String, LocalGrant>,
     device_restore_error: Option<String>,
 }
+#[derive(Clone)]
 struct DeviceSnapshot {
     base: String,
     token: String,
@@ -300,6 +301,9 @@ pub struct NativeClient {
     state: Mutex<State>,
     transport: Mutex<Option<Transport>>,
     transport_sessions: Mutex<std::collections::HashMap<String, Session>>,
+    // An established session must not queue its lease checks behind account/UI
+    // HTTP calls that hold state. Each cached proof belongs to one endpoint epoch.
+    transport_identities: Mutex<std::collections::HashMap<String, (u64, DeviceSnapshot)>>,
     transport_epoch: Mutex<u64>,
     // Serialize old/new endpoint uploads so a delayed old address cannot win
     // after the replacement endpoint publishes in the same heartbeat generation.
@@ -347,6 +351,7 @@ impl NativeClient {
             state: Mutex::new(state),
             transport: Mutex::new(None),
             transport_sessions: Mutex::new(Default::default()),
+            transport_identities: Mutex::new(Default::default()),
             transport_epoch: Mutex::new(0),
             transport_publication: Mutex::new(()),
             signing_out: AtomicBool::new(false),
@@ -1477,6 +1482,13 @@ impl NativeClient {
             )
             .await?;
         s.generation = v["generation"].as_i64();
+        if let Ok(current) = DeviceSnapshot::from_state(s) {
+            for (_, identity) in self.transport_identities.lock().await.values_mut() {
+                if identity.base == current.base && identity.token == current.token {
+                    identity.generation = current.generation;
+                }
+            }
+        }
         Ok(v)
     }
     async fn bind_device(&self, s: &mut State, owner: String, name: String) -> Result<()> {
@@ -2029,6 +2041,7 @@ impl NativeClient {
         let mut epoch = self.transport_epoch.lock().await;
         *epoch = epoch.wrapping_add(1);
         let next = *epoch;
+        self.transport_identities.lock().await.clear();
         let sessions = std::mem::take(&mut *self.transport_sessions.lock().await);
         let transport = self.transport.lock().await.take();
         drop(epoch);
@@ -2052,6 +2065,7 @@ impl NativeClient {
         next
     }
     async fn invalidate_transport_grant(&self, id: &str) {
+        self.transport_identities.lock().await.remove(id);
         let (base, credential) = {
             let mut state = self.state.lock().await;
             let target = state.grant.remove(id).is_some();
@@ -2081,9 +2095,22 @@ impl Authority for NativeClient {
         self.invalidate_transport_grant(id).await;
     }
     async fn inspect(&self, id: &str, token: &str) -> farsail_transport::Result<Claims> {
-        let checked_at = Instant::now();
+        let epoch = *self.transport_epoch.lock().await;
+        let cached = self
+            .transport_identities
+            .lock()
+            .await
+            .get(id)
+            .filter(|(saved, _)| *saved == epoch)
+            .map(|(_, identity)| identity.clone());
+        let identity = match cached {
+            Some(identity) => identity,
+            None => DeviceSnapshot::from_state(&*self.state.lock().await)
+                .map_err(|_| farsail_transport::Error::Denied)?,
+        };
         let v = self
-            .transport_request(
+            .transport_request_as(
+                &identity,
                 Method::GET,
                 &format!("/v1/remote/{id}/transport-grant"),
                 Some(token),
@@ -2093,7 +2120,26 @@ impl Authority for NativeClient {
             .map_err(|_| farsail_transport::Error::Denied)?;
         let mut claims: Claims =
             serde_json::from_value(v).map_err(|_| farsail_transport::Error::Denied)?;
-        claims.checked_at = checked_at;
+        // transport_request_as already deducted the HTTP time from expires_in.
+        // Starting this clock before that request double-charges network delay
+        // (and time waiting for the account state lock).
+        claims.checked_at = Instant::now();
+        let current = self.transport_epoch.lock().await;
+        if *current != epoch || self.signing_out.load(Ordering::SeqCst) {
+            return Err(farsail_transport::Error::Closed);
+        }
+        self.transport_identities
+            .lock()
+            .await
+            .entry(id.into())
+            .and_modify(|saved| {
+                // A heartbeat can advance generation while this HTTP check is
+                // in flight. Never put its older snapshot back over that update.
+                if saved.0 != epoch {
+                    *saved = (epoch, identity.clone());
+                }
+            })
+            .or_insert((epoch, identity));
         Ok(claims)
     }
     async fn issue(&self, id: &str, renew: bool) -> farsail_transport::Result<String> {
@@ -2184,6 +2230,163 @@ fn read_json<T: DeserializeOwned>(store: &dyn SecureStore, key: &str) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+    async fn lease_fixture(
+        ttl: i64,
+    ) -> (
+        Arc<NativeClient>,
+        tokio::task::JoinHandle<()>,
+        Arc<tokio::sync::Notify>,
+        Arc<tokio::sync::Notify>,
+    ) {
+        use axum::{
+            Json, Router,
+            extract::Path,
+            http::HeaderMap,
+            routing::{get, post},
+        };
+        let seen = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let expected_generation = Arc::new(std::sync::atomic::AtomicI64::new(1));
+        let app = Router::new()
+            .route("/v1/remote/{id}/transport-grant", get({let generation=expected_generation.clone();move |Path(id): Path<String>, headers: HeaderMap| {let generation=generation.clone();async move {
+                assert_eq!(headers["x-farsail-device-token"], "device-proof");
+                assert_eq!(headers["x-farsail-generation"].to_str().unwrap().parse::<i64>().unwrap(),generation.load(Ordering::SeqCst));
+                Json(json!({"session_id":id,"permission":"view","source_public_key":hex::encode([1;32]),"target_public_key":hex::encode([2;32]),"nonce":"ab".repeat(32),"expires_in":ttl}))
+            }}}))
+            .route("/v1/devices/heartbeat",post(move || {let generation=expected_generation.clone();async move {
+                generation.store(2,Ordering::SeqCst);Json(json!({"generation":2,"expires_in":60}))
+            }}))
+            .route("/v1/remote/{id}", get({
+                let seen=seen.clone(); let release=release.clone();
+                move || { let seen=seen.clone();let release=release.clone();async move {
+                    seen.notify_one(); release.notified().await; Json(json!({"state":"approved"}))
+                }}
+            }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = Arc::new(NativeClient::new(Arc::new(MemoryStore::default())).unwrap());
+        client.set_server(&base).await.unwrap();
+        {
+            let mut state = client.state.lock().await;
+            state.device = Some(DeviceCredential {
+                id: "device".into(),
+                device_token: "device-proof".into(),
+                owner_id: "owner".into(),
+                session_id: "login".into(),
+            });
+            state.generation = Some(1);
+            state.login = Some(Login {
+                access_token: "user-access".into(),
+                refresh_token: "refresh".into(),
+                session_id: "login".into(),
+                access_expires_in: 3600,
+            });
+            state.expiry = Instant::now() + Duration::from_secs(3600);
+        }
+        (client, server, seen, release)
+    }
+    #[tokio::test]
+    async fn parallel_viewer_lease_checks_do_not_wait_for_a_slow_account_request() {
+        let (client, server, seen, release) = lease_fixture(30).await;
+        let ids = [
+            "00000000-0000-0000-0000-000000000081",
+            "00000000-0000-0000-0000-000000000082",
+        ];
+        for id in ids {
+            Authority::inspect(&*client, id, "grant").await.unwrap();
+        }
+        let slow = tokio::spawn({
+            let client = client.clone();
+            async move { client.call("remote_status", json!({"id":ids[0]})).await }
+        });
+        tokio::time::timeout(Duration::from_secs(2), seen.notified())
+            .await
+            .unwrap();
+        let checks = tokio::time::timeout(Duration::from_secs(1), async {
+            tokio::join!(
+                Authority::inspect(&*client, ids[0], "grant"),
+                Authority::inspect(&*client, ids[1], "grant")
+            )
+        })
+        .await;
+        release.notify_one();
+        slow.await.unwrap().unwrap();
+        let (a, b) = checks.expect("one slow account request blocked both live viewers");
+        assert_eq!(a.unwrap().session_id, ids[0]);
+        assert_eq!(b.unwrap().session_id, ids[1]);
+        client.invalidate_transport_grant(ids[0]).await;
+        assert!(
+            !client
+                .transport_identities
+                .lock()
+                .await
+                .contains_key(ids[0])
+        );
+        assert!(
+            client
+                .transport_identities
+                .lock()
+                .await
+                .contains_key(ids[1])
+        );
+        client.stop_transport().await;
+        assert!(client.transport_identities.lock().await.is_empty());
+        server.abort();
+    }
+    #[tokio::test]
+    async fn grant_deadline_does_not_charge_account_queue_time_or_http_time_twice() {
+        let (client, server, _, _) = lease_fixture(2).await;
+        let state = client.state.lock().await;
+        let inspecting = tokio::spawn({
+            let client = client.clone();
+            async move {
+                Authority::inspect(&*client, "00000000-0000-0000-0000-000000000083", "grant").await
+            }
+        });
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        drop(state);
+        let claims = inspecting.await.unwrap().unwrap();
+        assert!(claims.expires_in > 0);
+        assert!(
+            claims.checked_at + Duration::from_secs(claims.expires_in as u64) > Instant::now(),
+            "a fresh server lease was already expired after waiting for account state"
+        );
+        server.abort();
+    }
+    #[tokio::test]
+    async fn an_in_flight_grant_check_cannot_restore_an_old_endpoint_identity() {
+        let (client, server, _, _) = lease_fixture(30).await;
+        let state = client.state.lock().await;
+        let inspecting = tokio::spawn({
+            let client = client.clone();
+            async move {
+                Authority::inspect(&*client, "00000000-0000-0000-0000-000000000084", "grant").await
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        client.stop_transport().await;
+        drop(state);
+        assert!(matches!(
+            inspecting.await.unwrap(),
+            Err(farsail_transport::Error::Closed)
+        ));
+        assert!(client.transport_identities.lock().await.is_empty());
+        server.abort();
+    }
+    #[tokio::test]
+    async fn cached_lease_proofs_follow_the_same_devices_new_heartbeat_generation() {
+        let (client, server, _, _) = lease_fixture(30).await;
+        let id = "00000000-0000-0000-0000-000000000085";
+        Authority::inspect(&*client, id, "grant").await.unwrap();
+        {
+            let mut state = client.state.lock().await;
+            client.send_heartbeat(&mut state).await.unwrap();
+        }
+        Authority::inspect(&*client, id, "grant").await.unwrap();
+        assert_eq!(client.transport_identities.lock().await[id].1.generation, 2);
+        server.abort();
+    }
     #[test]
     fn restored_transport_matches_default_https_relay_without_weakening_trust() {
         for server in [
