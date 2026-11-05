@@ -4166,10 +4166,6 @@ function Viewer({
   return (
     <section
       className={`viewer-window ${fitMode === "fill" ? "viewer-fill" : ""} ${showToolbar ? "tools-visible" : ""} ${fullscreen ? "viewer-fullscreen" : ""}`}
-      onMouseMove={(e) => {
-        if (e.clientY <= (fullscreen ? 8 : 32) && !e.buttons)
-          setToolbarVisible(true);
-      }}
     >
       {!fullscreen && (
         <header className="window-titlebar viewer-titlebar">

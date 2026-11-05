@@ -335,6 +335,49 @@ const fs = require("node:fs");
   );
   await other.close();
   await load();
+  // Moving a native window and opening remote tools are separate actions.
+  await page.mouse.move(500, 600);
+  await page.locator(".viewer-toolbar").waitFor({ state: "hidden" });
+  await page.locator(".viewer-titlebar").hover();
+  assert(
+    !(await page.locator(".viewer-toolbar").isVisible()),
+    "titlebar hover must not reveal remote controls",
+  );
+  const dragHandle = await page
+    .locator(".viewer-titlebar .window-drag")
+    .boundingBox();
+  assert(dragHandle && dragHandle.width > 0);
+  const dragCallsBefore = await page.evaluate(
+    () => window.fixture.calls.length,
+  );
+  await page.mouse.move(
+    dragHandle.x + dragHandle.width / 2,
+    dragHandle.y + dragHandle.height / 2,
+  );
+  await page.mouse.down();
+  await page.mouse.move(
+    dragHandle.x + dragHandle.width / 2 + 12,
+    dragHandle.y + dragHandle.height / 2 + 4,
+  );
+  await page.mouse.up();
+  assert(
+    await page.evaluate(
+      (after) =>
+        window.fixture.calls
+          .slice(after)
+          .some(
+            (call) =>
+              call.cmd === "viewer_window_action" &&
+              call.args.action === "drag",
+          ),
+      dragCallsBefore,
+    ),
+    "titlebar must still request native dragging",
+  );
+  assert(
+    !(await page.locator(".viewer-toolbar").isVisible()),
+    "titlebar dragging must keep remote controls hidden",
+  );
   // Keyboard users can reveal the toolbar and keep it open while choosing controls.
   await page.mouse.move(500, 600);
   await page.locator(".viewer-toolbar").waitFor({ state: "hidden" });
