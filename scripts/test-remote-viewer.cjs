@@ -2454,7 +2454,11 @@ const fs = require("node:fs");
       normalMenuBounds.y + normalMenuBounds.height <= 640,
   );
   await page.keyboard.press("Tab");
+  assert.equal(await popup().getByRole("button", { name: "当前设备在独立窗口打开", exact: true }).evaluate((button) => button === document.activeElement), true);
+  await page.keyboard.press("Tab");
   await popup().waitFor({ state: "hidden" });
+  assert.equal(await page.getByRole("button", { name: "当前标签在独立窗口打开", exact: true }).evaluate((button) => button === document.activeElement), true);
+  await page.keyboard.press("Tab");
   assert.equal(
     await page
       .getByRole("button", { name: "连接其他设备", exact: true })

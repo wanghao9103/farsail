@@ -554,6 +554,7 @@ impl RemoteRuntime {
         let last = live.last_frame_ms.load(Ordering::Relaxed);
         self.trace.record(json!({"at_ms":now,"event":event,"session":live.session.id(),
             "connection":live.session.stable_id(),"host":live.host,"path":path,"rtt_ms":rtt,"detail":detail,
+            "video_requested":live.video_demand.borrow().active,"video_demand_supported":live.demand_supported.load(Ordering::SeqCst),
             "received_frames":live.received_frames.load(Ordering::Relaxed),"delivered_frames":live.delivered_frames.load(Ordering::Relaxed),
             "received_bytes":live.received_bytes.load(Ordering::Relaxed),"frame_age_ms":if last==0 {None}else{Some(now.saturating_sub(last))},
             "display_count":live.displays.lock().unwrap().len(),"error":live.error.lock().unwrap().as_ref().map(|s|s.chars().take(512).collect::<String>()),"reason":if live.session.is_open_now(){None}else{Some(live.session.end_reason())}}));

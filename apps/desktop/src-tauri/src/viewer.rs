@@ -615,6 +615,10 @@ pub async fn viewer_detach_tab(
                 return Err(error.to_string());
             }
         };
+        if binding.cancelled.load(Ordering::SeqCst) {
+            let _ = detached.close();
+            return Err("查看连接已关闭".into());
+        }
         // The Arc, session ID, lease and recovery state are preserved. Only
         // window ownership changes; closing the source cannot stop this stream.
         sync_visibility(&detached).await;
@@ -961,6 +965,28 @@ pub fn smoke_setup(app: &tauri::AppHandle) -> tauri::Result<()> {
         .decorations(false)
         .build()?;
     }
+    // A synthetic background tab exercises transfer into a real new WebView.
+    // No account, capture permission or transport is created by this fixture.
+    app.state::<Windows>().0.lock().unwrap().insert(
+        "viewer-detach-fixture".into(),
+        Arc::new(Binding {
+            host: Mutex::new("viewer-smoke".into()),
+            name: "可拆分合成标签".into(),
+            selected: AtomicBool::new(false),
+            visibility_epoch: AtomicU64::new(next_visibility_epoch()),
+            id: Mutex::new("00000000-0000-0000-0000-000000000004".into()),
+            instance: next_window_instance(),
+            opened: AtomicBool::new(true),
+            source: "synthetic".into(),
+            target: "synthetic".into(),
+            permission: RemotePermission::View,
+            cancelled: AtomicBool::new(false),
+            retrying: AtomicBool::new(false),
+            attempts: AtomicU32::new(0),
+            recovery_allowed: AtomicBool::new(false),
+            progress: Mutex::new(RecoveryProgress::default()),
+        }),
+    );
     Ok(())
 }
 
@@ -1016,6 +1042,14 @@ pub fn smoke_probe(webview: &tauri::Webview) {
         const cascade=await invoke('ipc_viewer_state');
         if(cascade.viewers.length!==3 || new Set(cascade.viewers.map(w=>`${w.x},${w.y}`)).size!==3) throw Error('independent viewers did not cascade');
         if(cascade.viewers.some(w=>w.maximized || w.fullscreen || w.minimized)) throw Error('cascade did not restore viewer windows');
+        const moving=(await invoke('viewer_tabs')).find(t=>t.name==='可拆分合成标签');
+        if(!moving) throw Error('missing synthetic detachable tab');
+        await invoke('viewer_detach_tab',{instance:moving.instance});
+        await new Promise(r=>setTimeout(r,500));
+        const detached=await invoke('ipc_viewer_state');
+        if(detached.viewers.length!==4 || (await invoke('viewer_tabs')).some(t=>t.instance===moving.instance)) throw Error('native tab transfer failed');
+        let movedDenied=false;try{await invoke('remote_status',{id:moving.id})}catch{movedDenied=true}
+        if(!movedDenied) throw Error('old window retained moved-session permission');
         await invoke('viewer_window_action',{action:'connect'});
         const connectMain=await invoke('ipc_viewer_state');
         if(!connectMain.mainVisible || connectMain.mainMinimized) throw Error('connect did not restore main window');
@@ -1023,7 +1057,7 @@ pub fn smoke_probe(webview: &tauri::Webview) {
         await new Promise(r=>setTimeout(r,300));
         const minimized=await invoke('ipc_viewer_state');
         if(!minimized.minimized || !minimized.mainExists) throw Error('minimize/main isolation failed');
-        await invoke('ipc_smoke_report',{result:JSON.stringify({ok:true,denied,initial,restored,maximized,fullscreen,phone,game,preserved,cascade,connectMain,minimized})});
+        await invoke('ipc_smoke_report',{result:JSON.stringify({ok:true,denied,initial,restored,maximized,fullscreen,phone,game,preserved,cascade,detached,connectMain,minimized})});
         await invoke('viewer_window_action',{action:'close'});
       } catch(e) { await invoke('ipc_smoke_report',{result:JSON.stringify({ok:false,error:String(e),denied})}); }
     },800)"#);
