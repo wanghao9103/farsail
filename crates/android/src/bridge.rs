@@ -258,6 +258,11 @@ pub extern "system" fn Java_app_farsail_android_NativeBridge_publishRgba(
         if layout < 0 || span > env.get_direct_buffer_capacity(&buffer).ok()? {
             return None;
         }
+        // Keep the authorized connection alive while an invisible tab pauses
+        // video. Do not spend phone CPU encoding frames that nobody will show.
+        if !hst.video_requested() {
+            return Some(true);
+        }
         let pointer = env.get_direct_buffer_address(&buffer).ok()?;
         // The direct buffer is borrowed only for this synchronous JNI call.
         // Kotlin keeps the acquired Image open until this function returns;

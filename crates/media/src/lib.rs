@@ -10,6 +10,46 @@ pub const MAX_BYTES: usize = 4_000_000;
 pub const BASELINE_PAYLOAD_BPS: u64 = 6_000_000;
 const HEADER: usize = 49;
 
+/// Optional per-session subscription. Peers advertise FSW0 before accepting it.
+/// Pausing video does not pause authorization, input, files, or transport ACKs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StreamDemand {
+    pub generation: u64,
+    pub active: bool,
+}
+impl Default for StreamDemand {
+    fn default() -> Self {
+        Self {
+            generation: 0,
+            active: true,
+        }
+    }
+}
+impl StreamDemand {
+    pub fn packet(self) -> Vec<u8> {
+        let mut bytes = b"FSW1".to_vec();
+        bytes.extend_from_slice(&self.generation.to_be_bytes());
+        bytes.push(u8::from(self.active));
+        bytes
+    }
+    pub fn parse(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() != 13 || !bytes.starts_with(b"FSW1") || bytes[12] > 1 {
+            return None;
+        }
+        Some(Self {
+            generation: u64::from_be_bytes(bytes[4..12].try_into().ok()?),
+            active: bytes[12] == 1,
+        })
+    }
+    pub fn advance(&mut self, next: Self) -> bool {
+        if next.generation <= self.generation {
+            return false;
+        }
+        *self = next;
+        true
+    }
+}
+
 /// Two frames can overlap a network round trip without an unbounded JPEG queue.
 /// ACKs are cumulative: an older frame becomes obsolete when a newer one arrives.
 #[derive(Default)]
@@ -248,6 +288,36 @@ impl JpegFrame {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn video_subscription_rejects_stale_reordered_and_malformed_commands() {
+        let mut first = StreamDemand::default();
+        let second = StreamDemand::default();
+        assert!(first.advance(StreamDemand {
+            generation: 2,
+            active: false
+        }));
+        assert!(!first.advance(StreamDemand {
+            generation: 1,
+            active: true
+        }));
+        assert!(!first.advance(StreamDemand {
+            generation: 2,
+            active: true
+        }));
+        assert!(!first.active && second.active);
+        assert!(first.advance(StreamDemand {
+            generation: 3,
+            active: true
+        }));
+        assert_eq!(StreamDemand::parse(&first.packet()), Some(first));
+        let mut bad = first.packet();
+        bad[12] = 2;
+        assert!(StreamDemand::parse(&bad).is_none());
+        assert!(StreamDemand::parse(&bad[..12]).is_none());
+        bad.extend_from_slice(b"extra");
+        assert!(StreamDemand::parse(&bad).is_none());
+        assert!(StreamDemand::parse(b"FSW0").is_none());
+    }
     #[test]
     fn media_window_bounds_stalled_receivers_and_rejects_unsent_ack() {
         let mut window = MediaWindow::default();

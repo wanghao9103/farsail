@@ -206,6 +206,118 @@ async fn two_android_hosts_receive_isolated_frames_and_input_and_stop_independen
     assert!(a.input_valid("phone-a", command["epoch"].as_u64().unwrap(), layout));
     assert!(!b.input_valid("phone-a", command["epoch"].as_u64().unwrap(), layout));
     assert_eq!(b.drain(), json!([]));
+    // Hidden tabs stop on the sender, not just at the desktop decoder. Keep
+    // another authenticated phone sending throughout a pause longer than the
+    // ordinary 15-second ACK deadline; neither connection may be recreated.
+    let connection = va.stable_id();
+    va.send(Frame {
+        channel: Channel::Media,
+        bytes: StreamDemand {
+            generation: 100,
+            active: false,
+        }
+        .packet(),
+    })
+    .await
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while a.video_requested() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let (a_frames, mut received_a) = tokio::sync::mpsc::channel(8);
+    let (b_frames, mut received_b) = tokio::sync::mpsc::channel(64);
+    let mut readers = Vec::new();
+    for (viewer, output) in [(va.clone(), a_frames), (vb.clone(), b_frames)] {
+        readers.push(tokio::spawn(async move {
+            loop {
+                let frame = match viewer.receive().await {
+                    Ok(frame) => frame,
+                    Err(farsail_transport::Error::Timeout) => continue,
+                    Err(_) => break,
+                };
+                if let Ok(image) = JpegFrame::from_wire(&frame.bytes) {
+                    let mut ack = b"FSA1".to_vec();
+                    ack.extend_from_slice(&image.meta.sequence.to_be_bytes());
+                    viewer
+                        .send(Frame {
+                            channel: Channel::Media,
+                            bytes: ack,
+                        })
+                        .await
+                        .unwrap();
+                    if output.send(image).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        }));
+    }
+    for _ in 0..34 {
+        assert!(a.publish(image(&a), 16, 16, layout));
+        assert!(b.publish(image(&b), 16, 16, layout));
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    assert!(matches!(
+        received_a.try_recv(),
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+    ));
+    let mut foreground_frames = 0;
+    while received_b.try_recv().is_ok() {
+        foreground_frames += 1;
+    }
+    assert!(
+        foreground_frames >= 30,
+        "visible independent phone kept moving"
+    );
+    assert!(va.is_open_now() && vb.is_open_now());
+    va.send(Frame {
+        channel: Channel::Media,
+        bytes: StreamDemand {
+            generation: 102,
+            active: true,
+        }
+        .packet(),
+    })
+    .await
+    .unwrap();
+    va.send(Frame {
+        channel: Channel::Media,
+        bytes: StreamDemand {
+            generation: 101,
+            active: false,
+        }
+        .packet(),
+    })
+    .await
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !a.video_requested() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    a.publish(image(&a), 16, 16, layout);
+    let resumed = tokio::time::timeout(Duration::from_secs(3), received_a.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        resumed.jpeg,
+        image(&a),
+        "restoring a tab must preserve image quality"
+    );
+    assert_eq!(
+        va.stable_id(),
+        connection,
+        "no transport reconnect on tab activation"
+    );
+    for reader in readers {
+        reader.abort();
+    }
     a.stop_local();
     assert!(!a.input_valid("phone-a", command["epoch"].as_u64().unwrap(), layout));
     assert!(vb.is_open_now());

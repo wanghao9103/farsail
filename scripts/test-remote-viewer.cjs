@@ -155,7 +155,7 @@ const fs = require("node:fs");
             f.tabSnapshotInFlight--;
           }
         }
-        if (["viewer_select_tab", "viewer_close_tab"].includes(cmd)) {
+        if (["viewer_select_tab", "viewer_close_tab", "viewer_detach_tab"].includes(cmd)) {
           f.tabMutationInFlight++;
           f.tabMutationMaxInFlight = Math.max(
             f.tabMutationMaxInFlight,
@@ -2361,6 +2361,24 @@ const fs = require("node:fs");
     0,
     "switching/closing tabs does not reconnect other phones",
   );
+  // Detaching an existing tab is a local ownership change, with no new
+  // approval/connection request and no stop command for its siblings.
+  await load();
+  await page.evaluate(() => {
+    window.fixture.tabs = [
+      { instance: "detach-a", id: "session-a", name: "拆分手机 A", selected: true },
+      { instance: "detach-b", id: "session-b", name: "拆分手机 B", selected: false },
+    ];
+  });
+  await page.getByRole("tab", { name: "拆分手机 A", exact: true }).waitFor();
+  const beforeDetach = await page.evaluate(() => window.fixture.calls.length);
+  await page.getByRole("button", { name: "当前标签在独立窗口打开", exact: true }).click();
+  await page.waitForFunction(() => window.fixture.tabs.length === 1);
+  await page.getByRole("tab", { name: "拆分手机 B", exact: true }).waitFor();
+  const detachCalls = await page.evaluate((before) => window.fixture.calls.slice(before), beforeDetach);
+  assert.equal(detachCalls.filter((c) => c.cmd === "viewer_detach_tab").length, 1);
+  assert.equal(detachCalls.filter((c) => ["viewer_reconnect", "transport_close", "viewer_close_tab", "transport_connect"].includes(c.cmd)).length, 0);
+  assert.equal(await page.getByRole("button", { name: "当前标签在独立窗口打开", exact: true }).isDisabled(), true);
   // Five sessions remain available by mouse in fullscreen, independently of
   // the remote-command toolbar. Popup navigation must stay on the local side.
   await load();
