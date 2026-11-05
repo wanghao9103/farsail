@@ -316,6 +316,9 @@ struct Live {
     video_max_profile: AtomicU32,
     viewport_supported: AtomicBool,
     viewport_edge: AtomicU32,
+    frame_width: AtomicU32,
+    frame_height: AtomicU32,
+    frame_bytes: AtomicU64,
     displays: Arc<StdMutex<Vec<Display>>>,
     error: Arc<StdMutex<Option<String>>>,
     frame: watch::Receiver<Option<Vec<u8>>>,
@@ -532,6 +535,8 @@ impl RemoteRuntime {
         self.trace.record(json!({"at_ms":now,"event":event,"session":live.session.id(),
             "connection":live.session.stable_id(),"host":live.host,"path":path,"rtt_ms":rtt,"detail":detail,
             "video_requested":live.video_demand.borrow().active,"video_demand_supported":live.demand_supported.load(Ordering::SeqCst),
+            "viewport_supported":live.viewport_supported.load(Ordering::SeqCst),"viewport_edge":live.viewport_edge.load(Ordering::SeqCst),
+            "frame_width":live.frame_width.load(Ordering::Relaxed),"frame_height":live.frame_height.load(Ordering::Relaxed),"frame_bytes":live.frame_bytes.load(Ordering::Relaxed),
             "received_frames":live.received_frames.load(Ordering::Relaxed),"delivered_frames":live.delivered_frames.load(Ordering::Relaxed),
             "received_bytes":live.received_bytes.load(Ordering::Relaxed),"frame_age_ms":if last==0 {None}else{Some(now.saturating_sub(last))},
             "display_count":live.displays.lock().unwrap().len(),"error":live.error.lock().unwrap().as_ref().map(|s|s.chars().take(512).collect::<String>()),"reason":if live.session.is_open_now(){None}else{Some(live.session.end_reason())}}));
@@ -594,6 +599,9 @@ impl RemoteRuntime {
             video_max_profile: AtomicU32::new(1),
             viewport_supported: AtomicBool::new(false),
             viewport_edge: AtomicU32::new(0),
+            frame_width: AtomicU32::new(0),
+            frame_height: AtomicU32::new(0),
+            frame_bytes: AtomicU64::new(0),
             displays: Arc::new(StdMutex::new(Vec::new())),
             error: Arc::new(StdMutex::new(None)),
             frame: rx,
@@ -1397,6 +1405,11 @@ impl RemoteRuntime {
                     self.trace_session(&live, "displays", None);
                 }
             } else if let Ok(image) = JpegFrame::from_wire(&frame.bytes) {
+                live.frame_width.store(image.meta.width, Ordering::Relaxed);
+                live.frame_height
+                    .store(image.meta.height, Ordering::Relaxed);
+                live.frame_bytes
+                    .store(frame.bytes.len() as u64, Ordering::Relaxed);
                 live.received_frames.fetch_add(1, Ordering::Relaxed);
                 live.received_bytes
                     .fetch_add(frame.bytes.len() as u64, Ordering::Relaxed);
