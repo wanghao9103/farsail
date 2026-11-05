@@ -80,6 +80,16 @@ impl MediaWindow {
         self.pending.retain(|pending| *pending != sequence);
     }
 
+    /// Reopen one slot after a bounded wait without acknowledging discarded
+    /// frames. A receiver can drop both JPEG streams on read timeout; waiting
+    /// only for their ACKs would then prevent any fresh frame from reaching it.
+    /// Keep the other outstanding frame so the caller's no-progress deadline
+    /// remains armed. Repeated retries must never reset that deadline.
+    pub fn retry_stalled(&mut self) -> Option<u64> {
+        self.blocked_on()?;
+        self.pending.pop_front()
+    }
+
     pub fn acknowledge(&mut self, sequence: u64) -> Result<bool> {
         if sequence > self.last_sent {
             return Err(Error::Invalid);
@@ -350,6 +360,26 @@ mod tests {
         assert!(window.acknowledge(2).unwrap());
         window.sent(4).unwrap();
         assert_eq!(window.blocked_on(), Some(3));
+    }
+
+    #[test]
+    fn dropped_receive_window_allows_one_fresh_probe_without_faking_progress() {
+        let mut window = MediaWindow::default();
+        window.sent(1).unwrap();
+        window.sent(2).unwrap();
+        assert_eq!(window.retry_stalled(), Some(1));
+        assert!(
+            !window.is_empty(),
+            "the hard ACK deadline must remain armed"
+        );
+        assert!(!window.acknowledge(1).unwrap());
+        assert!(window.sent(2).is_err(), "never reuse discarded sequences");
+        window.sent(30).unwrap();
+        assert!(window.sent(31).is_err(), "only one retry slot is available");
+        assert!(window.acknowledge(31).is_err());
+        assert!(window.acknowledge(30).unwrap());
+        assert!(window.is_empty());
+        assert_eq!(window.retry_stalled(), None);
     }
     #[test]
     fn hd_sampling_retains_colored_text_edges_and_byte_limit_still_applies() {

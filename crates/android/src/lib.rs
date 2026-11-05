@@ -436,6 +436,7 @@ impl Host {
         let mut last = 0;
         let mut layout = 0;
         let mut progress = Instant::now();
+        let mut last_attempt = Instant::now();
         let mut send_failures = 0u8;
         loop {
             if !self.client.hosting_enabled() || !session.is_open_now() {
@@ -473,6 +474,23 @@ impl Host {
                 break;
             }
             let video_active = demand.borrow().active;
+            // Receiver read timeouts discard a JPEG without producing FSA1.
+            // If both slots were dropped, send one fresh frame on this same
+            // authorized connection. Never restart the 15-second ACK deadline.
+            if video_active
+                && last_attempt.elapsed() >= Duration::from_secs(4)
+                && let Some(sequence) = window.retry_stalled()
+            {
+                last_attempt = Instant::now();
+                let mut local = self.local.lock().unwrap();
+                if local
+                    .session
+                    .as_ref()
+                    .is_some_and(|s| s.stable_id() == session.stable_id())
+                {
+                    local.media.pending.retain(|(seq, _)| *seq != sequence);
+                }
+            }
             if video_active && window.blocked_on().is_none() {
                 let next = frames.borrow_and_update().clone();
                 if let Some(wire) = next {
@@ -525,6 +543,7 @@ impl Host {
                             progress = Instant::now();
                         }
                         let sent_at = Instant::now();
+                        last_attempt = sent_at;
                         let sent = session
                             .send(Frame {
                                 channel: Channel::Media,

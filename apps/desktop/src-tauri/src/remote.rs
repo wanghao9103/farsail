@@ -412,6 +412,10 @@ async fn send_media(
                     session.close_with_reason("media_timeout");
                     break;
                 }
+                // A timed-out receive may have discarded both in-flight
+                // frames. Permit one latest-frame probe instead of waiting
+                // forever for ACKs that cannot arrive. Keep the miss counter.
+                let _ = window.retry_stalled();
             }
             continue;
         }
@@ -2339,6 +2343,61 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn lost_two_frame_ack_window_recovers_on_the_same_connection() {
+        let (source, target, _viewer, _host) = media_pair(71).await;
+        let original = target.stable_id();
+        let (frames, rx) = watch::channel(None);
+        let (acks, ack_rx) = watch::channel(0);
+        let alive = Arc::new(AtomicBool::new(true));
+        let sender = tokio::spawn(send_media(
+            target.clone(),
+            alive.clone(),
+            Arc::new(StdMutex::new(VideoProfile::default())),
+            rx,
+            ack_rx,
+            watch::channel(StreamDemand::default()).1,
+        ));
+        for sequence in [1, 2] {
+            frames.send_replace(Some(synthetic_media(sequence)));
+            let frame = tokio::time::timeout(Duration::from_secs(1), source.receive())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                JpegFrame::from_wire(&frame.bytes).unwrap().meta.sequence,
+                sequence
+            );
+            // Deliberately omit both ACKs, as when both receives are discarded.
+        }
+        let producer = tokio::spawn(async move {
+            let mut sequence = 3;
+            loop {
+                frames.send_replace(Some(synthetic_media(sequence)));
+                sequence += 1;
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        });
+        let next = tokio::time::timeout(Duration::from_secs(4), source.receive())
+            .await
+            .unwrap()
+            .unwrap();
+        let fresh = JpegFrame::from_wire(&next.bytes).unwrap();
+        assert!(fresh.meta.sequence > 2);
+        acks.send_replace(fresh.meta.sequence);
+        let next = tokio::time::timeout(Duration::from_secs(1), source.receive())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(JpegFrame::from_wire(&next.bytes).unwrap().meta.sequence > fresh.meta.sequence);
+        assert!(alive.load(Ordering::SeqCst) && target.is_open_now());
+        assert_eq!(target.stable_id(), original);
+        producer.abort();
+        sender.abort();
+        source.close();
+        target.close();
     }
 
     #[tokio::test]
