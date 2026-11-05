@@ -1167,18 +1167,18 @@ const fs = require("node:fs");
       "compact desktop sidebar must retain sharing status",
     );
     for (const name of [
-      "总览",
+      "工作总览",
       "我的设备",
       "远程连接",
       "账号安全",
-      "共享与设置",
+      "应用设置",
     ]) {
       await page
         .getByRole("navigation", { name: "主导航" })
         .getByRole("button", { name, exact: true })
         .click();
       await assertShell();
-      if (["总览", "我的设备", "远程连接"].includes(name)) {
+      if (["工作总览", "我的设备", "远程连接"].includes(name)) {
         assert.equal(
           await page
             .locator(".workspace-content")
@@ -1187,9 +1187,9 @@ const fs = require("node:fs");
           `${name} should scroll only inside its panels`,
         );
       }
-      if (size.width === 1120 && ["总览", "共享与设置"].includes(name)) {
+      if (size.width === 1120 && ["工作总览", "应用设置"].includes(name)) {
         await page.screenshot({
-          path: `.local/ui-verification/${name === "总览" ? "overview" : "settings"}-fit.png`,
+          path: `.local/ui-verification/${name === "工作总览" ? "overview" : "settings"}-fit.png`,
         });
       }
     }
@@ -1307,7 +1307,7 @@ const fs = require("node:fs");
       .waitFor();
   };
   await loginAgain();
-  await page.getByRole("button", { name: "共享与设置", exact: true }).click();
+  await page.getByRole("button", { name: "应用设置", exact: true }).click();
   const beforeSharing = await page.evaluate(() => window.fixture.calls.length);
   await page.getByRole("switch", { name: "允许远程连接", exact: true }).check();
   await page.waitForFunction(
@@ -1706,7 +1706,7 @@ const fs = require("node:fs");
     window.fixture.computerName = "DESKTOP-测试";
   });
   await page.getByRole("button", { name: "刷新", exact: true }).click();
-  await page.getByRole("button", { name: "总览", exact: true }).click();
+  await page.getByRole("button", { name: "工作总览", exact: true }).click();
   assert.equal(
     await page.getByLabel("本机设备名称", { exact: true }).inputValue(),
     "DESKTOP-测试",
@@ -1791,7 +1791,7 @@ const fs = require("node:fs");
     window.fixture.computerName = null;
   });
   await page.getByRole("button", { name: "刷新", exact: true }).click();
-  await page.getByRole("button", { name: "总览", exact: true }).click();
+  await page.getByRole("button", { name: "工作总览", exact: true }).click();
   assert.equal(
     await page.getByLabel("本机设备名称", { exact: true }).inputValue(),
     "",
@@ -1828,7 +1828,7 @@ const fs = require("node:fs");
   });
   await page.getByRole("button", { name: "我的设备", exact: true }).click();
   await page.getByRole("button", { name: "刷新", exact: true }).click();
-  await page.getByRole("button", { name: "共享与设置", exact: true }).click();
+  await page.getByRole("button", { name: "应用设置", exact: true }).click();
   await page
     .getByText("Ubuntu 暂不支持共享本机屏幕或远程值守。", { exact: true })
     .waitFor();
@@ -1854,7 +1854,7 @@ const fs = require("node:fs");
     await page.getByText("Windows 运行权限", { exact: true }).count(),
     0,
   );
-  await page.getByRole("button", { name: "总览", exact: true }).click();
+  await page.getByRole("button", { name: "工作总览", exact: true }).click();
   await page
     .getByRole("status", { name: "远程连接已关闭", exact: true })
     .waitFor();
@@ -1896,7 +1896,7 @@ const fs = require("node:fs");
     window.fixture.bindFailure =
       "HTTP 422: Failed to deserialize: platform: unknown variant `linux`, expected windows/android/ios";
   });
-  await page.getByRole("button", { name: "总览", exact: true }).click();
+  await page.getByRole("button", { name: "工作总览", exact: true }).click();
   await page.getByRole("button", { name: "刷新状态", exact: true }).click();
   await page.getByLabel("本机设备名称", { exact: true }).fill("Ubuntu-测试");
   await page.getByRole("button", { name: "添加", exact: true }).click();
@@ -1908,7 +1908,7 @@ const fs = require("node:fs");
     .getByRole("button", { name: "知道了", exact: true })
     .click();
   // Settings open the update dialog; a rejected download cannot enable installation.
-  await page.getByRole("button", { name: "共享与设置", exact: true }).click();
+  await page.getByRole("button", { name: "应用设置", exact: true }).click();
   const updates = page.locator(".client-updates");
   await updates.getByRole("heading", { name: "软件更新" }).waitFor();
   await updates

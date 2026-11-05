@@ -49,6 +49,16 @@ class RemoteCanvas(context: Context, private val send: (JSONObject?) -> Unit) : 
     }
     fun clear() { fit(); frame = null; invalidate() }
     fun fit() { release(); zoom = 1f; offsetX = 0f; offsetY = 0f; invalidate() }
+    /** Local zoom changes drawing and touch geometry together; it never resizes the source. */
+    fun zoomBy(factor: Float) {
+        release(); zoom = (zoom * factor).coerceIn(1f, 4f); boundPan(); invalidate()
+    }
+    fun fill() {
+        val image = frame ?: return
+        release()
+        zoom = ViewerGeometry.fillZoom(width.toFloat(), height.toFloat(), image.bitmap.width, image.bitmap.height, turns)
+        offsetX = 0f; offsetY = 0f; boundPan(); invalidate()
+    }
     fun rotate() { fit(); turns = (turns + 1) % 4; invalidate() }
     fun scrollMode(): Boolean { release(); scrolling = !scrolling; return scrolling }
     fun release() { if (touching) send(null); touching = false; pointer = -1 }

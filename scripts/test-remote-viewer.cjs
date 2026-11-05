@@ -21,6 +21,10 @@ const fs = require("node:fs");
   page.on("pageerror", (e) => errors.push(e.message));
   const installFixture = () => {
     const f = (window.fixture = {
+      statusDelay: 0,
+      statusInFlight: 0,
+      statusMaxInFlight: 0,
+      tabs: null,
       closed: false,
       path: "direct",
       discovery: "direct",
@@ -116,40 +120,70 @@ const fs = require("node:fs");
           if (f.pasteFilesError) throw f.pasteFilesError;
           return f.pasteFilesResult;
         }
+        if (cmd === "viewer_tabs") return f.tabs ? structuredClone(f.tabs) : {};
+        if (cmd === "viewer_select_tab") {
+          f.tabs?.forEach((tab) => {
+            tab.selected = tab.instance === args.instance;
+          });
+          return {};
+        }
+        if (cmd === "viewer_close_tab") {
+          if (f.tabs) {
+            const selected = f.tabs.find(
+              (t) => t.instance === args.instance,
+            )?.selected;
+            f.tabs = f.tabs.filter((t) => t.instance !== args.instance);
+            if (selected && f.tabs[0]) f.tabs[0].selected = true;
+          }
+          return {};
+        }
         if (cmd === "remote_status") {
-          const reportedInput = f.staleInput ?? {
-            generation: f.inputGeneration,
-            blocked: f.inputBlocked,
-            message: f.inputBlocked
-              ? "Windows 拒绝输入，控制已暂停；画面连接仍保留。"
-              : null,
-          };
-          f.staleInput = null;
-          return {
-            state: f.closed ? "closed" : f.path,
-            discovery: f.discovery,
-            permission: f.permission,
-            platform: f.platform,
-            files: { supported: f.fileSupport, status: { transfers: [] } },
-            video: f.video,
-            input: reportedInput,
-            mouse: f.mouse,
-            rtt_ms: 23,
-            displays: Date.now() < f.hideDisplaysUntil ? [] : [
-              {
-                id: 1,
-                name: "Display",
-                x: 0,
-                y: 0,
-                width: 3840,
-                height: 2160,
-                dpi: 96,
-                rotation: 0,
-              },
-            ],
-            error: f.closed ? "会话已结束，画面与输入已停止" : null,
-            retryable: f.retryable,
-          };
+          f.statusInFlight++;
+          f.statusMaxInFlight = Math.max(f.statusMaxInFlight, f.statusInFlight);
+          try {
+            if (f.statusDelay)
+              await new Promise((resolve) =>
+                setTimeout(resolve, f.statusDelay),
+              );
+            const reportedInput = f.staleInput ?? {
+              generation: f.inputGeneration,
+              blocked: f.inputBlocked,
+              message: f.inputBlocked
+                ? "Windows 拒绝输入，控制已暂停；画面连接仍保留。"
+                : null,
+            };
+            f.staleInput = null;
+            return {
+              state: f.closed ? "closed" : f.path,
+              discovery: f.discovery,
+              permission: f.permission,
+              platform: f.platform,
+              files: { supported: f.fileSupport, status: { transfers: [] } },
+              video: f.video,
+              input: reportedInput,
+              mouse: f.mouse,
+              rtt_ms: 23,
+              displays:
+                Date.now() < f.hideDisplaysUntil
+                  ? []
+                  : [
+                      {
+                        id: 1,
+                        name: "Display",
+                        x: 0,
+                        y: 0,
+                        width: 3840,
+                        height: 2160,
+                        dpi: 96,
+                        rotation: 0,
+                      },
+                    ],
+              error: f.closed ? "会话已结束，画面与输入已停止" : null,
+              retryable: f.retryable,
+            };
+          } finally {
+            f.statusInFlight--;
+          }
         }
         if (cmd === "media_next") {
           await new Promise((r) => setTimeout(r, 150));
@@ -184,7 +218,9 @@ const fs = require("node:fs");
           return {};
         }
         if (cmd === "media_select" && f.holdSelect) {
-          await new Promise((resolve) => { f.releaseSelect = resolve; });
+          await new Promise((resolve) => {
+            f.releaseSelect = resolve;
+          });
           return {};
         }
         if (cmd === "viewer_reconnect") {
@@ -253,20 +289,50 @@ const fs = require("node:fs");
   await load();
   // One slow decoder retains its last image and does not stall another viewer.
   const previousImage = await page.getByAltText("远端桌面").getAttribute("src");
-  await page.evaluate(() => { window.fixture.holdDecode = true; window.fixture.lastFrame = 0; });
+  await page.evaluate(() => {
+    window.fixture.holdDecode = true;
+    window.fixture.lastFrame = 0;
+  });
   await page.waitForFunction(() => !!window.fixture.releaseDecode);
-  const heldCalls = await page.evaluate(() => window.fixture.calls.filter(c => c.cmd === "media_next").length);
+  const heldCalls = await page.evaluate(
+    () => window.fixture.calls.filter((c) => c.cmd === "media_next").length,
+  );
   const other = await browser.newPage();
   await other.addInitScript(installFixture);
   await other.goto(process.env.UI_URL || "http://127.0.0.1:1420/?viewer=other");
   await other.getByAltText("远端桌面").waitFor();
   const otherImage = await other.getByAltText("远端桌面").getAttribute("src");
-  await other.evaluate(() => { window.fixture.lastFrame = 0; });
-  await other.waitForFunction(src => document.querySelector('img[alt="远端桌面"]')?.getAttribute("src") !== src, otherImage);
-  assert.equal(await page.getByAltText("远端桌面").getAttribute("src"), previousImage, "retain the displayed image until its replacement is decoded");
-  assert.equal(await page.evaluate(() => window.fixture.calls.filter(c => c.cmd === "media_next").length), heldCalls, "one window must not build an unbounded decode queue");
-  await page.evaluate(() => { window.fixture.holdDecode = false; window.fixture.releaseDecode(); });
-  await page.waitForFunction(src => document.querySelector('img[alt="远端桌面"]')?.getAttribute("src") !== src, previousImage);
+  await other.evaluate(() => {
+    window.fixture.lastFrame = 0;
+  });
+  await other.waitForFunction(
+    (src) =>
+      document.querySelector('img[alt="远端桌面"]')?.getAttribute("src") !==
+      src,
+    otherImage,
+  );
+  assert.equal(
+    await page.getByAltText("远端桌面").getAttribute("src"),
+    previousImage,
+    "retain the displayed image until its replacement is decoded",
+  );
+  assert.equal(
+    await page.evaluate(
+      () => window.fixture.calls.filter((c) => c.cmd === "media_next").length,
+    ),
+    heldCalls,
+    "one window must not build an unbounded decode queue",
+  );
+  await page.evaluate(() => {
+    window.fixture.holdDecode = false;
+    window.fixture.releaseDecode();
+  });
+  await page.waitForFunction(
+    (src) =>
+      document.querySelector('img[alt="远端桌面"]')?.getAttribute("src") !==
+      src,
+    previousImage,
+  );
   await other.close();
   await load();
   // Keyboard users can reveal the toolbar and keep it open while choosing controls.
@@ -1262,7 +1328,7 @@ const fs = require("node:fs");
   );
   assert(
     (await page.evaluate(() => window.fixture.calls)).some(
-      (c) => c.cmd === "viewer_window_action" && c.args.action === "close",
+      (c) => c.cmd === "viewer_close_tab",
     ),
   );
   await load();
@@ -1324,13 +1390,23 @@ const fs = require("node:fs");
       f.retryable = true;
       f.closed = true;
     }, holdSelect);
-    await page.waitForFunction(() => window.fixture.calls.some(c => c.cmd === "viewer_reconnect"));
-    await page.waitForFunction(() => window.fixture.calls.some(c => c.cmd === "media_select" && c.args.id === "recovered"));
-    if (holdSelect) await page.waitForFunction(() => !!window.fixture.releaseSelect);
+    await page.waitForFunction(() =>
+      window.fixture.calls.some((c) => c.cmd === "viewer_reconnect"),
+    );
+    await page.waitForFunction(() =>
+      window.fixture.calls.some(
+        (c) => c.cmd === "media_select" && c.args.id === "recovered",
+      ),
+    );
+    if (holdSelect)
+      await page.waitForFunction(() => !!window.fixture.releaseSelect);
     await page.getByAltText("远端桌面").waitFor({ timeout: 4000 });
     assert.equal(await page.getByRole("alertdialog").count(), 0);
     if (holdSelect) {
-      await page.evaluate(() => { window.fixture.holdSelect = false; window.fixture.releaseSelect(); });
+      await page.evaluate(() => {
+        window.fixture.holdSelect = false;
+        window.fixture.releaseSelect();
+      });
       await page.waitForTimeout(200);
       assert.equal(await page.getByAltText("远端桌面").count(), 1);
     }
@@ -1865,13 +1941,49 @@ const fs = require("node:fs");
     () => document.querySelector(".remote-screen img")?.naturalWidth === 1280,
   );
   await verifyFillPixels({ width: 1280, height: 582 });
-  await page.waitForFunction(() => window.fixture.calls.filter(c => c.cmd === "viewer_window_action" && c.args.action === "phone_layout").at(-1)?.args.landscape === true);
-  const phoneLayouts = await page.evaluate(() => window.fixture.calls.filter(c => c.cmd === "viewer_window_action" && c.args.action === "phone_layout").map(c => c.args.landscape));
-  assert(phoneLayouts.includes(false) && phoneLayouts.includes(true), "phone and game orientations both configure their native window shape");
-  assert(phoneLayouts.every((orientation,index) => index === 0 || orientation !== phoneLayouts[index-1]), "native window shape changes only when orientation changes");
+  await page.waitForFunction(
+    () =>
+      window.fixture.calls
+        .filter(
+          (c) =>
+            c.cmd === "viewer_window_action" &&
+            c.args.action === "phone_layout",
+        )
+        .at(-1)?.args.landscape === true,
+  );
+  const phoneLayouts = await page.evaluate(() =>
+    window.fixture.calls
+      .filter(
+        (c) =>
+          c.cmd === "viewer_window_action" && c.args.action === "phone_layout",
+      )
+      .map((c) => c.args.landscape),
+  );
+  assert(
+    phoneLayouts.includes(false) && phoneLayouts.includes(true),
+    "phone and game orientations request automatic layout",
+  );
+  assert(
+    phoneLayouts.every(
+      (orientation, index) =>
+        index === 0 || orientation !== phoneLayouts[index - 1],
+    ),
+    "native window shape changes only when orientation changes",
+  );
   await page.setViewportSize({ width: 720, height: 820 });
   await page.waitForTimeout(1700);
-  assert.equal(await page.evaluate(() => window.fixture.calls.filter(c => c.cmd === "viewer_window_action" && c.args.action === "phone_layout").length), phoneLayouts.length, "ordinary polling must preserve the user's manual window size");
+  assert.equal(
+    await page.evaluate(
+      () =>
+        window.fixture.calls.filter(
+          (c) =>
+            c.cmd === "viewer_window_action" &&
+            c.args.action === "phone_layout",
+        ).length,
+    ),
+    phoneLayouts.length,
+    "ordinary polling must preserve the user's manual window size",
+  );
   await page.setViewportSize({ width: 640, height: 900 });
   await page.evaluate(() => {
     window.fixture.closed = true;
@@ -1899,6 +2011,127 @@ const fs = require("node:fs");
     ),
     0,
     "ended sessions cannot use phone navigation",
+  );
+  // Three simultaneously connected tabs keep state and input scoped. Hidden
+  // tabs stop JPEG decode work, but are not disconnected/recreated on selection.
+  await load();
+  await page.evaluate(() => {
+    window.fixture.tabs = [
+      {
+        instance: "phone-a",
+        id: "session-a",
+        name: "测试手机 A",
+        selected: true,
+      },
+      {
+        instance: "phone-b",
+        id: "session-b",
+        name: "测试手机 B",
+        selected: false,
+      },
+      {
+        instance: "phone-c",
+        id: "session-c",
+        name: "测试手机 C",
+        selected: false,
+      },
+    ];
+  });
+  await page.getByRole("tab", { name: "测试手机 A", exact: true }).waitFor();
+  await page.getByRole("tabpanel").getByAltText("远端桌面").waitFor();
+  assert.equal(await page.locator(".viewer-tab-panel").count(), 3);
+  assert.equal(await page.getByRole("tabpanel").count(), 1);
+  await page.getByRole("tab", { name: "测试手机 B", exact: true }).click();
+  await page.getByRole("tabpanel").getByAltText("远端桌面").waitFor();
+  await page.getByRole("tabpanel").getByAltText("远端桌面").click();
+  const beforeKey = await page.evaluate(() => window.fixture.calls.length);
+  await page.keyboard.press("J");
+  await page.waitForFunction(
+    (before) =>
+      window.fixture.calls
+        .slice(before)
+        .some(
+          (c) =>
+            c.cmd === "remote_input" &&
+            c.args.id === "session-b" &&
+            c.args.input?.vk === 74,
+        ),
+    beforeKey,
+  );
+  assert.equal(
+    await page.evaluate(
+      (before) =>
+        window.fixture.calls
+          .slice(before)
+          .filter(
+            (c) =>
+              c.cmd === "remote_input" &&
+              c.args.input?.kind === "key" &&
+              c.args.id !== "session-b",
+          ).length,
+      beforeKey,
+    ),
+    0,
+  );
+  await page.keyboard.press("Control+Tab");
+  await page.waitForFunction(
+    () =>
+      document.querySelector('[role="tab"][aria-selected="true"]')
+        ?.textContent === "测试手机 C",
+  );
+  await page.getByRole("tabpanel").getByAltText("远端桌面").waitFor();
+  await page.screenshot({
+    path: ".local/ui-verification/viewer-three-tabs.png",
+  });
+  await page
+    .getByRole("button", { name: "关闭标签 测试手机 B", exact: true })
+    .click();
+  await page.waitForFunction(
+    () => document.querySelectorAll(".viewer-tab-panel").length === 2,
+  );
+  assert.equal(
+    await page
+      .getByRole("tab", { name: "测试手机 C", exact: true })
+      .getAttribute("aria-selected"),
+    "true",
+  );
+  await page.keyboard.press("Control+w");
+  await page.waitForFunction(
+    () => document.querySelectorAll(".viewer-tab-panel").length === 1,
+  );
+  assert.equal(
+    await page
+      .getByRole("tab", { name: "测试手机 A", exact: true })
+      .getAttribute("aria-selected"),
+    "true",
+  );
+  assert.equal(
+    await page.evaluate(
+      () =>
+        window.fixture.calls.filter((c) => c.cmd === "viewer_reconnect").length,
+    ),
+    0,
+    "switching/closing tabs does not reconnect other phones",
+  );
+  // Frame failure and timer polling must share a single status request, even
+  // when StrictMode replays effects or a slow native status call is in flight.
+  await load();
+  await page.evaluate(() => {
+    window.fixture.statusDelay = 1800;
+    window.fixture.statusMaxInFlight = window.fixture.statusInFlight;
+  });
+  await page.waitForFunction(() => window.fixture.statusInFlight === 1);
+  await page.evaluate(() => {
+    window.fixture.retryable = true;
+    window.fixture.closed = true;
+  });
+  await page.waitForFunction(() =>
+    window.fixture.calls.some((c) => c.cmd === "viewer_reconnect"),
+  );
+  assert.equal(
+    await page.evaluate(() => window.fixture.statusMaxInFlight),
+    1,
+    "periodic and frame-error status checks must share a request",
   );
   assert.deepEqual(errors, []);
   await browser.close();

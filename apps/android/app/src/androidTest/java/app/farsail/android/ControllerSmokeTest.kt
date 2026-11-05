@@ -35,19 +35,35 @@ class ControllerSmokeTest {
         if (device.hasObject(By.desc("远程画面"))) device.findObject(By.desc("显示远程工具"))?.click()
         var node = device.findObject(By.text(label))
         if (node == null || node.visibleBounds.isEmpty) {
-            val scroller = UiScrollable(UiSelector().scrollable(true))
+            val scroller = UiScrollable(if (device.hasObject(By.desc("远程画面"))) UiSelector().className(android.widget.HorizontalScrollView::class.java.name).scrollable(true) else UiSelector().scrollable(true))
             if (device.hasObject(By.desc("远程画面"))) scroller.setAsHorizontalList()
             if (scroller.exists()) scroller.scrollIntoView(UiSelector().text(label))
             node = device.wait(Until.findObject(By.text(label)), 5000)
         }
         return node ?: error("Missing controller UI: $label")
     }
-    private fun choose(name: String, permission: String = "control") {
+    private fun chooseAction(name: String, permission: String = "control") {
         assertNotNull("Device list has finished refreshing", device.wait(Until.findObject(By.text("刷新设备").enabled(true)), 10000))
         device.waitForIdle()
-        val title = text(name)
-        title.parent.findObject(By.text(if (permission == "control") "控制设备" else "仅查看")).click()
-        await { device.hasObject(By.textStartsWith("已连接")) && (device.findObject(By.textStartsWith("已连接"))?.text?.contains(if (permission == "control") "可控制" else "仅查看") == true) }
+        val label = if (permission == "control") "控制设备" else "仅查看"
+        var action: UiObject2? = null
+        for (attempt in 0..4) {
+            val title = text(name)
+            action = title.parent.findObject(By.text(label))
+            if (action != null && !action.visibleBounds.isEmpty) break
+            UiScrollable(UiSelector().scrollable(true)).scrollForward()
+            device.waitForIdle()
+        }
+        assertNotNull("Device action is visible for $name", action)
+        action!!.click()
+    }
+    private fun choose(name: String, permission: String = "control") {
+        chooseAction(name, permission)
+        await {
+            device.findObject(By.desc("显示远程工具"))?.click()
+            device.hasObject(By.textStartsWith("已连接")) && (device.findObject(By.textStartsWith("已连接"))?.text?.contains(if (permission == "control") "可控制" else "仅查看") == true)
+        }
+        device.findObject(By.desc("收起远程工具"))?.click()
     }
     private fun point(sourceW: Int, sourceH: Int, turns: Int, x: Float, y: Float): Pair<Int,Int> {
         val bounds = device.findObject(By.desc("远程画面")).visibleBounds
@@ -106,7 +122,7 @@ class ControllerSmokeTest {
             assertTrue("View grant never sends device input",inputs(true,"view").isEmpty())
             device.pressHome(); await { report().none { it.optBoolean("open") } }
             context.startActivity(Intent(context,DeviceListActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-            val pending = text("Pending phone"); pending.parent.findObject(By.text("控制设备")).click()
+            chooseAction("Pending phone")
             await { device.hasObject(By.textStartsWith("等待对方批准")) }
             text("取消连接").click(); await { report().any { !it.optBoolean("approved") && it.optBoolean("revoked") } }
             java.io.File(context.filesDir,"controller-result.json").writeText(JSONObject().put("desktopControl",true).put("phoneControl",true).put("staticFrameControl",true).put("viewDeniedInput",true).put("rotatedTouch",true).put("backgroundClosed",true).put("pendingCancelled",true).put("localSharingStarted",false).toString())

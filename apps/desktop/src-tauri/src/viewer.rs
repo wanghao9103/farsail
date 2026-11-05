@@ -4,7 +4,7 @@ use farsail_core::RemotePermission;
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
@@ -48,6 +48,9 @@ struct RecoveryProgress {
 }
 
 pub struct Binding {
+    host: String,
+    name: String,
+    selected: AtomicBool,
     pub id: Mutex<String>,
     instance: String,
     opened: AtomicBool,
@@ -163,7 +166,10 @@ impl Binding {
     }
 }
 #[derive(Default)]
-pub struct Windows(pub Mutex<HashMap<String, Arc<Binding>>>);
+pub struct Windows(
+    pub Mutex<HashMap<String, Arc<Binding>>>,
+    Mutex<HashSet<String>>,
+);
 
 // Work-area coordinates are logical, including negative origins on other monitors.
 fn cascade_position(
@@ -211,11 +217,20 @@ fn cascade_viewers(app: &tauri::AppHandle) -> Result<(), String> {
         .unwrap()
         .iter()
         .filter(|(_, binding)| binding.window_active(true))
-        .map(|(label, binding)| (binding.instance.parse::<u64>().unwrap_or(0), label.clone()))
+        .map(|(_, binding)| {
+            (
+                binding.instance.parse::<u64>().unwrap_or(0),
+                binding.host.clone(),
+            )
+        })
         .collect();
     viewers.sort_by_key(|(instance, _)| *instance);
     let mut monitors = HashMap::new();
+    let mut seen = HashSet::new();
     for (_, label) in viewers {
+        if !seen.insert(label.clone()) {
+            continue;
+        }
         let Some(window) = app.get_webview_window(&label) else {
             continue;
         };
@@ -239,6 +254,7 @@ pub async fn viewer_window_action(
     window: tauri::WebviewWindow,
     action: String,
     landscape: Option<bool>,
+    automatic: Option<bool>,
 ) -> Result<Value, String> {
     if action == "cascade" && (window.label() == "main" || window.label().starts_with("viewer-")) {
         cascade_viewers(window.app_handle())?;
@@ -249,6 +265,18 @@ pub async fn viewer_window_action(
     }
     let result = match action.as_str() {
         "phone_layout" => {
+            // Window lifetime, rather than session lifetime: recovery, tab switches
+            // and remote rotation must never override the user's chosen geometry.
+            if automatic.unwrap_or(false)
+                && !window
+                    .state::<Windows>()
+                    .1
+                    .lock()
+                    .unwrap()
+                    .insert(window.label().to_owned())
+            {
+                return Ok(json!({"fullscreen":window.is_fullscreen().map_err(|e|e.to_string())?}));
+            }
             let preferred = if landscape.unwrap_or(false) {
                 (960.0_f64, 600.0_f64)
             } else {
@@ -333,26 +361,114 @@ fn scoped_binding(
     label: &str,
     id: &str,
 ) -> Result<(), String> {
-    let binding = map.get(label).ok_or("查看窗口已关闭")?;
-    if binding.cancelled.load(Ordering::SeqCst) || *binding.id.lock().unwrap() != id {
+    let binding = map
+        .values()
+        .find(|binding| binding.host == label && *binding.id.lock().unwrap() == id)
+        .ok_or("此窗口无权操作该会话")?;
+    if binding.cancelled.load(Ordering::SeqCst) {
         return Err("此窗口无权操作该会话".into());
     }
     Ok(())
 }
+fn window_binding(
+    window: &tauri::WebviewWindow,
+    instance: Option<&str>,
+) -> Result<Arc<Binding>, String> {
+    let windows = window.state::<Windows>();
+    let map = windows.0.lock().unwrap();
+    let binding = if let Some(instance) = instance {
+        map.values()
+            .find(|binding| binding.host == window.label() && binding.instance == instance)
+    } else {
+        map.get(window.label())
+            .filter(|binding| binding.host == window.label())
+    };
+    binding.cloned().ok_or("查看标签已关闭".into())
+}
+
+#[tauri::command]
+pub fn viewer_tabs(window: tauri::WebviewWindow) -> Result<Value, String> {
+    if !window.label().starts_with("viewer-") {
+        return Err("不是查看窗口".into());
+    }
+    let windows = window.state::<Windows>();
+    let map = windows.0.lock().unwrap();
+    let mut bindings: Vec<_> = map.values().filter(|b| b.host == window.label()).collect();
+    bindings.sort_by_key(|b| b.instance.parse::<u64>().unwrap_or(0));
+    Ok(json!(bindings.iter().map(|b| json!({"instance":b.instance,"id":*b.id.lock().unwrap(),"name":b.name,"selected":b.selected.load(Ordering::SeqCst)})).collect::<Vec<_>>()))
+}
+#[tauri::command]
+pub fn viewer_select_tab(window: tauri::WebviewWindow, instance: String) -> Result<(), String> {
+    let binding = window_binding(&window, Some(&instance))?;
+    let windows = window.state::<Windows>();
+    let map = windows.0.lock().unwrap();
+    for b in map.values().filter(|b| b.host == binding.host) {
+        b.selected.store(b.instance == instance, Ordering::SeqCst);
+    }
+    Ok(())
+}
+#[tauri::command]
+pub async fn viewer_close_tab(
+    window: tauri::WebviewWindow,
+    instance: String,
+) -> Result<(), String> {
+    let binding = window_binding(&window, Some(&instance))?;
+    // Cancel synchronously before any await; late approval cannot revive a tab.
+    binding.cancel_recovery();
+    let empty = {
+        let windows = window.state::<Windows>();
+        let mut map = windows.0.lock().unwrap();
+        map.retain(|_, b| !Arc::ptr_eq(b, &binding));
+        let mut remaining: Vec<_> = map.values().filter(|b| b.host == window.label()).collect();
+        remaining.sort_by_key(|b| b.instance.parse::<u64>().unwrap_or(0));
+        if binding.selected.load(Ordering::SeqCst)
+            && let Some(next) = remaining.first()
+        {
+            next.selected.store(true, Ordering::SeqCst);
+        }
+        remaining.is_empty()
+    };
+    let id = binding.id.lock().unwrap().clone();
+    let remote = window.state::<Arc<RemoteRuntime>>().inner().clone();
+    let client = window.state::<Arc<NativeClient>>().inner().clone();
+    if empty {
+        window.close().map_err(|e| e.to_string())?;
+    }
+    remote.stop(&id).await;
+    let _ = client.call("revoke_remote", json!({"id":id})).await;
+    Ok(())
+}
+
 fn focus_existing(
     app: &tauri::AppHandle,
-    label: &str,
+    _label: &str,
     binding: &Binding,
 ) -> Result<String, String> {
     if !binding.opened.load(Ordering::SeqCst) {
         return Err("查看窗口正在打开，请稍后再试".into());
     }
-    let viewer = app.get_webview_window(label).ok_or("查看窗口已关闭")?;
+    let viewer = app
+        .get_webview_window(&binding.host)
+        .ok_or("查看窗口已关闭")?;
+    {
+        let windows = app.state::<Windows>();
+        for b in windows
+            .0
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|b| b.host == binding.host)
+        {
+            b.selected
+                .store(b.instance == binding.instance, Ordering::SeqCst);
+        }
+    }
+    viewer.unminimize().map_err(|e| e.to_string())?;
     if !binding.window_active(true) {
         return Err("查看窗口正在关闭，请重新连接".into());
     }
     viewer.set_focus().map_err(|e| e.to_string())?;
-    if !binding.window_active(app.get_webview_window(label).is_some()) {
+    if !binding.window_active(app.get_webview_window(&binding.host).is_some()) {
         return Err("查看窗口已关闭".into());
     }
     Ok(binding.instance.clone())
@@ -372,13 +488,17 @@ pub fn viewer_window_active(
             .find(|(_, binding)| binding.instance == instance)
             .map(|(label, binding)| (label.clone(), binding.clone()))
     };
-    Ok(tracked.is_some_and(|(label, binding)| {
-        binding.window_active(app.get_webview_window(&label).is_some())
+    Ok(tracked.is_some_and(|(_label, binding)| {
+        binding.window_active(app.get_webview_window(&binding.host).is_some())
     }))
 }
 
 #[tauri::command]
-pub async fn viewer_open(window: tauri::WebviewWindow, id: String) -> Result<String, String> {
+pub async fn viewer_open(
+    window: tauri::WebviewWindow,
+    id: String,
+    separate: Option<bool>,
+) -> Result<String, String> {
     main_only(&window)?;
     if id.len() != 36 || !id.bytes().all(|c| c.is_ascii_hexdigit() || c == b'-') {
         return Err("invalid session".into());
@@ -388,15 +508,14 @@ pub async fn viewer_open(window: tauri::WebviewWindow, id: String) -> Result<Str
         return Err("正在安装更新，请稍后重新连接。".into());
     }
     let label = format!("viewer-{id}");
-    if app.get_webview_window(&label).is_some() {
-        let binding = app
-            .state::<Windows>()
-            .0
-            .lock()
-            .unwrap()
-            .get(&label)
-            .cloned()
-            .ok_or("查看窗口正在关闭，请重新连接")?;
+    let existing = app
+        .state::<Windows>()
+        .0
+        .lock()
+        .unwrap()
+        .get(&label)
+        .cloned();
+    if let Some(binding) = existing {
         return focus_existing(app, &label, &binding);
     }
     let client = app.state::<Arc<NativeClient>>();
@@ -413,7 +532,39 @@ pub async fn viewer_open(window: tauri::WebviewWindow, id: String) -> Result<Str
         Some("view") => RemotePermission::View,
         _ => return Err("不是屏幕会话".into()),
     };
+    let host = if separate.unwrap_or(false) {
+        None
+    } else {
+        let windows = app.state::<Windows>();
+        let map = windows.0.lock().unwrap();
+        map.values()
+            .filter(|b| b.window_active(app.get_webview_window(&b.host).is_some()))
+            .min_by_key(|b| b.instance.parse::<u64>().unwrap_or(0))
+            .map(|b| b.host.clone())
+    }
+    .unwrap_or_else(|| label.clone());
+    let devices = client.call("devices", json!({})).await.ok();
+    let name = devices
+        .as_ref()
+        .and_then(Value::as_array)
+        .and_then(|rows| rows.iter().find(|d| d["id"] == row["target_device_id"]))
+        .and_then(|d| d["name"].as_str())
+        .map(str::to_owned)
+        .unwrap_or_else(|| {
+            format!(
+                "设备 {}",
+                row["target_device_id"]
+                    .as_str()
+                    .unwrap_or("未知")
+                    .chars()
+                    .take(8)
+                    .collect::<String>()
+            )
+        });
     let binding = Arc::new(Binding {
+        host: host.clone(),
+        name,
+        selected: AtomicBool::new(true),
         id: Mutex::new(id.clone()),
         instance: next_window_instance(),
         opened: AtomicBool::new(false),
@@ -439,7 +590,28 @@ pub async fn viewer_open(window: tauri::WebviewWindow, id: String) -> Result<Str
             drop(map);
             return focus_existing(app, &label, &existing);
         }
+        for b in map.values().filter(|b| b.host == host) {
+            b.selected.store(false, Ordering::SeqCst);
+        }
         map.insert(label.clone(), binding.clone());
+    }
+    if host != label {
+        binding.opened.store(true, Ordering::SeqCst);
+        match focus_existing(app, &label, &binding) {
+            Ok(instance) => return Ok(instance),
+            Err(error) => {
+                // The group can close while the target name is being loaded.
+                // Never leave an invisible, unowned transport behind.
+                binding.cancel_recovery();
+                app.state::<Windows>()
+                    .0
+                    .lock()
+                    .unwrap()
+                    .retain(|_, b| !Arc::ptr_eq(b, &binding));
+                app.state::<Arc<RemoteRuntime>>().stop(&id).await;
+                return Err(error);
+            }
+        }
     }
     let monitor = window.current_monitor().map_err(|e| e.to_string())?;
     let (width, height) = monitor
@@ -524,6 +696,9 @@ pub fn smoke_setup(app: &tauri::AppHandle) -> tauri::Result<()> {
     }
     let id = "00000000-0000-0000-0000-000000000001";
     let binding = Arc::new(Binding {
+        host: "viewer-smoke".into(),
+        name: "合成手机".into(),
+        selected: AtomicBool::new(true),
         id: Mutex::new(id.into()),
         instance: next_window_instance(),
         opened: AtomicBool::new(false),
@@ -556,6 +731,9 @@ pub fn smoke_setup(app: &tauri::AppHandle) -> tauri::Result<()> {
         let id = format!("00000000-0000-0000-0000-{number:012}");
         let label = format!("viewer-cascade-{number}");
         let binding = Arc::new(Binding {
+            host: label.clone(),
+            name: "合成手机".into(),
+            selected: AtomicBool::new(true),
             id: Mutex::new(id.clone()),
             instance: next_window_instance(),
             opened: AtomicBool::new(true),
@@ -596,6 +774,7 @@ pub fn smoke_probe(webview: &tauri::Webview) {
       const invoke=window.__TAURI_INTERNALS__.invoke;
       const denied=[];
       try {
+        for(let n=0;n<100 && !document.querySelector('.viewer-titlebar');n++) await new Promise(r=>setTimeout(r,100));
         const initial=await invoke('ipc_viewer_state');
         if(!initial.maximized) throw Error('viewer did not open maximized');
         if(initial.decorations || !document.querySelector('.viewer-titlebar')) throw Error('custom titlebar missing');
@@ -624,9 +803,13 @@ pub fn smoke_probe(webview: &tauri::Webview) {
         await new Promise(r=>setTimeout(r,300));
         const phone=await invoke('ipc_viewer_state');
         if(phone.maximized || phone.width>641 || phone.height>901 || phone.height<=phone.width) throw Error('phone window sizing failed');
+        await invoke('viewer_window_action',{action:'phone_layout',automatic:true});
         await invoke('viewer_window_action',{action:'phone_layout',landscape:true});
         await new Promise(r=>setTimeout(r,300));
         const game=await invoke('ipc_viewer_state');
+        await invoke('viewer_window_action',{action:'phone_layout',landscape:false,automatic:true});
+        const preserved=await invoke('ipc_viewer_state');
+        if(Math.abs(preserved.width-game.width)>2 || Math.abs(preserved.height-game.height)>2) throw Error('automatic recovery layout overwrote manual window size');
         if(game.maximized || game.width<=game.height) throw Error('landscape game window sizing failed');
         await invoke('viewer_window_action',{action:'cascade'});
         await new Promise(r=>setTimeout(r,300));
@@ -637,7 +820,7 @@ pub fn smoke_probe(webview: &tauri::Webview) {
         await new Promise(r=>setTimeout(r,300));
         const minimized=await invoke('ipc_viewer_state');
         if(!minimized.minimized || !minimized.mainExists) throw Error('minimize/main isolation failed');
-        await invoke('ipc_smoke_report',{result:JSON.stringify({ok:true,denied,initial,restored,maximized,fullscreen,phone,game,cascade,minimized})});
+        await invoke('ipc_smoke_report',{result:JSON.stringify({ok:true,denied,initial,restored,maximized,fullscreen,phone,game,preserved,cascade,minimized})});
         await invoke('viewer_window_action',{action:'close'});
       } catch(e) { await invoke('ipc_smoke_report',{result:JSON.stringify({ok:false,error:String(e),denied})}); }
     },800)"#);
@@ -660,10 +843,20 @@ pub fn ipc_viewer_state(window: tauri::WebviewWindow) -> Result<Value, String> {
         json!({"width":size.width,"height":size.height,"decorations":window.is_decorated().map_err(|e|e.to_string())?,"maximized":window.is_maximized().map_err(|e|e.to_string())?,"fullscreen":window.is_fullscreen().map_err(|e|e.to_string())?,"minimized":window.is_minimized().map_err(|e|e.to_string())?,"mainExists":window.app_handle().get_webview_window("main").is_some(),"viewers":viewers}),
     )
 }
-pub fn cancel(app: &tauri::AppHandle, label: &str) -> Option<String> {
-    let binding = app.state::<Windows>().0.lock().unwrap().remove(label)?;
-    binding.cancel_recovery();
-    Some(binding.id.lock().unwrap().clone())
+pub fn cancel(app: &tauri::AppHandle, label: &str) -> Vec<String> {
+    let windows = app.state::<Windows>();
+    let mut map = windows.0.lock().unwrap();
+    let mut ids = Vec::new();
+    map.retain(|_, b| {
+        if b.host != label {
+            return true;
+        }
+        b.cancel_recovery();
+        ids.push(b.id.lock().unwrap().clone());
+        false
+    });
+    windows.1.lock().unwrap().remove(label);
+    ids
 }
 pub fn cancel_all(app: &tauri::AppHandle) {
     let bindings = app.state::<Windows>();
@@ -680,34 +873,21 @@ pub fn cancel_session(app: &tauri::AppHandle, id: &str) {
     }
 }
 #[tauri::command]
-pub fn viewer_recovery_status(window: tauri::WebviewWindow) -> Result<Value, String> {
-    if !window.label().starts_with("viewer-") {
-        return Err("不是查看窗口".into());
-    }
-    let binding = window
-        .state::<Windows>()
-        .0
-        .lock()
-        .unwrap()
-        .get(window.label())
-        .cloned()
-        .ok_or("查看窗口已关闭")?;
+pub fn viewer_recovery_status(
+    window: tauri::WebviewWindow,
+    instance: Option<String>,
+) -> Result<Value, String> {
+    let binding = window_binding(&window, instance.as_deref())?;
     Ok(binding.recovery_status(Instant::now()))
 }
 #[tauri::command]
 pub async fn viewer_reconnect(
     window: tauri::WebviewWindow,
     manual: Option<bool>,
+    instance: Option<String>,
 ) -> Result<Value, String> {
     let app = window.app_handle();
-    let binding = app
-        .state::<Windows>()
-        .0
-        .lock()
-        .unwrap()
-        .get(window.label())
-        .cloned()
-        .ok_or("不是查看窗口")?;
+    let binding = window_binding(&window, instance.as_deref())?;
     if binding.cancelled.load(Ordering::SeqCst) || binding.retrying.swap(true, Ordering::SeqCst) {
         return Err("重连已取消或正在进行".into());
     }
@@ -797,6 +977,9 @@ mod tests {
     }
     fn binding() -> Binding {
         Binding {
+            host: "viewer-a".into(),
+            name: "测试设备".into(),
+            selected: AtomicBool::new(true),
             id: Mutex::new("synthetic".into()),
             instance: next_window_instance(),
             opened: AtomicBool::new(true),
@@ -813,7 +996,9 @@ mod tests {
     #[test]
     fn concurrent_windows_keep_session_scope_and_recovery_independent() {
         let a = Arc::new(binding());
-        let b = Arc::new(binding());
+        let mut other = binding();
+        other.host = "viewer-b".into();
+        let b = Arc::new(other);
         *a.id.lock().unwrap() = "phone-a".into();
         *b.id.lock().unwrap() = "phone-b".into();
         let map = HashMap::from([
@@ -834,6 +1019,26 @@ mod tests {
         assert!(scoped_binding(&map, "viewer-b", "phone-b").is_ok());
         assert!(b.window_active(true));
         assert_eq!(b.recovery_status(Instant::now())["phase"], "idle");
+    }
+    #[test]
+    fn tabs_share_only_their_own_window_and_close_independently() {
+        let a = Arc::new(binding());
+        let b = Arc::new(binding());
+        *a.id.lock().unwrap() = "phone-a".into();
+        *b.id.lock().unwrap() = "phone-b".into();
+        let map = HashMap::from([
+            ("viewer-a".into(), a.clone()),
+            ("viewer-b".into(), b.clone()),
+        ]);
+        assert!(scoped_binding(&map, "viewer-a", "phone-b").is_ok());
+        assert!(scoped_binding(&map, "viewer-other", "phone-b").is_err());
+        a.cancel_recovery();
+        assert!(scoped_binding(&map, "viewer-a", "phone-a").is_err());
+        assert!(scoped_binding(&map, "viewer-a", "phone-b").is_ok());
+        b.begin_recovery(false, true).unwrap();
+        *b.id.lock().unwrap() = "phone-b-new".into();
+        assert!(scoped_binding(&map, "viewer-a", "phone-b").is_err());
+        assert!(scoped_binding(&map, "viewer-a", "phone-b-new").is_ok());
     }
     #[test]
     fn window_instance_survives_fresh_session_recovery() {

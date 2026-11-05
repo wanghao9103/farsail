@@ -111,6 +111,9 @@ async fn answer(State(f): State<Arc<Fixture>>, request: Request) -> Json<Value> 
         _ => {
             let id = path.split('/').nth(3).unwrap_or("");
             if path.ends_with("/peer-address") {
+                // Keep the real viewer in Connecting across several UI polls.
+                // Pending connections have no media consumer yet.
+                tokio::time::sleep(Duration::from_millis(450)).await;
                 json!({"endpoint_addr":f.address})
             } else if path.ends_with("/transport-grant") {
                 json!(f.inspect(id, "synthetic-grant").await.unwrap())

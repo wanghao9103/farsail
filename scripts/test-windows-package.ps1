@@ -91,7 +91,7 @@ function Start-App([bool]$SignedOut = $true, [Diagnostics.Process]$ExistingProce
     Assert-ProcessElevated $script:appProcess
     $script:root = [Windows.Automation.AutomationElement]::FromHandle($script:mainWindowHandle)
     if ($SignedOut) { $null = Find-UI '登录 FarSail'; $null = Find-UI '连接设置' }
-    else { $null = Find-UI '总览'; Click-UI '*我的设备' }
+    else { $null = Find-UI '工作总览'; Click-UI '*我的设备' }
 }
 function Set-UIValue([string]$Name, [string]$Value) {
     (Find-UI $Name 'Edit').GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern).SetValue($Value)
@@ -201,7 +201,7 @@ try {
     Set-UIValue '邮箱地址' 'fixture@example.invalid'; Set-UIValue '密码' 'synthetic-password'
     Click-UI '登录'
     $null=Find-UI '暂无设备'
-    Click-UI '*总览'
+    Click-UI '*工作总览'
     # Wait for the actual form after navigating to the overview.
     Set-UIValue '本机设备名称' 'Synthetic sharing fixture'
     Click-UI '添加'

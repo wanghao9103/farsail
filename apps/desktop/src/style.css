@@ -2052,3 +2052,17 @@ main > .alert {
     padding: 5px 7px;
   }
 }
+
+/* Sessions stay mounted while their tab is hidden; input ownership follows selection. */
+.viewer-tab-panel { height: 100dvh; }
+.viewer-tab-panel[hidden] { display: none !important; }
+.viewer-tabs { display: flex; align-items: stretch; align-self: stretch; overflow-x: auto; min-width: 0; flex: 1; gap: 4px; padding-left: 8px; scrollbar-width: thin; }
+.viewer-tab { display: flex; flex: 0 1 190px; min-width: 100px; max-width: 220px; align-items: center; border-radius: 9px 9px 0 0; margin-top: 4px; background: rgba(255,255,255,.04); }
+.viewer-tab.selected { background: rgba(255,255,255,.16); }
+.viewer-tab button { border: 0; background: transparent; color: inherit; padding: 4px 10px; height: 28px; min-height: 0; }
+.viewer-tab [role="tab"] { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; }
+.viewer-tab .viewer-tab-close { flex: 0 0 28px; width: 28px; padding: 4px; border-radius: 50%; }
+.viewer-tab-close:hover { background: rgba(255,255,255,.18); }
+.viewer-titlebar .window-drag { flex: 0 0 28px; padding: 0; }
+.viewer-titlebar .window-drag > span { display: none; }
+.viewer-window-mode { display: flex; align-items: center; gap: 6px; font-size: 12px; white-space: nowrap; }

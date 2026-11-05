@@ -22,10 +22,15 @@ class ImmersiveViewerTest {
         val inst = InstrumentationRegistry.getInstrumentation()
         val context = inst.targetContext
         val device = UiDevice.getInstance(inst)
+        device.wakeUp(); device.pressMenu()
         val activity = inst.startActivitySync(Intent(context, ViewerActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) as ViewerActivity
         fun canvas(view: View): RemoteCanvas? = if (view is RemoteCanvas) view else if (view is ViewGroup) (0 until view.childCount).firstNotNullOfOrNull { canvas(view.getChildAt(it)) } else null
         try {
             inst.waitForIdleSync()
+            if (device.wait(Until.hasObject(By.res("android:id/immersive_cling_title")), 1500)) {
+                device.findObject(By.res("android:id/ok"))?.click()
+            }
+            device.waitForIdle()
             Thread.sleep(500)
             lateinit var remote: RemoteCanvas
             var initialWidth = 0; var initialHeight = 0
@@ -37,7 +42,10 @@ class ImmersiveViewerTest {
                 val root = remote.parent as View
                 assertEquals(root.width, initialWidth); assertEquals(root.height, initialHeight)
             }
-            device.wait(Until.findObject(By.desc("收起远程工具")), 5000)!!.click()
+            device.takeScreenshot(java.io.File(context.filesDir, "viewer-before-tools.png"))
+            val collapse = device.wait(Until.findObject(By.desc("收起远程工具")), 10000)
+            assertNotNull("Floating tools must be in the resumed viewer", collapse)
+            collapse!!.click()
             assertNotNull(device.wait(Until.findObject(By.desc("显示远程工具")), 3000))
             inst.runOnMainSync { assertEquals(initialWidth, remote.width); assertEquals(initialHeight, remote.height) }
             device.takeScreenshot(java.io.File(context.filesDir, "viewer-immersive-collapsed.png"))
@@ -45,6 +53,7 @@ class ImmersiveViewerTest {
             assertNotNull(device.wait(Until.findObject(By.desc("收起远程工具")), 3000))
             inst.runOnMainSync { assertEquals(initialWidth, remote.width); assertEquals(initialHeight, remote.height) }
             device.takeScreenshot(java.io.File(context.filesDir, "viewer-immersive-tools.png"))
-        } finally { inst.runOnMainSync { activity.finish() } }
+            inst.runOnMainSync { remote.fill(); remote.zoomBy(1.5f); remote.zoomBy(1f / 1.5f); remote.fit(); assertEquals(initialWidth, remote.width); assertEquals(initialHeight, remote.height) }
+        } finally { device.dumpWindowHierarchy(java.io.File(context.filesDir, "viewer-layout.xml")); inst.runOnMainSync { activity.finish() } }
     }
 }

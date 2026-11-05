@@ -36,7 +36,7 @@
       throw Error("filesystem plugin must not grant webview path access");
     const settings = await waitFor(() =>
       Array.from(document.querySelectorAll("nav button")).find((b) =>
-        b.textContent.includes("共享与设置"),
+        b.textContent.includes("应用设置"),
       ),
     );
     settings.click();

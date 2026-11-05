@@ -4,6 +4,8 @@ import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
@@ -22,6 +24,7 @@ data class UpdateState(val phase: String = "idle", val message: String = "", val
 class Updates(private val app: FarSailApp) {
     private val io = Executors.newSingleThreadExecutor()
     private val active = AtomicBoolean(false)
+    private val cacheChecked = AtomicBoolean(false)
     private val prefs = app.getSharedPreferences("updates", 0)
     private val directory = File(app.cacheDir, "updates").apply { mkdirs() }
     private val apk = File(directory, "verified-update.apk")
@@ -31,16 +34,44 @@ class Updates(private val app: FarSailApp) {
     val currentVersion: String get() = installed().versionName ?: ""
     val currentCode: Long get() = code(installed())
     val autoCheck get() = prefs.getBoolean("autoCheck", true)
-    val autoDownload get() = prefs.getBoolean("autoDownload", false)
+    val autoDownload get() = prefs.getBoolean("autoDownload", true)
+    val wifiOnly get() = prefs.getBoolean("wifiOnly", true)
     private fun installed() = app.packageManager.getPackageInfo(app.packageName, 0)
     @Suppress("DEPRECATION") private fun code(p: PackageInfo) = if (Build.VERSION.SDK_INT >= 28) p.longVersionCode else p.versionCode.toLong()
-    fun preferences(check: Boolean, download: Boolean) { prefs.edit().putBoolean("autoCheck", check).putBoolean("autoDownload", download).apply() }
+    fun preferences(check: Boolean, download: Boolean, wifi: Boolean = wifiOnly) {
+        prefs.edit().putBoolean("autoCheck", check).putBoolean("autoDownload", download).putBoolean("wifiOnly", wifi).apply()
+        maybeCheck()
+    }
+    private fun automaticDownloadAllowed(): Boolean {
+        if (!autoDownload) return false
+        if (!wifiOnly) return true
+        val network = app.getSystemService(ConnectivityManager::class.java)
+        val capabilities = network.getNetworkCapabilities(network.activeNetwork) ?: return false
+        return capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) && !network.isActiveNetworkMetered
+    }
     private fun show(next: UpdateState) { app.main.post { state = next; app.observer?.invoke() } }
     fun maybeCheck() {
-        if (autoCheck && System.currentTimeMillis() - prefs.getLong("checkedAt", 0) > 6 * 60 * 60 * 1000) check()
+        if (!cacheChecked.getAndSet(true) && apk.exists() && active.compareAndSet(false, true)) {
+            io.execute {
+                try {
+                    val cached = app.unwrap(NativeBridge.verifyUpdate(File(directory, "release.json").readText(), currentCode)) as JSONObject
+                    if (cached.getBoolean("available") && validPackage(apk, cached)) {
+                        release = cached
+                        show(UpdateState("ready", "更新已下载，可以安装。", cached.getString("version")))
+                    }
+                } catch (_: Exception) { /* A corrupt/obsolete cache cannot enable installation. */ }
+                finally { active.set(false); app.main.post { maybeCheck() } }
+            }
+            return
+        }
+        if (state.phase in listOf("checking", "downloading", "ready")) return
+        val now = System.currentTimeMillis()
+        if (autoCheck && now - prefs.getLong("checkedAt", 0) > 6 * 60 * 60 * 1000 && now - prefs.getLong("attemptedAt", 0) > 15 * 60 * 1000) check()
+        else if (state.phase == "available" && automaticDownloadAllowed()) download()
     }
     fun check() {
         if (!active.compareAndSet(false, true)) return
+        prefs.edit().putLong("attemptedAt", System.currentTimeMillis()).apply()
         show(UpdateState("checking", "正在检查更新…"))
         io.execute {
             var shouldDownload = false
@@ -52,7 +83,7 @@ class Updates(private val app: FarSailApp) {
                     release = result
                     File(directory, "release.json").writeText(raw)
                     if (apk.exists() && validPackage(apk, result)) show(UpdateState("ready", "更新已下载，可以安装。", result.getString("version")))
-                    else { apk.delete(); show(UpdateState("available", result.optString("notes", "发现新版本"), result.getString("version"))); shouldDownload = autoDownload }
+                    else { apk.delete(); show(UpdateState("available", result.optString("notes", "发现新版本"), result.getString("version"))); shouldDownload = automaticDownloadAllowed() }
                 } else { release = null; apk.delete(); show(UpdateState("upToDate", "当前已是最新版本。")) }
             } catch (e: NotPublished) { prefs.edit().putLong("checkedAt", System.currentTimeMillis()).apply(); show(UpdateState("upToDate", "当前暂无已发布的安卓更新。")) }
             catch (_: Exception) { show(UpdateState("error", "无法检查更新，请检查网络后重试。")) }

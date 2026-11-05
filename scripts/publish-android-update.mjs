@@ -22,7 +22,7 @@ if(info.includes('application-debuggable'))throw Error('Do not publish a debugga
 const manifest=execFileSync(`${process.env.ANDROID_HOME}/build-tools/35.0.0/aapt`,['dump','xmltree',input,'AndroidManifest.xml'],{encoding:'utf8'});
 if(manifest.includes('MemoryFixtureProvider')||manifest.includes('.memory-fixture'))throw Error('Debug-only state probe must never ship in a release');
 const digest=crypto.createHash('sha256').update(bytes).digest('hex');
-const payload={packageName:'app.farsail.android',version:version.version,versionCode:version.versionCode,url:`https://github.com/${repo}/releases/download/${tag}/${name}`,sha256:digest,size:bytes.length,notes:'记住远程控制与共享选择。打开 App 自动恢复已允许的控制；共享授权失效时直接进入系统确认，省去再次点开启。主动停止、取消授权或退出登录后不自动开启。'};
+const payload={packageName:'app.farsail.android',version:version.version,versionCode:version.versionCode,url:`https://github.com/${repo}/releases/download/${tag}/${name}`,sha256:digest,size:bytes.length,notes:fs.readFileSync('apps/android/release-notes.txt','utf8').trim()};
 const raw=Buffer.from(JSON.stringify(payload));
 const signing=crypto.createPrivateKey(process.env.ANDROID_UPDATE_PRIVATE_KEY||fs.readFileSync('.local/android-signing/updates-private.pem'));
 const publicBytes=crypto.createPublicKey(signing).export({type:'spki',format:'der'}).subarray(-32);
@@ -39,7 +39,7 @@ let channel=getRelease('android-updates');const old=channel?.assets.find(a=>a.na
 if(old){previous=await readPublic(old.browser_download_url);const current=verify(previous);if(current.versionCode>version.versionCode)throw Error('Android channel cannot go backwards');if(current.versionCode===version.versionCode){if(previous.equals(envelope)){console.log('Exact Android release already published');process.exit(0)}throw Error('Cannot replace published Android version with different bytes')}}
 try{let ref=api(`git/ref/tags/${tag}`).object;while(ref.type==='tag')ref=api(`git/tags/${ref.sha}`).object;if(ref.sha!==source)throw Error('Existing Android tag refers to another source')}catch(e){if(!String(e.stderr).includes('404'))throw e}
 let release=getRelease(tag);
-if(!release){fs.writeFileSync(`${dir}/release-notes.txt`,`Remembers control and sharing intent for the authenticated server/device. Opening the app restores allowed control when accessibility is connected and requests fresh system consent if recording has ended. Explicit app stop, cancellation and sign-out are retained; stale or different-device consent cannot restart sharing. Android 15 QPR1 and newer still require fresh recording consent after lock. Built from ${source}. Installation requires normal Android system confirmation.`);gh('release','create',tag,'-R',repo,'--target',source,'--prerelease','--title',`FarSail Android ${version.version}`,'--notes-file',`${dir}/release-notes.txt`);release=getRelease(tag)}
+if(!release){fs.writeFileSync(`${dir}/release-notes.txt`,`${payload.notes}\n\nBuilt from ${source}. Installation requires normal Android system confirmation.`);gh('release','create',tag,'-R',repo,'--target',source,'--prerelease','--title',`FarSail Android ${version.version}`,'--notes-file',`${dir}/release-notes.txt`);release=getRelease(tag)}
 for(const filename of [name,`${name}.sha256`,'latest.json','verification.json']){
  const file=`${dir}/${filename}`,data=fs.readFileSync(file);let asset=release.assets.find(a=>a.name===filename);
  if(!asset){gh('release','upload',tag,file,'-R',repo);release=getRelease(tag);asset=release.assets.find(a=>a.name===filename)}

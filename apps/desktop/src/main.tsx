@@ -349,9 +349,15 @@ function App() {
         current?.viewer === notice?.viewer ? null : current,
       );
   }, [noticePresent, notice]);
+  const [separateViewers, setSeparateViewers] = useState(
+    () => localStorage.getItem("farsail.viewer.separate") === "true",
+  );
   const openViewer = useCallback(async (id: string) => {
     const lease = new ViewerNoticeLease(
-      await invoke<string>("viewer_open", { id }),
+      await invoke<string>("viewer_open", {
+        id,
+        separate: localStorage.getItem("farsail.viewer.separate") === "true",
+      }),
     );
     await lease.check(readViewerWindow);
     return lease;
@@ -593,10 +599,32 @@ function App() {
             FarSail <span className="window-subtitle">遥舟</span>
           </button>
           <div id="window-menu" className="window-menu" popover="auto">
-            <button onClick={() => {
-              document.getElementById("window-menu")?.hidePopover();
-              void act(() => invoke("viewer_window_action", { action: "cascade" }), "远程窗口已堆叠", false);
-            }}>堆叠远程窗口</button>
+            <label className="viewer-window-mode">
+              <input
+                type="checkbox"
+                checked={separateViewers}
+                onChange={(e) => {
+                  setSeparateViewers(e.target.checked);
+                  localStorage.setItem(
+                    "farsail.viewer.separate",
+                    String(e.target.checked),
+                  );
+                }}
+              />
+              新连接使用独立窗口
+            </label>
+            <button
+              onClick={() => {
+                document.getElementById("window-menu")?.hidePopover();
+                void act(
+                  () => invoke("viewer_window_action", { action: "cascade" }),
+                  "远程窗口已堆叠",
+                  false,
+                );
+              }}
+            >
+              堆叠远程窗口
+            </button>
             <button
               onClick={() => {
                 document.getElementById("window-menu")?.hidePopover();
@@ -657,11 +685,11 @@ function App() {
         <nav aria-label="主导航">
           {(
             [
-              ["overview", "总览", Home20Regular],
+              ["overview", "工作总览", Home20Regular],
               ["devices", "我的设备", Desktop20Regular],
               ["requests", "远程连接", ArrowSwap20Regular],
               ["files", "文件传输", Folder20Regular],
-              ["settings", "共享与设置", Settings20Regular],
+              ["settings", "应用设置", Settings20Regular],
               ["security", "账号安全", Shield20Regular],
               ...(me?.role === "admin"
                 ? [["admin", "管理控制台", People20Regular]]
@@ -730,14 +758,14 @@ function App() {
               {
                 (
                   {
-                    overview: "总览",
+                    overview: "工作总览",
                     devices: "我的设备",
                     requests: "远程连接",
                     files: "文件传输",
                     viewer: "远程画面",
                     security: "账号安全",
                     admin: "管理控制台",
-                    settings: "共享与设置",
+                    settings: "应用设置",
                   } as Record<Tab, string>
                 )[tab]
               }
@@ -1885,7 +1913,7 @@ function Devices({
     );
   };
   const blocked = !state.deviceId
-    ? "先在“总览”添加这台电脑，才能发起连接。"
+    ? "先在“工作总览”添加这台电脑，才能发起连接。"
     : !device?.enabled
       ? "这台设备已停用。"
       : !device?.online
@@ -2946,7 +2974,180 @@ type Picture = {
   width: number;
   height: number;
 };
-function ViewerWindow({ initialId }: { initialId: string }) {
+type ViewerTab = {
+  instance: string;
+  id: string;
+  name: string;
+  selected: boolean;
+};
+function ViewerWorkspace({ initialId }: { initialId: string }) {
+  const [tabs, setTabs] = useState<ViewerTab[]>([
+    { instance: "initial", id: initialId, name: "远程设备", selected: true },
+  ]);
+  const [problem, setProblem] = useState("");
+  const refresh = useCallback(async () => {
+    const next = await invoke<ViewerTab[]>("viewer_tabs");
+    if (Array.isArray(next)) setTabs(next);
+  }, []);
+  useEffect(() => {
+    let live = true;
+    let busy = false;
+    const poll = async () => {
+      if (busy) return;
+      busy = true;
+      try {
+        const next = await invoke<ViewerTab[]>("viewer_tabs");
+        if (live && Array.isArray(next)) setTabs(next);
+      } catch (e) {
+        if (live) setProblem(errorText(e));
+      } finally {
+        busy = false;
+      }
+    };
+    void poll();
+    const timer = window.setInterval(() => void poll(), 500);
+    return () => {
+      live = false;
+      window.clearInterval(timer);
+    };
+  }, []);
+  const select = useCallback(
+    (tab: ViewerTab) => {
+      setTabs((old) =>
+        old.map((t) => ({ ...t, selected: t.instance === tab.instance })),
+      );
+      void invoke("viewer_select_tab", { instance: tab.instance })
+        .then(refresh)
+        .catch((e) => {
+          setProblem(errorText(e));
+          void refresh();
+        });
+    },
+    [refresh],
+  );
+  const close = useCallback(
+    (tab: ViewerTab) => {
+      void invoke("viewer_close_tab", { instance: tab.instance })
+        .then(refresh)
+        .catch((e) => setProblem(errorText(e)));
+    },
+    [refresh],
+  );
+  useEffect(() => {
+    const keys = (e: KeyboardEvent) => {
+      if (!e.ctrlKey || e.altKey || e.metaKey || !tabs.length) return;
+      const index = Math.max(
+        0,
+        tabs.findIndex((t) => t.selected),
+      );
+      let target: ViewerTab | undefined;
+      if (e.key === "Tab")
+        target =
+          tabs[(index + (e.shiftKey ? tabs.length - 1 : 1)) % tabs.length];
+      else if (e.key === "PageDown" || e.key === "PageUp")
+        target =
+          tabs[
+            (index + (e.key === "PageUp" ? tabs.length - 1 : 1)) % tabs.length
+          ];
+      else if (/^[1-9]$/.test(e.key))
+        target = tabs[e.key === "9" ? tabs.length - 1 : Number(e.key) - 1];
+      else if (e.key.toLowerCase() !== "w") return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (target) select(target);
+      else if (e.key.toLowerCase() === "w") close(tabs[index]);
+    };
+    window.addEventListener("keydown", keys, true);
+    return () => window.removeEventListener("keydown", keys, true);
+  }, [tabs, select, close]);
+  const strip = (
+    <div className="viewer-tabs" role="tablist" aria-label="远程设备标签">
+      {tabs.map((tab) => (
+        <div
+          key={tab.instance}
+          className={`viewer-tab ${tab.selected ? "selected" : ""}`}
+        >
+          <button
+            role="tab"
+            id={`tab-${tab.instance}`}
+            aria-selected={tab.selected}
+            aria-controls={`panel-${tab.instance}`}
+            tabIndex={tab.selected ? 0 : -1}
+            title={tab.name}
+            onClick={() => select(tab)}
+            onKeyDown={(e) => {
+              if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) {
+                e.preventDefault();
+                const index = tabs.indexOf(tab);
+                const next =
+                  e.key === "Home"
+                    ? tabs[0]
+                    : e.key === "End"
+                      ? tabs[tabs.length - 1]
+                      : tabs[
+                          (index +
+                            (e.key === "ArrowLeft" ? tabs.length - 1 : 1)) %
+                            tabs.length
+                        ];
+                select(next);
+                document.getElementById(`tab-${next.instance}`)?.focus();
+              }
+            }}
+          >
+            {tab.name}
+          </button>
+          <button
+            className="viewer-tab-close"
+            aria-label={`关闭标签 ${tab.name}`}
+            title="关闭此连接 (Ctrl+W)"
+            onClick={() => close(tab)}
+          >
+            <Dismiss16Regular />
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+  return (
+    <>
+      {tabs.map((tab) => (
+        <div
+          key={tab.instance}
+          id={`panel-${tab.instance}`}
+          role="tabpanel"
+          aria-labelledby={`tab-${tab.instance}`}
+          className="viewer-tab-panel"
+          hidden={!tab.selected}
+        >
+          <ViewerWindow
+            initialId={tab.id}
+            instance={tab.instance === "initial" ? undefined : tab.instance}
+            active={tab.selected}
+            tabStrip={tab.selected ? strip : null}
+            onClose={() => close(tab)}
+          />
+        </div>
+      ))}
+      {problem && (
+        <FailureDialog error={problem} onDismiss={() => setProblem("")} />
+      )}
+    </>
+  );
+}
+function ViewerWindow({
+  initialId,
+  instance,
+  active,
+  tabStrip,
+  onClose,
+}: {
+  initialId: string;
+  instance?: string;
+  active: boolean;
+  tabStrip: React.ReactNode;
+  onClose: () => void;
+}) {
+  const [phoneTurns, setPhoneTurns] = useState(0);
   const [id, setId] = useState(initialId);
   const currentId = useRef(id);
   currentId.current = id;
@@ -2986,6 +3187,11 @@ function ViewerWindow({ initialId }: { initialId: string }) {
     <Viewer
       key={id}
       id={id}
+      instance={instance}
+      active={active}
+      tabStrip={tabStrip}
+      phoneTurns={phoneTurns}
+      setPhoneTurns={setPhoneTurns}
       onReconnect={reconnected}
       rememberedDisplay={displayChoice.current}
       resuming={restoring}
@@ -2995,12 +3201,17 @@ function ViewerWindow({ initialId }: { initialId: string }) {
       onRestored={restored}
       onRecoveryStart={clearRecoveryNotice}
       recoveryNotice={recoveryNotice}
-      onStop={() => void invoke("viewer_window_action", { action: "close" })}
+      onStop={onClose}
     />
   );
 }
 function Viewer({
   id,
+  instance,
+  active,
+  tabStrip,
+  phoneTurns,
+  setPhoneTurns,
   onStop,
   onReconnect,
   rememberedDisplay,
@@ -3011,6 +3222,11 @@ function Viewer({
   recoveryNotice,
 }: {
   id: string;
+  instance?: string;
+  active: boolean;
+  tabStrip: React.ReactNode;
+  phoneTurns: number;
+  setPhoneTurns: React.Dispatch<React.SetStateAction<number>>;
   onStop: () => void;
   onReconnect: (id: string) => void;
   rememberedDisplay: RemoteDisplay | null;
@@ -3021,6 +3237,17 @@ function Viewer({
   recoveryNotice: string;
 }) {
   const [status, setStatus] = useState<RemoteStatus | null>(null);
+  const statusRequest = useRef<Promise<RemoteStatus> | null>(null);
+  const readStatus = () => {
+    if (statusRequest.current) return statusRequest.current;
+    const request = invoke<RemoteStatus>("remote_status", { id });
+    statusRequest.current = request;
+    const clear = () => {
+      if (statusRequest.current === request) statusRequest.current = null;
+    };
+    void request.then(clear, clear);
+    return request;
+  };
   const [picture, setPicture] = useState<Picture | null>(null);
   const [fps, setFps] = useState(0);
   const [text, setText] = useState("");
@@ -3101,7 +3328,6 @@ function Viewer({
   const [viewportEdge, setViewportEdge] = useState(0);
   const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
   // Display-only and owned by this viewer, so other phones/windows are unaffected.
-  const [phoneTurns, setPhoneTurns] = useState(0);
   const displayTurns = status?.platform === "android" ? phoneTurns : 0;
   const [fullscreen, setFullscreen] = useState(false);
   // Phone and desktop choices are independent: the legacy desktop fill
@@ -3136,8 +3362,16 @@ function Viewer({
     }
   };
   const phoneWindowConfigured = useRef<boolean | null>(null);
-  const windowAction = (action: string, options: { landscape?: boolean } = {}) =>
-    void invoke<{ fullscreen?: boolean }>("viewer_window_action", { action, ...options })
+  const activeRef = useRef(active);
+  activeRef.current = active;
+  const windowAction = (
+    action: string,
+    options: { landscape?: boolean; automatic?: boolean } = {},
+  ) =>
+    void invoke<{ fullscreen?: boolean }>("viewer_window_action", {
+      action,
+      ...options,
+    })
       .then((s) => {
         if (typeof s.fullscreen === "boolean") setFullscreen(s.fullscreen);
       })
@@ -3203,6 +3437,8 @@ function Viewer({
   }, [profilePending, status?.video?.generation]);
   const inputBlocked = status?.input?.blocked ?? false;
   const inputBlockedRef = useRef(false);
+  const permissionRef = useRef(false);
+  permissionRef.current = status?.permission === "control";
   const inputGeneration = useRef(0);
   const screen = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -3270,6 +3506,7 @@ function Viewer({
   ]);
   const generation = useRef(0);
   const control =
+    active &&
     !ended &&
     !inputBlocked &&
     !fileBusy &&
@@ -3422,12 +3659,34 @@ function Viewer({
     releaseInputs();
   }, [fitMode]);
   useEffect(() => {
-    if (status?.platform !== "android" || !picture) return;
-    const landscape = phoneTurns % 2 ? picture.height > picture.width : picture.width > picture.height;
+    if (active) return;
+    generation.current++;
+    clearPointer();
+    // Losing a tab releases held input after any request already in flight.
+    // New queued input has been invalidated, even though control is now false.
+    if (permissionRef.current) {
+      inputQueue.current = inputQueue.current
+        .catch(() => {})
+        .then(() =>
+          invoke("remote_input", {
+            id,
+            input: null,
+            generation: inputGeneration.current,
+          }),
+        )
+        .catch(() => {});
+    }
+  }, [active]);
+  useEffect(() => {
+    if (!active || status?.platform !== "android" || !picture) return;
+    const landscape =
+      phoneTurns % 2
+        ? picture.height > picture.width
+        : picture.width > picture.height;
     if (phoneWindowConfigured.current === landscape) return;
     phoneWindowConfigured.current = landscape;
-    windowAction("phone_layout", { landscape });
-  }, [status?.platform, picture?.width, picture?.height, phoneTurns]);
+    windowAction("phone_layout", { landscape, automatic: true });
+  }, [active, status?.platform, picture?.width, picture?.height, phoneTurns]);
   const recoverMouse = () => {
     generation.current++;
     clearPointer();
@@ -3458,7 +3717,7 @@ function Viewer({
     minimumRecoveryCycle.current = recoveryCycle.current + 1;
     setReconnecting(true);
     setToolbarVisible(true);
-    void invoke<{ id: string }>("viewer_reconnect", { manual })
+    void invoke<{ id: string }>("viewer_reconnect", { manual, instance })
       .then((r) => {
         if (lease.active) onReconnect(r.id);
       })
@@ -3469,6 +3728,7 @@ function Viewer({
         try {
           const recovery = await invoke<RecoveryStatus>(
             "viewer_recovery_status",
+            { instance },
           );
           if (!lease.active) return;
           setRecoveryStatus(recovery);
@@ -3489,7 +3749,9 @@ function Viewer({
       if (inFlight) return;
       inFlight = true;
       try {
-        const next = await invoke<RecoveryStatus>("viewer_recovery_status");
+        const next = await invoke<RecoveryStatus>("viewer_recovery_status", {
+          instance,
+        });
         if (
           active &&
           next.cycle >= minimumRecoveryCycle.current &&
@@ -3528,7 +3790,10 @@ function Viewer({
         if (status?.permission === "control")
           await invoke("remote_input", { id, input: null });
         if (!gate.current(ticket)) return;
-        const selected = invoke("media_select", { id, display: ticket.display });
+        const selected = invoke("media_select", {
+          id,
+          display: ticket.display,
+        });
         if (gate.requested(ticket)) setDisplaySnapshot(gate.snapshot());
         await selected;
       } catch (e) {
@@ -3605,8 +3870,11 @@ function Viewer({
         beginReconnect(false);
       }
     };
-    const pollStatus = () =>
-      void invoke<RemoteStatus>("remote_status", { id })
+    let statusInFlight = false;
+    const pollStatus = () => {
+      if (statusInFlight) return;
+      statusInFlight = true;
+      void readStatus()
         .then((s) => {
           if (live) {
             if (
@@ -3633,7 +3901,11 @@ function Viewer({
         })
         .catch((e) => {
           finish(undefined, e);
+        })
+        .finally(() => {
+          statusInFlight = false;
         });
+    };
     pollStatus();
     const statusTimer = window.setInterval(() => {
       if (!terminal) pollStatus();
@@ -3655,6 +3927,12 @@ function Viewer({
     }, 1000);
     const receive = async () => {
       while (live && receiving) {
+        if (!activeRef.current) {
+          // Native transport ACKs independently; retain the latest frame without
+          // repeatedly decoding invisible tabs or consuming a shared UI thread.
+          await new Promise((resolve) => window.setTimeout(resolve, 200));
+          continue;
+        }
         try {
           const data = new Uint8Array(
             await invoke<ArrayBuffer>("media_next", {
@@ -3731,7 +4009,7 @@ function Viewer({
         } catch (e) {
           if (live && !terminal) {
             try {
-              finish(await invoke<RemoteStatus>("remote_status", { id }));
+              finish(await readStatus());
             } catch {
               finish(undefined, e);
             }
@@ -3835,6 +4113,7 @@ function Viewer({
     >
       {!fullscreen && (
         <header className="window-titlebar viewer-titlebar">
+          {tabStrip}
           <div
             className="window-drag"
             onMouseDown={(e) => {
@@ -3869,7 +4148,7 @@ function Viewer({
               className="window-close"
               aria-label="关闭窗口"
               title="关闭窗口"
-              onClick={onStop}
+              onClick={() => windowAction("close")}
             >
               <Dismiss16Regular />
             </button>
@@ -5097,7 +5376,7 @@ function Admin({
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     {new URLSearchParams(window.location.search).get("viewer") ? (
-      <ViewerWindow
+      <ViewerWorkspace
         initialId={new URLSearchParams(window.location.search).get("viewer")!}
       />
     ) : (

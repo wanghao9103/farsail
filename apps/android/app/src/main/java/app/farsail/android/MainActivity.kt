@@ -48,6 +48,7 @@ class MainActivity : Activity() {
     private var requestBox: LinearLayout? = null
     private var lastRequests = ""
     private var boundWhenBuilt = false
+    private var updateNotice: UpdateNoticeView? = null
     private var updateText: TextView? = null
     private var updateButton: Button? = null
     private var updateProgress: ProgressBar? = null
@@ -129,6 +130,13 @@ class MainActivity : Activity() {
             (body.parent as ScrollView).scrollTo(0, 0)
             status = null; sharingDetail = null; controlDetail = null; forgetControl = null; connectionDetail = null; share = null; control = null; requestBox = null; updateText = null; updateButton = null; updateProgress = null
             header()
+            updateNotice = if (page in listOf(Page.HOME, Page.SETTINGS, Page.LOGIN)) UpdateNoticeView(this) {
+                when (app.updates.state.phase) {
+                    "available" -> app.updates.download()
+                    "ready" -> app.updates.install(this)
+                    else -> go(Page.UPDATES)
+                }
+            }.also { body.addView(it) } else null
             when (page) {
                 Page.LOGIN -> login()
                 Page.REGISTER -> register()
@@ -150,6 +158,7 @@ class MainActivity : Activity() {
             visibility = if (count > 0) View.VISIBLE else View.GONE
             text = "收到 $count 个连接请求 · 处理"
         }
+        updateNotice?.render(app.updates.state)
         if (page == Page.UPDATES) updateUpdates()
         if (app.ready && !app.busy) ConnectionService.synchronize(this, app.state, foreground)
         connectionDetail?.text = if (ConnectionService.enabled(this)) ConnectionService.detail else "仅共享或连接期间保持在线。"
@@ -279,7 +288,8 @@ class MainActivity : Activity() {
         ui.gap(body, 20)
         body.addView(Switch(this).apply { text = "自动检查更新"; isChecked = app.updates.autoCheck; setPadding(0, ui.dp(12), 0, ui.dp(12)); setOnCheckedChangeListener { _, v -> app.updates.preferences(v, app.updates.autoDownload) } })
         body.addView(Switch(this).apply { text = "自动下载更新"; isChecked = app.updates.autoDownload; setPadding(0, ui.dp(12), 0, ui.dp(12)); setOnCheckedChangeListener { _, v -> app.updates.preferences(app.updates.autoCheck, v) } })
-        ui.gap(body, 10); ui.text(body, "安装前请结束屏幕共享。安装由手机系统确认。", 13f, secondary = true)
+        body.addView(Switch(this).apply { text = "仅 Wi-Fi 自动下载"; isChecked = app.updates.wifiOnly; setPadding(0, ui.dp(12), 0, ui.dp(12)); setOnCheckedChangeListener { _, v -> app.updates.preferences(app.updates.autoCheck, app.updates.autoDownload, v) } })
+        ui.gap(body, 10); ui.text(body, "发现新版本会在首页提示。默认在非计费 Wi-Fi 下自动下载，安装由手机系统确认。安装前请结束屏幕共享。", 13f, secondary = true)
     }
     private fun updateUpdates() {
         val s = app.updates.state

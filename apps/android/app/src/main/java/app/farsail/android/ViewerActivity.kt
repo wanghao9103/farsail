@@ -96,6 +96,8 @@ class ViewerActivity : Activity() {
         }.also(controls::add)
         rightClick = small(actions, "右键") { canvas.rightClick() }.also(controls::add)
         small(actions, "键盘") { keyboard() }.also(controls::add)
+        small(actions, "放大画面") { canvas.zoomBy(1.5f) }
+        small(actions, "缩小画面") { canvas.zoomBy(1f / 1.5f) }
         small(actions, "旋转画面") { send(null); canvas.rotate(); orient() }
         val more = small(actions, "更多") { }
         more.setOnClickListener {
@@ -103,7 +105,8 @@ class ViewerActivity : Activity() {
             val menu = PopupMenu(this, more)
             menu.menu.add("选择屏幕").apply { isEnabled = connected && (remote.optJSONArray("displays")?.length() ?: 0) > 1; setOnMenuItemClickListener { selectScreen(); true } }
             menu.menu.add("重试控制").apply { isEnabled = connected && permission == "control"; setOnMenuItemClickListener { send(JSONObject().put("kind", "resume_control")); true } }
-            menu.menu.add("适应屏幕").setOnMenuItemClickListener { canvas.fit(); true }
+            menu.menu.add("适应屏幕").setOnMenuItemClickListener { canvas.fit(); showTools(false); true }
+            menu.menu.add("铺满屏幕（双指移动）").setOnMenuItemClickListener { canvas.fill(); showTools(false); true }
             menu.menu.add("跟随远端方向").apply { isCheckable = true; isChecked = followOrientation; setOnMenuItemClickListener {
                 followOrientation = !followOrientation; orient(); true
             } }
@@ -198,11 +201,12 @@ class ViewerActivity : Activity() {
     override fun onStop() { foreground = false; disconnect("已离开远程画面，连接已结束"); super.onStop() }
     override fun onDestroy() { disconnect("连接已结束"); decoder.shutdownNow(); connectWorker.shutdownNow(); commands.shutdownNow(); canvas.clear(); super.onDestroy() }
     private fun connect() {
+        if (target.isBlank()) { disconnect("未选择远程设备"); return }
         if (!foreground || !app.ready || active) return
         disconnect(""); canvas.clear(); ticket = NativeBridge.viewerBegin()
         if (ticket <= 0) { status.text = "正在初始化，请稍后重试。"; return }
-        active = true; val owner = ticket; end.text = "取消连接"; generation = 0; firstPicture = true; showTools(true)
-        update(JSONObject().put("phase", "requesting"))
+        active = true; val owner = ticket; end.text = "取消连接"; generation = 0; firstPicture = true
+        update(JSONObject().put("phase", "requesting")); showTools(true)
         connectWorker.execute {
             try {
                 if (!current(owner)) return@execute
@@ -225,7 +229,7 @@ class ViewerActivity : Activity() {
         if (!current(owner) || !posted.compareAndSet(false, true)) return
         try {
             val state = app.invoke("viewer_state", JSONObject().put("ticket", owner)) as JSONObject
-            val bytes = NativeBridge.viewerFrame(owner)
+            val bytes = if (state.optString("phase") == "connected") NativeBridge.viewerFrame(owner) else null
             val image = if (bytes != null && bytes.size > 49) {
                 val header = ByteBuffer.wrap(bytes)
                 val options = BitmapFactory.Options()
@@ -240,7 +244,7 @@ class ViewerActivity : Activity() {
                         if (image != null) {
                             remoteWidth = image.bitmap.width; remoteHeight = image.bitmap.height
                             canvas.show(image); orient()
-                            if (firstPicture) { firstPicture = false; handle.postDelayed({ if (current(owner) && remote.optString("phase") == "connected") showTools(false) }, 2500) }
+                            if (firstPicture) { firstPicture = false; handle.postDelayed({ if (current(owner) && remote.optString("phase") == "connected") showTools(false) }, 700) }
                         }; update(state)
                     }
                     else image?.bitmap?.recycle()
@@ -280,7 +284,7 @@ class ViewerActivity : Activity() {
     }
     private fun send(input: JSONObject?) {
         val owner = ticket; val observed = generation
-        if (!current(owner) || permission != "control") return
+        if (!current(owner) || permission != "control" || remote.optString("phase") != "connected") return
         if (input?.optString("kind") == "move" && commands.queue.size >= 24) return
         val args = JSONObject().put("ticket", owner).put("generation", observed).put("input", input ?: JSONObject.NULL)
         try {

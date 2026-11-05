@@ -37,12 +37,13 @@ class UpdateFlowTest {
         inst.waitForIdleSync()
         val deadline = System.currentTimeMillis() + 180000
         while (app.updates.state.phase == "checking" || app.updates.state.phase == "idle") { assertTrue("check timed out", System.currentTimeMillis() < deadline); Thread.sleep(200) }
-        if (app.updates.state.phase != "ready") {
-            assertEquals(app.updates.state.message, "available", app.updates.state.phase)
+        val requireAutomatic = InstrumentationRegistry.getArguments().getString("automaticDownload") == "true"
+        if (requireAutomatic) assertTrue("automatic downloads enabled", app.updates.autoDownload)
+        if (!requireAutomatic && app.updates.state.phase == "available") {
             assertTrue(device.wait(Until.hasObject(By.text("下载更新")), 5000))
             device.findObject(By.text("下载更新")).click()
-            while (app.updates.state.phase == "available" || app.updates.state.phase == "downloading") { assertTrue("download timed out", System.currentTimeMillis() < deadline); Thread.sleep(200) }
         }
+        while (app.updates.state.phase in listOf("checking", "available", "downloading")) { assertTrue("download timed out", System.currentTimeMillis() < deadline); Thread.sleep(200) }
         assertEquals(app.updates.state.message, "ready", app.updates.state.phase)
         assertTrue(device.wait(Until.hasObject(By.text("安装更新")), 5000))
         var permissionUi = false
@@ -57,6 +58,6 @@ class UpdateFlowTest {
         }
         assertTrue(device.wait(Until.hasObject(By.pkg("com.android.packageinstaller")), 15000) || device.wait(Until.hasObject(By.pkg("com.google.android.packageinstaller")), 15000))
         device.takeScreenshot(java.io.File(context.filesDir, "update-system-installer.png"))
-        java.io.File(context.filesDir, "update-prepared.json").writeText("{\"publicDownload\":true,\"signedMetadata\":true,\"apkVerified\":true,\"normalPermissionUI\":$permissionUi,\"installerOpened\":true}")
+        java.io.File(context.filesDir, "update-prepared.json").writeText("{\"publicDownload\":true,\"automaticDownload\":$requireAutomatic,\"signedMetadata\":true,\"apkVerified\":true,\"normalPermissionUI\":$permissionUi,\"installerOpened\":true}")
     }
 }

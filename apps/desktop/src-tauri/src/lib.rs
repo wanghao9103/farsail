@@ -453,17 +453,20 @@ pub fn run() {
             }
         if let tauri::WindowEvent::CloseRequested { api, .. } = event {
             if window.label() != "main" {
-                if let Some(id) = viewer::cancel(window.app_handle(), window.label()) {
+                let ids = viewer::cancel(window.app_handle(), window.label());
+                if !ids.is_empty() {
                     api.prevent_close();
                     let remote = window.state::<Arc<RemoteRuntime>>().inner().clone();
                     let client = window.state::<Arc<NativeClient>>().inner().clone();
                     let window = window.clone();
                     tauri::async_runtime::spawn(async move {
-                        remote.stop(&id).await;
-                        let _ = client
-                            .call("revoke_remote", serde_json::json!({"id":id}))
-                            .await;
+                        // Stop every local session before any potentially slow
+                        // coordinator request; one tab cannot delay the others.
+                        for id in &ids { remote.stop(id).await; }
                         let _ = window.destroy();
+                        for id in ids {
+                            let _ = client.call("revoke_remote", serde_json::json!({"id":id})).await;
+                        }
                     });
                 }
                 return;
@@ -486,6 +489,9 @@ pub fn run() {
         update_download,
         update_install,
         viewer_window_action,
+        viewer::viewer_tabs,
+        viewer::viewer_select_tab,
+        viewer::viewer_close_tab,
         viewer_open,
         viewer_window_active,
         viewer_reconnect,
@@ -527,6 +533,9 @@ pub fn run() {
         update_download,
         update_install,
         viewer_window_action,
+        viewer::viewer_tabs,
+        viewer::viewer_select_tab,
+        viewer::viewer_close_tab,
         viewer_open,
         viewer_window_active,
         viewer_reconnect,

@@ -496,7 +496,7 @@ const fs = require("node:fs");
   );
   await page.getByRole("button", { name: "连接设置", exact: true }).click();
   await page
-    .getByRole("heading", { name: "共享与设置", exact: true })
+    .getByRole("heading", { name: "应用设置", exact: true })
     .waitFor();
   await page.setViewportSize({ width: 1120, height: 760 });
   await nav("我的设备").click();
@@ -645,7 +645,7 @@ const fs = require("node:fs");
   const outgoingId = await page.evaluate(
     () => window.filesFixture.sessions.find((s) => !s.host).id,
   );
-  await nav("共享与设置").click();
+  await nav("应用设置").click();
   await page
     .getByRole("switch", { name: "允许远程连接", exact: true })
     .uncheck();

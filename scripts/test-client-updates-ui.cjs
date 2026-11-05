@@ -291,7 +291,7 @@ async function alignedActions(actions) {
           .waitFor();
       else {
         await page
-          .getByRole("heading", { name: "总览", exact: true })
+          .getByRole("heading", { name: "工作总览", exact: true })
           .waitFor();
         await page.waitForFunction(() =>
           window.updateFixture.calls.some(
@@ -322,7 +322,7 @@ async function alignedActions(actions) {
         {},
         async (page) => {
           await page
-            .getByRole("button", { name: "共享与设置", exact: true })
+            .getByRole("button", { name: "应用设置", exact: true })
             .click();
           const settings = page.locator(".client-updates");
           await settings
@@ -374,7 +374,7 @@ async function alignedActions(actions) {
               `settings-${viewport.width}x${viewport.height}.png`,
             ),
           });
-          await page.getByRole("button", { name: "总览", exact: true }).click();
+          await page.getByRole("button", { name: "工作总览", exact: true }).click();
           const alert = notice(page);
           await alert.waitFor();
           const alertButton = alert.getByRole("button", {
@@ -410,7 +410,7 @@ async function alignedActions(actions) {
             ),
           });
           await page
-            .getByRole("button", { name: "共享与设置", exact: true })
+            .getByRole("button", { name: "应用设置", exact: true })
             .click();
           await settings
             .getByRole("button", { name: "查看更新", exact: true })
@@ -418,7 +418,7 @@ async function alignedActions(actions) {
           await updateDialog(page).waitFor();
           assert(
             await page
-              .getByRole("heading", { name: "共享与设置", exact: true })
+              .getByRole("heading", { name: "应用设置", exact: true })
               .isVisible(),
             "Settings opens the update dialog without changing the page",
           );
@@ -452,7 +452,7 @@ async function alignedActions(actions) {
       await updateDialog(page).waitFor();
       assert.equal(
         await page
-          .getByRole("heading", { name: "总览", exact: true })
+          .getByRole("heading", { name: "工作总览", exact: true })
           .isVisible(),
         true,
         "Notice action must keep the current page",
@@ -570,7 +570,7 @@ async function alignedActions(actions) {
       await polls(page);
       await noDialog(page);
       await page
-        .getByRole("button", { name: "共享与设置", exact: true })
+        .getByRole("button", { name: "应用设置", exact: true })
         .click();
       await page
         .locator(".client-updates")
@@ -617,7 +617,7 @@ async function alignedActions(actions) {
       assert.equal(await dialog.locator(".hint").count(), 0);
       await dialog.getByRole("button", { name: "关闭", exact: true }).click();
       await page
-        .getByRole("button", { name: "共享与设置", exact: true })
+        .getByRole("button", { name: "应用设置", exact: true })
         .click();
       const settings = page.locator(".client-updates");
       await settings

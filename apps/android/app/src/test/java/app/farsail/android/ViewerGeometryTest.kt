@@ -32,4 +32,21 @@ class ViewerGeometryTest {
             assertEquals(expected.second, point.second, .00001)
         }
     }
+    @Test fun fillUsesVisibleCropForInputAtEveryRotation() {
+        for (turn in 0..3) {
+            val zoom = ViewerGeometry.fillZoom(720f, 1280f, 1920, 1080, turn)
+            val g = ViewerGeometry(720f, 1280f, 1920, 1080, turn, zoom)
+            assertTrue(g.rotatedWidth * g.scale >= 719.9f)
+            assertTrue(g.rotatedHeight * g.scale >= 1279.9f)
+            val center = g.point(360f, 640f)!!
+            assertEquals(.5, center.first, .00001); assertEquals(.5, center.second, .00001)
+            for ((x,y) in listOf(0f to 0f, 719f to 1279f)) {
+                val point = g.point(x,y)!!
+                assertTrue(point.first in 0.0..1.0 && point.second in 0.0..1.0)
+            }
+        }
+        assertEquals(1f, ViewerGeometry.fillZoom(0f, 0f, 0, 0, 0))
+        assertEquals(4f, ViewerGeometry.fillZoom(100f, 2000f, 2000, 100, 0))
+    }
+
 }
