@@ -1129,9 +1129,8 @@ mod tests {
             Win32::{
                 Foundation::{HWND, POINT},
                 Graphics::Gdi::{
-                    COLOR_WINDOW, COLOR_WINDOWFRAME, ClientToScreen, GetDC, GetPixel, GetSysColor,
-                    RDW_ALLCHILDREN, RDW_INVALIDATE, RDW_UPDATENOW, RedrawWindow, ReleaseDC,
-                    ScreenToClient,
+                    ClientToScreen, GetDC, GetPixel, RDW_ALLCHILDREN, RDW_INVALIDATE,
+                    RDW_UPDATENOW, RedrawWindow, ReleaseDC, ScreenToClient,
                 },
                 UI::WindowsAndMessaging::{
                     BS_DEFPUSHBUTTON, CreateWindowExW, DestroyWindow, DispatchMessageW, GA_ROOT,
@@ -1259,27 +1258,21 @@ mod tests {
             display: &Display,
             expected_window: &OwnedWindow,
             point: POINT,
-            white: bool,
+            reference: Option<[u8; 3]>,
             phase: &str,
             sequence: &mut u64,
-        ) {
+        ) -> [u8; 3] {
             expected_window.present();
-            // STATIC rectangles use current system colors, not literal RGB
-            // black/white. SS_BLACKRECT may be gray on the Windows CI theme.
+            // The visual theme can paint STATIC rectangles differently from
+            // GetSysColor as well as literal RGB black/white. Compare with GDI
+            // on this exact owned surface, and require distinct phase colors.
             // https://learn.microsoft.com/en-us/windows/win32/controls/static-control-styles
-            let color = unsafe {
-                GetSysColor(if white {
-                    COLOR_WINDOW
-                } else {
-                    COLOR_WINDOWFRAME
-                })
-            };
-            assert_ne!(
-                unsafe { GetSysColor(COLOR_WINDOW) },
-                unsafe { GetSysColor(COLOR_WINDOWFRAME) },
-                "capture fixture requires distinguishable system colors"
+            let surface = expected_window.describe(point);
+            assert!(
+                surface.visible && surface.sample_hits_expected && surface.sample_hits_own_process
             );
-            let expected = [color as u8, (color >> 8) as u8, (color >> 16) as u8];
+            let expected =
+                reference.unwrap_or_else(|| surface.sample_rgb.expect("readable owned surface"));
             println!(
                 "OWNED capture surface {phase}: {:?}",
                 expected_window.describe(point)
@@ -1354,7 +1347,7 @@ mod tests {
                                 println!(
                                     "PASS owned DXGI capture phase: {phase}; frames={frames}, empty={empty}, resets={resets}, rgb={pixel:?}; pixels remain in memory"
                                 );
-                                return;
+                                return expected;
                             }
                         }
                     }
@@ -1402,12 +1395,12 @@ mod tests {
             .unwrap(),
         );
         let base_point = base.sample_point();
-        await_color(
+        let base_color = await_color(
             &mut capture,
             &display,
             &base,
             base_point,
-            false,
+            None,
             "before confirmation",
             &mut sequence,
         );
@@ -1451,14 +1444,21 @@ mod tests {
         unsafe { GetWindowThreadProcessId(button, Some(&mut button_pid)) };
         assert_eq!(button_pid, std::process::id());
         let confirmation_point = confirmation.sample_point();
-        await_color(
+        let confirmation_color = await_color(
             &mut capture,
             &display,
             &confirmation,
             confirmation_point,
-            true,
+            None,
             "ordinary confirmation visible",
             &mut sequence,
+        );
+        assert!(
+            base_color
+                .iter()
+                .zip(confirmation_color)
+                .any(|(&a, b)| a.abs_diff(b) >= 64),
+            "fixture phases must have distinguishable painted colors"
         );
         let fullscreen = OwnedWindow::check(
             unsafe {
@@ -1484,7 +1484,7 @@ mod tests {
             &display,
             &fullscreen,
             confirmation_point,
-            false,
+            Some(base_color),
             "borderless fullscreen overlay visible",
             &mut sequence,
         );
@@ -1494,7 +1494,7 @@ mod tests {
             &display,
             &confirmation,
             confirmation_point,
-            true,
+            Some(confirmation_color),
             "fullscreen overlay closed",
             &mut sequence,
         );
@@ -1504,7 +1504,7 @@ mod tests {
             &display,
             &base,
             base_point,
-            false,
+            Some(base_color),
             "confirmation closed",
             &mut sequence,
         );
