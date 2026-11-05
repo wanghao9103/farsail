@@ -3614,8 +3614,6 @@ function Viewer({
     if (
       !autoQuality ||
       ended ||
-      displayBusy ||
-      !picture ||
       !status?.video?.supported ||
       !viewportEdge ||
       !sourceEdge ||
@@ -3625,6 +3623,9 @@ function Viewer({
       return;
     const edge = Math.min(viewportEdge, sourceEdge);
     if (status.video.viewport_supported) {
+      // Negotiate from authenticated display metadata, before a potentially
+      // congested native-size first JPEG. Input still waits for a shown frame.
+      if (displayBusy && displaySnapshot.stage !== "awaiting_frame") return;
       // Slight oversampling retains text detail at this window's actual pixel
       // size. Quantization avoids restarting capture on every resize pixel.
       const targetEdge = Math.max(
@@ -3635,6 +3636,7 @@ function Viewer({
         requestViewport(targetEdge);
       return;
     }
+    if (displayBusy || !picture) return;
     const target = Math.min(
       edge <= 1280 ? 0 : edge <= 1920 ? 1 : edge <= 2560 ? 2 : 3,
       status.video.max_profile ?? 1,
@@ -3644,6 +3646,7 @@ function Viewer({
     autoQuality,
     ended,
     displayBusy,
+    displaySnapshot.stage,
     picture?.display,
     viewportEdge,
     sourceEdge,

@@ -19,7 +19,7 @@ const fs = require("node:fs");
   });
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
-  const installFixture = () => {
+  const installFixture = (options = {}) => {
     const f = (window.fixture = {
       statusDelay: 0,
       statusInFlight: 0,
@@ -80,6 +80,17 @@ const fs = require("node:fs");
       delay: false,
       release: null,
     });
+    if (options.viewportStartup) {
+      f.platform = "android";
+      f.video = {
+        profile: 2,
+        generation: 0,
+        supported: true,
+        max_profile: 2,
+        viewport_supported: true,
+      };
+      f.holdNativeFirstFrame = true;
+    }
     const decodeImage = HTMLImageElement.prototype.decode;
     HTMLImageElement.prototype.decode = function () {
       if (!f.holdDecode) return decodeImage.call(this);
@@ -258,6 +269,8 @@ const fs = require("node:fs");
         if (cmd === "media_next") {
           await new Promise((r) => setTimeout(r, 150));
           if (f.closed) throw Error("closed");
+          if (f.holdNativeFirstFrame && !f.video.viewport_edge)
+            return new ArrayBuffer(0);
           if (
             args.after === 0 ||
             (f.heartbeat && Date.now() - f.lastFrame >= 1000)
@@ -347,6 +360,14 @@ const fs = require("node:fs");
     };
   };
   await page.addInitScript(installFixture);
+  if (process.env.UI_ONLY_VIEWPORT === "1") {
+    await testAdaptiveViewports();
+    await browser.close();
+    console.log(
+      "PASS metadata-only startup and four independent adaptive viewports",
+    );
+    return;
+  }
   const load = async () => {
     await page.goto(process.env.UI_URL || "http://127.0.0.1:1420/?viewer=test");
     await page.getByAltText("远端桌面").waitFor();
@@ -645,16 +666,19 @@ const fs = require("node:fs");
       .getByText("正在切换画面分辨率…", { exact: true })
       .waitFor({ state: "hidden" });
   }
+  await revealToolbar();
   await page.getByLabel("画面分辨率").selectOption("3");
   await page.waitForFunction(() => window.fixture.video.profile === 3);
   await page
     .getByText("正在切换画面分辨率…", { exact: true })
     .waitFor({ state: "hidden" });
+  await revealToolbar();
   await page.getByLabel("画面分辨率").selectOption("2");
   await page.waitForFunction(() => window.fixture.video.profile === 2);
   await page
     .getByText("正在切换画面分辨率…", { exact: true })
     .waitFor({ state: "hidden" });
+  await revealToolbar();
   await page.getByLabel("画面分辨率").selectOption("0");
   await page.waitForFunction(() =>
     window.fixture.calls.some(
@@ -665,6 +689,7 @@ const fs = require("node:fs");
     .getByText("正在切换画面分辨率…", { exact: true })
     .waitFor({ state: "hidden" });
   assert.equal(await page.getByLabel("画面分辨率").inputValue(), "0");
+  await revealToolbar();
   await page.getByLabel("画面分辨率").selectOption("1");
   await page
     .getByText("正在切换画面分辨率…", { exact: true })
@@ -3130,75 +3155,119 @@ const fs = require("node:fs");
     "periodic and frame-error status checks must share a request",
   );
   assert.deepEqual(errors, []);
-  // Four independent Android windows negotiate only their own pixel budgets.
-  const windows = [];
-  for (const width of [640, 720, 800, 960]) {
-    const p = await browser.newPage({ viewport: { width, height: 440 } });
-    p.on("pageerror", (e) => errors.push(e.message));
-    await p.addInitScript(installFixture);
-    await p.goto(process.env.UI_URL || "http://127.0.0.1:1420/?viewer=test");
-    await p.getByAltText("远端桌面").waitFor();
-    await p.waitForFunction(() => window.fixture.video.generation > 0);
-    await p.waitForTimeout(300);
-    await p.evaluate(() => {
-      window.fixture.platform = "android";
-      window.fixture.video.max_profile = 2;
-      window.fixture.video.viewport_supported = true;
+  async function testAdaptiveViewports() {
+    // Four independent Android windows negotiate only their own pixel budgets.
+    // A congested native-size first frame must not be required to negotiate a
+    // smaller stream. Metadata is already authenticated and carries geometry.
+    const startup = await browser.newPage({
+      viewport: { width: 640, height: 440 },
     });
-    await p.waitForFunction(() => window.fixture.video.viewport_edge >= 320);
-    windows.push(p);
-  }
-  const edges = await Promise.all(
-    windows.map((p) => p.evaluate(() => window.fixture.video.viewport_edge)),
-  );
-  assert(
-    edges[0] < edges[3],
-    "each independent window uses its own viewport size",
-  );
-  await windows[0].setViewportSize({ width: 1800, height: 1000 });
-  await windows[0].waitForFunction(
-    (previous) => window.fixture.video.viewport_edge > previous,
-    edges[0],
-  );
-  for (let i = 1; i < windows.length; i++) {
-    assert.equal(
-      await windows[i].evaluate(() => window.fixture.video.viewport_edge),
-      edges[i],
+    await startup.addInitScript(installFixture, { viewportStartup: true });
+    await startup.goto(
+      process.env.UI_URL || "http://127.0.0.1:1420/?viewer=test",
     );
-  }
-  await windows[0].getByLabel("画面分辨率").selectOption("2", { force: true });
-  await windows[0].waitForFunction(
-    () => window.fixture.video.viewport_edge === 0,
-  );
-  const autoRequests = await windows[0].evaluate(
-    () => window.fixture.calls.filter((c) => c.cmd === "media_viewport").length,
-  );
-  await windows[0].setViewportSize({ width: 640, height: 440 });
-  await windows[0].waitForTimeout(1100);
-  assert.equal(
-    await windows[0].evaluate(
-      () =>
-        window.fixture.calls.filter((c) => c.cmd === "media_viewport").length,
-    ),
-    autoRequests,
-    "manual native choice survives resizing",
-  );
-  await windows[0].getByLabel("画面分辨率").selectOption("-2", { force: true });
-  await windows[0].waitForFunction(
-    () => window.fixture.video.viewport_edge >= 320,
-  );
-  for (const p of windows) {
+    try {
+      await startup.waitForFunction(
+        () => window.fixture.video.viewport_edge >= 320,
+      );
+    } catch (cause) {
+      const snapshot = await startup.evaluate(() => ({
+        video: window.fixture.video,
+        requests: window.fixture.calls.filter(
+          (c) => c.cmd === "media_viewport",
+        ),
+        hasImage: !!document.querySelector(".remote-screen img"),
+      }));
+      throw new Error(
+        `Viewport metadata startup failed: ${JSON.stringify(snapshot)}`,
+        { cause },
+      );
+    }
+    await startup.getByAltText("远端桌面").waitFor();
     assert.equal(
-      await p.evaluate(
+      await startup.evaluate(
         () =>
           window.fixture.calls.filter((c) => c.cmd === "viewer_reconnect")
             .length,
       ),
       0,
     );
-    await p.close();
+    await startup.close();
+    const windows = [];
+    for (const width of [640, 720, 800, 960]) {
+      const p = await browser.newPage({ viewport: { width, height: 440 } });
+      p.on("pageerror", (e) => errors.push(e.message));
+      await p.addInitScript(installFixture);
+      await p.goto(process.env.UI_URL || "http://127.0.0.1:1420/?viewer=test");
+      await p.getByAltText("远端桌面").waitFor();
+      await p.waitForFunction(() => window.fixture.video.generation > 0);
+      await p.waitForTimeout(300);
+      await p.evaluate(() => {
+        window.fixture.platform = "android";
+        window.fixture.video.max_profile = 2;
+        window.fixture.video.viewport_supported = true;
+      });
+      await p.waitForFunction(() => window.fixture.video.viewport_edge >= 320);
+      windows.push(p);
+    }
+    const edges = await Promise.all(
+      windows.map((p) => p.evaluate(() => window.fixture.video.viewport_edge)),
+    );
+    assert(
+      edges[0] < edges[3],
+      "each independent window uses its own viewport size",
+    );
+    await windows[0].setViewportSize({ width: 1800, height: 1000 });
+    await windows[0].waitForFunction(
+      (previous) => window.fixture.video.viewport_edge > previous,
+      edges[0],
+    );
+    for (let i = 1; i < windows.length; i++) {
+      assert.equal(
+        await windows[i].evaluate(() => window.fixture.video.viewport_edge),
+        edges[i],
+      );
+    }
+    await windows[0]
+      .getByLabel("画面分辨率")
+      .selectOption("2", { force: true });
+    await windows[0].waitForFunction(
+      () => window.fixture.video.viewport_edge === 0,
+    );
+    const autoRequests = await windows[0].evaluate(
+      () =>
+        window.fixture.calls.filter((c) => c.cmd === "media_viewport").length,
+    );
+    await windows[0].setViewportSize({ width: 640, height: 440 });
+    await windows[0].waitForTimeout(1100);
+    assert.equal(
+      await windows[0].evaluate(
+        () =>
+          window.fixture.calls.filter((c) => c.cmd === "media_viewport").length,
+      ),
+      autoRequests,
+      "manual native choice survives resizing",
+    );
+    await windows[0]
+      .getByLabel("画面分辨率")
+      .selectOption("-2", { force: true });
+    await windows[0].waitForFunction(
+      () => window.fixture.video.viewport_edge >= 320,
+    );
+    for (const p of windows) {
+      assert.equal(
+        await p.evaluate(
+          () =>
+            window.fixture.calls.filter((c) => c.cmd === "viewer_reconnect")
+              .length,
+        ),
+        0,
+      );
+      await p.close();
+    }
+    assert.deepEqual(errors, []);
   }
-  assert.deepEqual(errors, []);
+  await testAdaptiveViewports();
   await browser.close();
   console.log(
     "PASS repeated left/right pairs, multi-button capture, queued outside UP then release-all, external held entry, blur/lost-capture cancellation, ordered remote Alt+Tab and view/paused/ended guards; fit/quality/FPS/pause/terminal/read-only, five-session fullscreen/overflow navigation, adjacent close, rapid ordered tab changes, manual-only capture recovery and local popup isolation coverage. Synthetic IPC only.",
