@@ -115,6 +115,8 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          node --test scripts/test-feedback-policy.mjs scripts/test-viewer-display-policy.mjs scripts/test-viewer-notice-policy.mjs scripts/test-viewer-tabs-policy.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test --locked -p farsail-client -p farsail-desktop --lib
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo clippy --locked -p farsail-desktop --all-targets -- -D warnings

@@ -70,7 +70,7 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci
-      - run: node --experimental-strip-types --test scripts/test-feedback-policy.mjs scripts/test-viewer-display-policy.mjs scripts/test-viewer-notice-policy.mjs
+      - run: node --experimental-strip-types --test scripts/test-feedback-policy.mjs scripts/test-viewer-display-policy.mjs scripts/test-viewer-notice-policy.mjs scripts/test-viewer-tabs-policy.mjs
       - run: npm run typecheck
       - name: First-frame and delayed-selection browser regressions
         shell: pwsh

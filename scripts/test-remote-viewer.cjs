@@ -25,6 +25,17 @@ const fs = require("node:fs");
       statusInFlight: 0,
       statusMaxInFlight: 0,
       tabs: null,
+      holdTabSnapshot: false,
+      releaseTabSnapshot: null,
+      tabSnapshotInFlight: 0,
+      tabSnapshotMaxInFlight: 0,
+      holdTabMutation: null,
+      releaseTabMutation: null,
+      tabMutationInFlight: 0,
+      tabMutationMaxInFlight: 0,
+      failTabSelect: null,
+      failTabClose: null,
+      appliedTabMutations: [],
       closed: false,
       path: "direct",
       discovery: "direct",
@@ -122,22 +133,65 @@ const fs = require("node:fs");
           if (f.pasteFilesError) throw f.pasteFilesError;
           return f.pasteFilesResult;
         }
-        if (cmd === "viewer_tabs") return f.tabs ? structuredClone(f.tabs) : {};
-        if (cmd === "viewer_select_tab") {
-          f.tabs?.forEach((tab) => {
-            tab.selected = tab.instance === args.instance;
-          });
-          return {};
-        }
-        if (cmd === "viewer_close_tab") {
-          if (f.tabs) {
-            const index = f.tabs.findIndex((t) => t.instance === args.instance);
-            const selected = f.tabs[index]?.selected;
-            f.tabs = f.tabs.filter((t) => t.instance !== args.instance);
-            const neighbor = f.tabs[index] ?? f.tabs.at(-1);
-            if (selected && neighbor) neighbor.selected = true;
+        if (cmd === "viewer_tabs") {
+          // Capture before waiting, so this genuinely returns a stale native snapshot.
+          const snapshot = f.tabs ? structuredClone(f.tabs) : {};
+          f.tabSnapshotInFlight++;
+          f.tabSnapshotMaxInFlight = Math.max(
+            f.tabSnapshotMaxInFlight,
+            f.tabSnapshotInFlight,
+          );
+          try {
+            if (f.holdTabSnapshot) {
+              f.holdTabSnapshot = false;
+              await new Promise((resolve) => {
+                f.releaseTabSnapshot = resolve;
+              });
+            }
+            return snapshot;
+          } finally {
+            f.tabSnapshotInFlight--;
           }
-          return {};
+        }
+        if (["viewer_select_tab", "viewer_close_tab"].includes(cmd)) {
+          f.tabMutationInFlight++;
+          f.tabMutationMaxInFlight = Math.max(
+            f.tabMutationMaxInFlight,
+            f.tabMutationInFlight,
+          );
+          try {
+            if (f.holdTabMutation === args.instance) {
+              f.holdTabMutation = null;
+              await new Promise((resolve) => {
+                f.releaseTabMutation = resolve;
+              });
+            }
+            if (cmd === "viewer_select_tab") {
+              if (f.failTabSelect === args.instance) {
+                f.failTabSelect = null;
+                throw Error("测试设备标签切换失败");
+              }
+              f.tabs?.forEach((tab) => {
+                tab.selected = tab.instance === args.instance;
+              });
+            } else if (f.tabs) {
+              if (f.failTabClose === args.instance) {
+                f.failTabClose = null;
+                throw Error("测试设备标签关闭失败");
+              }
+              const index = f.tabs.findIndex(
+                (t) => t.instance === args.instance,
+              );
+              const selected = f.tabs[index]?.selected;
+              f.tabs = f.tabs.filter((t) => t.instance !== args.instance);
+              const neighbor = f.tabs[index] ?? f.tabs.at(-1);
+              if (selected && neighbor) neighbor.selected = true;
+            }
+            f.appliedTabMutations.push({ cmd, instance: args.instance });
+            return {};
+          } finally {
+            f.tabMutationInFlight--;
+          }
         }
         if (cmd === "remote_status") {
           f.statusInFlight++;
@@ -2547,6 +2601,297 @@ const fs = require("node:fs");
     0,
   );
   assert(!(await activePanel().locator(".viewer-toolbar").isVisible()));
+  // Rapid local choices outrank old snapshots, and native mutations stay ordered.
+  await load();
+  await page.evaluate(() => {
+    window.fixture.tabs = ["A", "B", "C", "D", "E"].map((letter, index) => ({
+      instance: `phone-${letter.toLowerCase()}`,
+      id: `session-${letter.toLowerCase()}`,
+      name: `测试手机 ${letter}`,
+      selected: index === 0,
+    }));
+  });
+  await page.getByRole("tab", { name: "测试手机 A", exact: true }).waitFor();
+  await page.evaluate(() => {
+    window.fixture.holdTabSnapshot = true;
+  });
+  await page.waitForFunction(() => !!window.fixture.releaseTabSnapshot);
+  await page.evaluate(() => {
+    window.fixture.holdTabMutation = "phone-b";
+  });
+  const rapidStart = await page.evaluate(() => window.fixture.calls.length);
+  await page.getByRole("tab", { name: "测试手机 B", exact: true }).click();
+  await page.waitForFunction(() => !!window.fixture.releaseTabMutation);
+  await page.getByRole("tab", { name: "测试手机 C", exact: true }).click();
+  await page.getByRole("tab", { name: "测试手机 E", exact: true }).click();
+  await page.waitForFunction(
+    () =>
+      document.querySelector(".viewer-tab-panel:not([hidden])")?.id ===
+      "panel-phone-e",
+  );
+  await page.evaluate(() => {
+    const f = window.fixture;
+    f.rapidSelections = [];
+    f.selectionObserver = new MutationObserver(() => {
+      f.rapidSelections.push(
+        document.querySelector(".viewer-tab-panel:not([hidden])")?.id,
+      );
+    });
+    f.selectionObserver.observe(document.body, {
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["hidden"],
+    });
+    f.releaseTabSnapshot();
+    f.releaseTabSnapshot = null;
+  });
+  await page.waitForFunction(() => window.fixture.tabSnapshotInFlight === 0);
+  await page.evaluate(
+    () =>
+      new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve)),
+      ),
+  );
+  assert.equal(
+    await page.evaluate(
+      () => document.querySelector(".viewer-tab-panel:not([hidden])")?.id,
+    ),
+    "panel-phone-e",
+    "an old A snapshot cannot replace the newer E intent while B is pending",
+  );
+  assert.equal(
+    await page.evaluate(() => window.fixture.tabMutationInFlight),
+    1,
+  );
+  await page.evaluate(() => {
+    window.fixture.releaseTabMutation();
+    window.fixture.releaseTabMutation = null;
+  });
+  await page.waitForFunction(
+    () =>
+      window.fixture.tabMutationInFlight === 0 &&
+      window.fixture.tabs.find((tab) => tab.selected)?.instance === "phone-e",
+  );
+  await page.waitForFunction(
+    () =>
+      document.querySelector(".viewer-tab-panel:not([hidden])")?.id ===
+      "panel-phone-e",
+  );
+  await page.evaluate(
+    () =>
+      new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve)),
+      ),
+  );
+  const rapidResult = await page.evaluate((before) => {
+    window.fixture.selectionObserver.disconnect();
+    return {
+      maxMutations: window.fixture.tabMutationMaxInFlight,
+      maxSnapshots: window.fixture.tabSnapshotMaxInFlight,
+      selections: window.fixture.rapidSelections,
+      calls: window.fixture.calls.slice(before),
+      applied: window.fixture.appliedTabMutations,
+    };
+  }, rapidStart);
+  assert.equal(
+    rapidResult.maxMutations,
+    1,
+    "native tab commands must not overtake each other",
+  );
+  assert.equal(
+    rapidResult.maxSnapshots,
+    1,
+    "poll and post-mutation refresh share one native read",
+  );
+  assert(
+    rapidResult.selections.every((id) => id === "panel-phone-e"),
+    "late native work cannot flash an older selection",
+  );
+  assert.deepEqual(
+    rapidResult.applied.map((item) => item.instance),
+    ["phone-b", "phone-c", "phone-e"],
+  );
+  assert.equal(
+    rapidResult.calls.filter(
+      (call) => call.cmd === "remote_input" && call.args.input != null,
+    ).length,
+    0,
+    "local rapid tab choices never inject remote input",
+  );
+  assert.equal(
+    rapidResult.calls.filter((call) => call.cmd === "viewer_reconnect").length,
+    0,
+  );
+  await activePanel().getByAltText("远端桌面").waitFor();
+  await activePanel().locator(".remote-screen").focus();
+  const routedAfterRapid = await page.evaluate(
+    () => window.fixture.calls.length,
+  );
+  await page.keyboard.press("J");
+  await page.waitForFunction(
+    (before) =>
+      window.fixture.calls
+        .slice(before)
+        .filter(
+          (call) =>
+            call.cmd === "remote_input" && call.args.input?.kind === "key",
+        ).length === 2,
+    routedAfterRapid,
+  );
+  assert(
+    await page.evaluate(
+      (before) =>
+        window.fixture.calls
+          .slice(before)
+          .filter(
+            (call) =>
+              call.cmd === "remote_input" && call.args.input?.kind === "key",
+          )
+          .every((call) => call.args.id === "session-e"),
+      routedAfterRapid,
+    ),
+  );
+  // A rejected newest choice rolls back to native truth and remains visible as an error.
+  await page.evaluate(() => {
+    window.fixture.failTabSelect = "phone-b";
+  });
+  await page.getByRole("tab", { name: "测试手机 B", exact: true }).click();
+  await page
+    .getByRole("alertdialog", { name: "操作未完成", exact: true })
+    .waitFor();
+  await page.waitForFunction(
+    () =>
+      document.querySelector(".viewer-tab-panel:not([hidden])")?.id ===
+      "panel-phone-e",
+  );
+  assert.equal(
+    await page.evaluate(
+      () => window.fixture.tabs.find((tab) => tab.selected)?.instance,
+    ),
+    "phone-e",
+  );
+  await page.getByRole("button", { name: "知道了", exact: true }).click();
+  // Closing a queued background tab cannot overtake the older select or undo E.
+  await load();
+  await page.evaluate(() => {
+    window.fixture.tabs = ["A", "B", "C", "D", "E"].map((letter, index) => ({
+      instance: `phone-${letter.toLowerCase()}`,
+      id: `session-${letter.toLowerCase()}`,
+      name: `测试手机 ${letter}`,
+      selected: index === 0,
+    }));
+    window.fixture.holdTabMutation = "phone-b";
+  });
+  await page.getByRole("tab", { name: "测试手机 A", exact: true }).waitFor();
+  await page.getByRole("tab", { name: "测试手机 B", exact: true }).click();
+  await page.waitForFunction(() => !!window.fixture.releaseTabMutation);
+  await page
+    .getByRole("button", { name: "关闭标签 测试手机 C", exact: true })
+    .click();
+  await page.getByRole("tab", { name: "测试手机 E", exact: true }).click();
+  await page.waitForFunction(
+    () =>
+      document.querySelector(".viewer-tab-panel:not([hidden])")?.id ===
+      "panel-phone-e",
+  );
+  assert.equal(
+    await page.evaluate(() => window.fixture.tabMutationInFlight),
+    1,
+  );
+  assert.equal(
+    await page.locator(".viewer-tab-panel").count(),
+    5,
+    "a queued close waits for native execution",
+  );
+  await page.evaluate(() => {
+    window.fixture.releaseTabMutation();
+    window.fixture.releaseTabMutation = null;
+  });
+  await page.waitForFunction(
+    () =>
+      window.fixture.tabMutationInFlight === 0 &&
+      window.fixture.tabs.length === 4 &&
+      window.fixture.tabs.find((tab) => tab.selected)?.instance === "phone-e",
+  );
+  await page.waitForFunction(
+    () =>
+      document.querySelectorAll(".viewer-tab-panel").length === 4 &&
+      document.querySelector(".viewer-tab-panel:not([hidden])")?.id ===
+        "panel-phone-e",
+  );
+  const closeOrder = await page.evaluate(
+    () => window.fixture.appliedTabMutations,
+  );
+  assert.deepEqual(closeOrder, [
+    { cmd: "viewer_select_tab", instance: "phone-b" },
+    { cmd: "viewer_close_tab", instance: "phone-c" },
+    { cmd: "viewer_select_tab", instance: "phone-e" },
+  ]);
+  assert.equal(
+    await page.evaluate(() => window.fixture.tabMutationMaxInFlight),
+    1,
+  );
+  assert.equal(
+    await page.evaluate(
+      () =>
+        window.fixture.calls.filter((call) => call.cmd === "viewer_reconnect")
+          .length,
+    ),
+    0,
+  );
+  // A failed close must remain visible even when a later choice succeeds.
+  await page.evaluate(() => {
+    window.fixture.holdTabMutation = "phone-b";
+    window.fixture.failTabClose = "phone-d";
+    window.fixture.appliedTabMutations = [];
+  });
+  await page.getByRole("tab", { name: "测试手机 B", exact: true }).click();
+  await page.waitForFunction(() => !!window.fixture.releaseTabMutation);
+  await page
+    .getByRole("button", { name: "关闭标签 测试手机 D", exact: true })
+    .click();
+  await page.getByRole("tab", { name: "测试手机 A", exact: true }).click();
+  await page.evaluate(() => {
+    window.fixture.releaseTabMutation();
+    window.fixture.releaseTabMutation = null;
+  });
+  await page
+    .getByRole("alertdialog", { name: "操作未完成", exact: true })
+    .waitFor();
+  await page.waitForFunction(
+    () =>
+      window.fixture.tabMutationInFlight === 0 &&
+      window.fixture.tabs.find((tab) => tab.selected)?.instance === "phone-a",
+  );
+  await page.waitForFunction(
+    () =>
+      document.querySelector(".viewer-tab-panel:not([hidden])")?.id ===
+      "panel-phone-a",
+  );
+  assert(
+    await page
+      .getByRole("alertdialog", { name: "操作未完成", exact: true })
+      .locator(".failure-dialog-content p")
+      .isVisible(),
+  );
+  await page.getByRole("button", { name: "知道了", exact: true }).click();
+  assert.equal(await page.locator(".viewer-tab-panel").count(), 4);
+  assert(
+    await page
+      .getByRole("tab", { name: "测试手机 D", exact: true })
+      .isVisible(),
+  );
+  assert.deepEqual(
+    await page.evaluate(() => window.fixture.appliedTabMutations),
+    [
+      { cmd: "viewer_select_tab", instance: "phone-b" },
+      { cmd: "viewer_select_tab", instance: "phone-a" },
+    ],
+  );
+  assert.equal(
+    await page.evaluate(() => window.fixture.tabMutationMaxInFlight),
+    1,
+  );
   // Frame failure and timer polling must share a single status request, even
   // when StrictMode replays effects or a slow native status call is in flight.
   await load();
@@ -2570,7 +2915,7 @@ const fs = require("node:fs");
   assert.deepEqual(errors, []);
   await browser.close();
   console.log(
-    "PASS repeated left/right pairs, multi-button capture, queued outside UP then release-all, external held entry, blur/lost-capture cancellation, ordered remote Alt+Tab and view/paused/ended guards; fit/quality/FPS/pause/terminal/read-only, five-session fullscreen/overflow navigation, adjacent close and local popup isolation coverage. Synthetic IPC only.",
+    "PASS repeated left/right pairs, multi-button capture, queued outside UP then release-all, external held entry, blur/lost-capture cancellation, ordered remote Alt+Tab and view/paused/ended guards; fit/quality/FPS/pause/terminal/read-only, five-session fullscreen/overflow navigation, adjacent close, rapid ordered tab changes and local popup isolation coverage. Synthetic IPC only.",
   );
 })().catch((e) => {
   console.error(e);

@@ -13,6 +13,7 @@ import {
 import { FilesPanel } from "./files";
 import { ViewerSessionMenu, type ViewerTab } from "./viewer-session-menu";
 import { ViewerTabStrip } from "./viewer-tab-strip";
+import { ViewerTabsController } from "./viewer-tabs-policy";
 import { PageActions } from "./page-actions";
 import "./style.css";
 import "./desktop-theme.css";
@@ -3026,46 +3027,30 @@ function ViewerWorkspace({ initialId }: { initialId: string }) {
       window.removeEventListener("resize", read);
     };
   }, []);
-  const refresh = useCallback(async () => {
-    const next = await invoke<ViewerTab[]>("viewer_tabs");
-    if (Array.isArray(next)) setTabs(next);
-  }, []);
+  const tabsController = useRef<ViewerTabsController<ViewerTab> | null>(null);
+  if (!tabsController.current)
+    tabsController.current = new ViewerTabsController<ViewerTab>({
+      read: () => invoke<ViewerTab[]>("viewer_tabs"),
+      publish: setTabs,
+      failed: (error) => setProblem(errorText(error)),
+    });
   useEffect(() => {
-    let live = true;
-    let busy = false;
-    const poll = async () => {
-      if (busy) return;
-      busy = true;
-      try {
-        const next = await invoke<ViewerTab[]>("viewer_tabs");
-        if (live && Array.isArray(next)) setTabs(next);
-      } catch (e) {
-        if (live) setProblem(errorText(e));
-      } finally {
-        busy = false;
-      }
-    };
-    void poll();
-    const timer = window.setInterval(() => void poll(), 500);
+    const controller = tabsController.current!;
+    controller.start();
+    const timer = window.setInterval(() => controller.refresh(), 500);
     return () => {
-      live = false;
       window.clearInterval(timer);
+      controller.stop();
     };
   }, []);
-  const select = useCallback(
-    (tab: ViewerTab) => {
-      setTabs((old) =>
-        old.map((t) => ({ ...t, selected: t.instance === tab.instance })),
-      );
-      void invoke("viewer_select_tab", { instance: tab.instance })
-        .then(refresh)
-        .catch((e) => {
-          setProblem(errorText(e));
-          void refresh();
-        });
-    },
-    [refresh],
-  );
+  const select = useCallback((tab: ViewerTab) => {
+    setTabs((old) =>
+      old.map((t) => ({ ...t, selected: t.instance === tab.instance })),
+    );
+    void tabsController.current?.mutate(() =>
+      invoke("viewer_select_tab", { instance: tab.instance }),
+    );
+  }, []);
   const selectionFocus = useRef<{ instance: string; selector: string } | null>(
     null,
   );
@@ -3106,18 +3091,16 @@ function ViewerWorkspace({ initialId }: { initialId: string }) {
     instance: string;
     element: Element | null;
   } | null>(null);
-  const close = useCallback(
-    (tab: ViewerTab) => {
-      closingFocus.current = {
-        instance: tab.instance,
-        element: document.activeElement,
-      };
-      void invoke("viewer_close_tab", { instance: tab.instance })
-        .then(refresh)
-        .catch((e) => setProblem(errorText(e)));
-    },
-    [refresh],
-  );
+  const close = useCallback((tab: ViewerTab) => {
+    closingFocus.current = {
+      instance: tab.instance,
+      element: document.activeElement,
+    };
+    void tabsController.current?.mutate(
+      () => invoke("viewer_close_tab", { instance: tab.instance }),
+      "always",
+    );
+  }, []);
   useEffect(() => {
     const intent = closingFocus.current;
     if (!intent || tabs.some((tab) => tab.instance === intent.instance)) return;

@@ -11,6 +11,7 @@ case "$native_target:$(uname -m):$(dpkg --print-architecture)" in
 esac
 npm ci
 npm run build
+node --test scripts/test-feedback-policy.mjs scripts/test-viewer-display-policy.mjs scripts/test-viewer-notice-policy.mjs scripts/test-viewer-tabs-policy.mjs
 cargo fmt --all -- --check
 cargo test --locked -p farsail-update-helper
 cargo clippy --locked -p farsail-update-helper --all-targets -- -D warnings
