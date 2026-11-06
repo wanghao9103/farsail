@@ -52,6 +52,7 @@ pub struct Binding {
     name: String,
     selected: AtomicBool,
     visibility_epoch: AtomicU64,
+    minimized: AtomicBool,
     pub id: Mutex<String>,
     instance: String,
     opened: AtomicBool,
@@ -424,16 +425,21 @@ fn window_binding(
 }
 
 async fn sync_visibility(window: &tauri::WebviewWindow) {
+    let minimized = window.is_minimized().unwrap_or(false);
     let snapshots: Vec<_> = {
         let windows = window.state::<Windows>();
         let map = windows.0.lock().unwrap();
         map.values()
             .filter(|b| b.host() == window.label())
             .map(|b| {
+                if b.minimized.swap(minimized, Ordering::SeqCst) != minimized {
+                    b.visibility_epoch
+                        .store(next_visibility_epoch(), Ordering::SeqCst);
+                }
                 (
                     b.id.lock().unwrap().clone(),
                     b.visibility_epoch.load(Ordering::SeqCst),
-                    b.selected.load(Ordering::SeqCst),
+                    b.selected.load(Ordering::SeqCst) && !minimized,
                 )
             })
             .collect()
@@ -767,6 +773,7 @@ pub async fn viewer_open(
         name,
         selected: AtomicBool::new(true),
         visibility_epoch: AtomicU64::new(next_visibility_epoch()),
+        minimized: AtomicBool::new(false),
         id: Mutex::new(id.clone()),
         instance: next_window_instance(),
         opened: AtomicBool::new(false),
@@ -902,6 +909,7 @@ pub fn smoke_setup(app: &tauri::AppHandle) -> tauri::Result<()> {
         name: "合成手机".into(),
         selected: AtomicBool::new(true),
         visibility_epoch: AtomicU64::new(next_visibility_epoch()),
+        minimized: AtomicBool::new(false),
         id: Mutex::new(id.into()),
         instance: next_window_instance(),
         opened: AtomicBool::new(false),
@@ -938,6 +946,7 @@ pub fn smoke_setup(app: &tauri::AppHandle) -> tauri::Result<()> {
             name: "合成手机".into(),
             selected: AtomicBool::new(true),
             visibility_epoch: AtomicU64::new(next_visibility_epoch()),
+            minimized: AtomicBool::new(false),
             id: Mutex::new(id.clone()),
             instance: next_window_instance(),
             opened: AtomicBool::new(true),
@@ -974,6 +983,7 @@ pub fn smoke_setup(app: &tauri::AppHandle) -> tauri::Result<()> {
             name: "可拆分合成标签".into(),
             selected: AtomicBool::new(false),
             visibility_epoch: AtomicU64::new(next_visibility_epoch()),
+            minimized: AtomicBool::new(false),
             id: Mutex::new("00000000-0000-0000-0000-000000000004".into()),
             instance: next_window_instance(),
             opened: AtomicBool::new(true),
@@ -1222,6 +1232,7 @@ mod tests {
             name: "测试设备".into(),
             selected: AtomicBool::new(true),
             visibility_epoch: AtomicU64::new(next_visibility_epoch()),
+            minimized: AtomicBool::new(false),
             id: Mutex::new("synthetic".into()),
             instance: next_window_instance(),
             opened: AtomicBool::new(true),
