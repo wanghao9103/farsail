@@ -1,3 +1,5 @@
+**English** | [简体中文](WI-ANDROID-CAPTURE-CADENCE-044.zh-CN.md)
+
 # Android capture cadence and accelerated JPEG
 
 2026-11-06. Investigation found an explicit 100 ms projection admission interval and the portable JPEG encoder's AVX2-only SIMD support. On one connected ARM phone, a 48-second observation produced 8.37 frames/s; combined scaling/encoding had a 48 ms median and 77 ms p95. This is an observation of one device and workload, not a controlled encoder benchmark or a diagnosis of every stalled session.
@@ -6,4 +8,6 @@ The candidate uses statically bundled libjpeg-turbo on Android, retaining 4:4:4 
 
 Local validation: 25 Android Rust and 10 media tests passed, as did all-target Clippy, formatting and shell syntax checks. All 12 JVM tests passed, including three new cadence cases. A Windows Unicode-path test-class loading failure was reproduced for all test classes; the same sources passed from an ASCII temporary directory. These host tests do not execute the Android-specific native encoder. CI produces a separate ARM media test executable so color/geometry/size checks and a short synthetic comparison can run on the connected phone before installing the APK.
 
-Pending: Android native build, ARM codec conformance, real-device encode measurements and four-window acceptance. Neither 30 displayed FPS nor a complete fix for reconnects is claimed. The current candidate does not change the accessibility screenshot cadence, the server or public update feeds.
+The signed candidate from `4f12158` built successfully. All 10 native media tests passed on the connected ARM phone, including full-color sampling, geometry and byte limits. An explicit synthetic 1088×502, quality-80 comparison encoded five identical inputs per backend: the portable encoder took 177,291 µs total; the accelerated encoder took 67,527 µs. Outputs were 568,032 and 568,248 bytes. This measures only JPEG encoding of synthetic pixels in the shell test process; it is not game capture, scaling, delivery, display FPS or an application-level speedup. The package retains the installed certificate and was verified before a single-phone trial update. The documentation language-switch check was fixed locally and passes for all 71 document pairs.
+
+Pending: post-update real-device capture measurements and four-window acceptance. Neither 30 displayed FPS nor a complete fix for reconnects is claimed. The current candidate does not change the accessibility screenshot cadence, the server or public update feeds.
