@@ -325,7 +325,8 @@ const fs = require("node:fs");
           if (f.reconnectSuccess) {
             f.closed = false;
             f.retryable = false;
-            if (f.hideDisplaysUntil) f.hideDisplaysUntil = Date.now() + 400;
+            if (f.hideDisplaysUntil)
+              f.hideDisplaysUntil = Date.now() + (f.restoreDisplayDelay ?? 400);
             f.recovery.phase = "connected";
             return { id: "recovered" };
           }
@@ -1941,7 +1942,8 @@ const fs = require("node:fs");
     await page.evaluate((hold) => {
       const f = window.fixture;
       f.heartbeat = false;
-      f.hideDisplaysUntil = Date.now() + 400;
+      f.hideDisplaysUntil = Date.now() + 1800;
+      f.restoreDisplayDelay = 1800;
       f.holdSelect = hold;
       f.reconnectSuccess = true;
       f.retryable = true;
@@ -1949,6 +1951,26 @@ const fs = require("node:fs");
     }, holdSelect);
     await page.waitForFunction(() =>
       window.fixture.calls.some((c) => c.cmd === "viewer_reconnect"),
+    );
+    await page.waitForFunction(() =>
+      window.fixture.calls.some(
+        (c) => c.cmd === "remote_status" && c.args.id === "recovered",
+      ),
+    );
+    await page.waitForTimeout(600);
+    assert.equal(
+      await page.evaluate(() => Date.now() < window.fixture.hideDisplaysUntil),
+      true,
+    );
+    assert.equal(
+      await page.evaluate(
+        () =>
+          window.fixture.calls.filter(
+            (c) => c.cmd === "media_next" && c.args.id === "recovered",
+          ).length,
+      ),
+      0,
+      "waiting for display metadata must not repeatedly copy a cached frame",
     );
     await page.waitForFunction(() =>
       window.fixture.calls.some(

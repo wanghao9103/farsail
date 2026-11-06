@@ -4138,6 +4138,13 @@ function Viewer({
           await new Promise((resolve) => window.setTimeout(resolve, 200));
           continue;
         }
+        // These stages are advanced by status/selection, never by a frame.
+        // Leave the cursor untouched so a static cached frame remains available.
+        const stage = gate.snapshot().stage;
+        if (stage !== "ready" && stage !== "awaiting_frame") {
+          await new Promise((resolve) => window.setTimeout(resolve, 50));
+          continue;
+        }
         try {
           const data = new Uint8Array(
             await invoke<ArrayBuffer>("media_next", {
