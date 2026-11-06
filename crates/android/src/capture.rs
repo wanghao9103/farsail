@@ -189,13 +189,17 @@ pub(crate) fn encode_rgba_profile(
         origin_x: 0,
         origin_y: 0,
     };
-    // Both qualities use the media encoder's 4:4:4 sampling. Keep its byte bound.
-    match JpegFrame::encode_rgb(meta.clone(), &rgb, profile.quality) {
-        Ok(frame) => Some(frame),
-        Err(farsail_media::Error::TooLarge) if profile.quality > 80 => {
-            JpegFrame::encode_rgb(meta, &rgb, (profile.quality - 5).max(80)).ok()
+    // All fallback qualities retain 4:4:4 sampling and the existing byte bound.
+    // A native noisy frame may need Q80 even when Q85 is still too large.
+    let mut quality = profile.quality;
+    loop {
+        match JpegFrame::encode_rgb(meta.clone(), &rgb, quality) {
+            Ok(frame) => return Some(frame),
+            Err(farsail_media::Error::TooLarge) if quality > 80 => {
+                quality = (quality - 5).max(80);
+            }
+            Err(_) => return None,
         }
-        Err(_) => None,
     }
 }
 
@@ -278,6 +282,58 @@ impl ScreenshotEncoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn oversized_native_frame_retries_the_supported_quality_floor() {
+        let (width, height) = (1080, 2560);
+        let mut state = 0x12345678u32;
+        let mut rgba = Vec::with_capacity(width * height * 4);
+        for _ in 0..width * height {
+            for _ in 0..3 {
+                state = state.wrapping_mul(1664525).wrapping_add(1013904223);
+                rgba.push((state >> 24) as u8);
+            }
+            rgba.push(255);
+        }
+        let rgb = rgba_to_rgb(&rgba, width as u32, height as u32, width * 4).unwrap();
+        let meta = FrameMeta {
+            monitor: 1,
+            layout: 1,
+            sequence: 0,
+            captured_ms: 0,
+            width: width as u32,
+            height: height as u32,
+            origin_x: 0,
+            origin_y: 0,
+        };
+        let middle = JpegFrame::encode_rgb(meta.clone(), &rgb, 85);
+        eprintln!(
+            "Q85 bytes/error: {:?}",
+            middle.as_ref().map(|frame| frame.jpeg.len())
+        );
+        assert!(matches!(middle, Err(farsail_media::Error::TooLarge)));
+        let floor =
+            JpegFrame::encode_rgb(meta, &rgb, 80).expect("the supported quality floor fits");
+        eprintln!("Q80 bytes: {}", floor.jpeg.len());
+        let actual = encode_rgba_profile(
+            &rgba,
+            width as u32,
+            height as u32,
+            width * 4,
+            1,
+            Settings {
+                profile: VideoProfile {
+                    profile: 2,
+                    generation: 0,
+                },
+                edge: None,
+                quality: 90,
+            },
+        )
+        .expect("must try the legal floor before dropping the image");
+        assert_eq!(actual.jpeg, floor.jpeg);
+        assert_eq!((actual.meta.width, actual.meta.height), (1080, 2560));
+    }
 
     #[test]
     fn delivery_feedback_uses_base_rtt_and_recovers_quality_slowly() {

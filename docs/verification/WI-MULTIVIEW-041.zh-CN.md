@@ -111,3 +111,9 @@ JPEG 部分改用 `subarray` 视图交给 Blob，去掉每帧一次载荷大小�
 这些是发版前源码审查与合成 IPC 复现，不是用户实体四手机上的问题捕获；未测 Wi-Fi，无新的整机帧率或延迟保证。复查还覆盖捕获 epoch / profile 拒绝、暂停 / 恢复、重连组件身份、按键布局归属与资源清理，没有据猜测修改其他协议或采集节奏。
 
 最终生产构建、Chromium / WebKit 完整查看器回归和包含上述故障注入的双引擎专项通过；状态策略 30 项通过。最终日志为 build-terminal、final-chromium、final-webkit、terminal-chromium、terminal-webkit、policies-final。复查所覆盖的远程画面 / 输入 / 生命周期路径中未再发现新的可复现缺陷，不代表实体设备、无线环境或软件全局无 Bug；没有发布新安装包。
+
+## JPEG 大小上限的完整回退
+
+继续复查安卓 `encode_rgba_profile` 时，确定性 1080×2560 高熵 RGBA 测试复现了丢图：Q90 / Q85 超出限制后旧代码返回 None，但 Q80 可编码为 3,855,888 字节，低于原 4,000,000 字节上限。现在按现有 80–90 质量范围最多尝试三次，直至合法最低质量；不会降到 80 以下，不改变全色 4:4:4、像素尺寸或大小预算。所有合法质量仍超限时继续拒绝。
+
+回归 `oversized_native_frame_retries_the_supported_quality_floor` 在旧实现实际失败；修复后逐字节匹配合法 Q80 参照，尺寸仍为 1080×2560。最终安卓库 25 passed / 2 ignored、all-target Clippy 禁止警告和格式检查通过。证据 `.local/jpeg-fallback-20261106/`，仅是合成内容的编码复现，不代表已定位用户手机现场，也没有单独量化最坏三次编码的手机 CPU 成本。普通一次就成功的帧不增加尝试，截图缓存仍可复用静止画面。
