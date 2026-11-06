@@ -148,6 +148,25 @@ pub(crate) fn encode_rgba_profile(
     layout: u64,
     profile: Settings,
 ) -> Option<JpegFrame> {
+    encode_rgba_profile_timed(bytes, width, height, row_stride, layout, profile)
+        .map(|out| out.frame)
+}
+
+pub(crate) struct EncodedCapture {
+    pub frame: JpegFrame,
+    pub convert_ms: u64,
+    pub jpeg_ms: u64,
+}
+
+pub(crate) fn encode_rgba_profile_timed(
+    bytes: &[u8],
+    width: u32,
+    height: u32,
+    row_stride: usize,
+    layout: u64,
+    profile: Settings,
+) -> Option<EncodedCapture> {
+    let started = Instant::now();
     let span = rgba_span(width, height, row_stride, 4)?;
     let bytes = bytes.get(..span)?;
     let (out_w, out_h) = profile.output_size(width, height)?;
@@ -189,12 +208,20 @@ pub(crate) fn encode_rgba_profile(
         origin_x: 0,
         origin_y: 0,
     };
+    let convert_ms = started.elapsed().as_millis() as u64;
+    let jpeg_started = Instant::now();
     // All fallback qualities retain 4:4:4 sampling and the existing byte bound.
     // A native noisy frame may need Q80 even when Q85 is still too large.
     let mut quality = profile.quality;
     loop {
         match JpegFrame::encode_rgb(meta.clone(), &rgb, quality) {
-            Ok(frame) => return Some(frame),
+            Ok(frame) => {
+                return Some(EncodedCapture {
+                    frame,
+                    convert_ms,
+                    jpeg_ms: jpeg_started.elapsed().as_millis() as u64,
+                });
+            }
             Err(farsail_media::Error::TooLarge) if quality > 80 => {
                 quality = (quality - 5).max(80);
             }

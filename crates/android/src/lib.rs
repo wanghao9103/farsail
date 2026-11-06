@@ -32,6 +32,8 @@ struct MediaDiagnostics {
     ack_ms: u64,
     input_wait_ms: u64,
     encode_ms: u64,
+    convert_ms: u64,
+    jpeg_ms: u64,
     encoded_width: u32,
     encoded_height: u32,
     pending: VecDeque<(u64, Instant)>,
@@ -226,7 +228,7 @@ impl Host {
         };
         let started = Instant::now();
         let Some(image) =
-            capture::encode_rgba_profile(bytes, width, height, stride, layout, profile)
+            capture::encode_rgba_profile_timed(bytes, width, height, stride, layout, profile)
         else {
             return false;
         };
@@ -238,7 +240,14 @@ impl Host {
             return false;
         }
         local.media.encode_ms = started.elapsed().as_millis() as u64;
-        self.publish_locked(&mut local, image.jpeg, image.meta.width, image.meta.height)
+        local.media.convert_ms = image.convert_ms;
+        local.media.jpeg_ms = image.jpeg_ms;
+        self.publish_locked(
+            &mut local,
+            image.frame.jpeg,
+            image.frame.meta.width,
+            image.frame.meta.height,
+        )
     }
     fn publish_accessibility_encoded(
         &self,
@@ -925,6 +934,7 @@ impl Host {
                     "sendMs":l.media.send_ms,"publishToSendMs":l.media.publish_to_send_ms,
                     "ackMs":l.media.ack_ms,"inputWaitMs":l.media.input_wait_ms,
                     "encodeMs":l.media.encode_ms,"encodedWidth":l.media.encoded_width,"encodedHeight":l.media.encoded_height,
+                    "convertMs":l.media.convert_ms,"jpegMs":l.media.jpeg_ms,"jpegEncoder":farsail_media::JPEG_ENCODER,
                     "profile":l.video_profile.profile,"profileGeneration":l.video_profile.generation,
                     "viewportEdge":l.viewport_edge,
                     "jpegQuality":Self::settings(&l).quality,

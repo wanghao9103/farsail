@@ -1,7 +1,7 @@
 name: Multi-view client verification
 on:
   push:
-    branches: ["codex/multi-viewer-resilience", "codex/immersive-viewer-cascade", "codex/parallel-viewer-auth-isolation", "codex/multiview-stream-demand", "codex/multiview-media-recovery"]
+    branches: ["codex/multi-viewer-resilience", "codex/immersive-viewer-cascade", "codex/parallel-viewer-auth-isolation", "codex/multiview-stream-demand", "codex/multiview-media-recovery", "codex/android-capture-cadence"]
 permissions:
   contents: read
 jobs:
@@ -24,6 +24,8 @@ jobs:
           packages: platform-tools
           log-accepted-android-sdk-licenses: false
       - run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0' 'ndk;27.2.12479018'
+      - name: Native JPEG build tools
+        run: sudo apt-get update && sudo apt-get install -y cmake nasm
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.93.0
@@ -41,6 +43,13 @@ jobs:
       - run: cargo test --locked -p farsail-client --lib
       - run: cargo test --locked -p farsail-transport -p farsail-android
       - run: cargo clippy --locked -p farsail-transport -p farsail-android --all-targets -- -D warnings
+      - name: Build ARM codec validation executable
+        run: scripts/build-android.sh --codec-tests
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Android-codec-tests
+          path: .local/android-codec-tests/farsail-media-tests
+          if-no-files-found: error
       - name: Build signed Android APK
         env:
           ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/farsail-installed.jks
@@ -54,6 +63,7 @@ jobs:
           if-no-files-found: error
 
   windows:
+    if: github.ref != 'refs/heads/codex/android-capture-cadence'
     runs-on: windows-2022
     timeout-minutes: 60
     steps:

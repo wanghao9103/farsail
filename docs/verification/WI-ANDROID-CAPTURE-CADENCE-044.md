@@ -1,0 +1,9 @@
+# Android capture cadence and accelerated JPEG
+
+2026-11-06. Investigation found an explicit 100 ms projection admission interval and the portable JPEG encoder's AVX2-only SIMD support. On one connected ARM phone, a 48-second observation produced 8.37 frames/s; combined scaling/encoding had a 48 ms median and 77 ms p95. This is an observation of one device and workload, not a controlled encoder benchmark or a diagnosis of every stalled session.
+
+The candidate uses statically bundled libjpeg-turbo on Android, retaining 4:4:4 sampling at quality 80–90, existing geometry checks, byte limits and protocol. A thread-local compressor avoids repeated initialization. Other platforms keep their existing encoder. Projection admission targets 30 FPS, tolerates small display-clock jitter, resets on surface replacement and avoids catch-up bursts after slow encoding. It still acquires only the latest buffer; the existing demand gates and bounded media sender remain in place. Capture cadence and conversion/JPEG timings are exposed by the existing local diagnostics.
+
+Local validation: 25 Android Rust and 10 media tests passed, as did all-target Clippy, formatting and shell syntax checks. All 12 JVM tests passed, including three new cadence cases. A Windows Unicode-path test-class loading failure was reproduced for all test classes; the same sources passed from an ASCII temporary directory. These host tests do not execute the Android-specific native encoder. CI produces a separate ARM media test executable so color/geometry/size checks and a short synthetic comparison can run on the connected phone before installing the APK.
+
+Pending: Android native build, ARM codec conformance, real-device encode measurements and four-window acceptance. Neither 30 displayed FPS nor a complete fix for reconnects is claimed. The current candidate does not change the accessibility screenshot cadence, the server or public update feeds.
