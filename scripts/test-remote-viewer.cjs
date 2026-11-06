@@ -439,6 +439,28 @@ const fs = require("node:fs");
     previousImage,
   );
   await other.close();
+  // Updating local chrome must not restore an older, already revoked frame URL.
+  const retainedFrame = await page.evaluate(() => {
+    window.fixture.heartbeat = false;
+    return document.querySelector('img[alt="远端桌面"]').getAttribute("src");
+  });
+  await page.waitForTimeout(1100); // Include the periodic status/FPS UI updates.
+  assert.equal(
+    await page.getByAltText("远端桌面").getAttribute("src"),
+    retainedFrame,
+  );
+  assert(
+    await page
+      .getByAltText("远端桌面")
+      .evaluate((image) => image.complete && image.naturalWidth > 0),
+  );
+  if (process.env.UI_ONLY_FRAME_HOTPATH === "1") {
+    await browser.close();
+    console.log(
+      "PASS decoded-frame isolation and latest URL across UI updates",
+    );
+    return;
+  }
   await load();
   // Moving a native window and opening remote tools are separate actions.
   await page.mouse.move(500, 600);

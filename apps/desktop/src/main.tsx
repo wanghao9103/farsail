@@ -2989,6 +2989,16 @@ type Picture = {
   width: number;
   height: number;
 };
+function sameFrameGeometry(a: Picture | null, b: Picture | null): boolean {
+  return (
+    !!a &&
+    !!b &&
+    a.display === b.display &&
+    a.layout === b.layout &&
+    a.width === b.width &&
+    a.height === b.height
+  );
+}
 function ViewerWorkspace({ initialId }: { initialId: string }) {
   const [tabs, setTabs] = useState<ViewerTab[]>([
     { instance: "initial", id: initialId, name: "远程设备", selected: true },
@@ -3375,7 +3385,12 @@ function Viewer({
     void request.then(clear, clear);
     return request;
   };
-  const [picture, setPicture] = useState<Picture | null>(null);
+  const [picture, setPictureState] = useState<Picture | null>(null);
+  const pictureMetadata = useRef<Picture | null>(null);
+  const setPicture = (next: Picture | null) => {
+    pictureMetadata.current = next;
+    setPictureState(next);
+  };
   const [fps, setFps] = useState(0);
   const [text, setText] = useState("");
   const [problem, setProblem] = useState("");
@@ -4170,14 +4185,24 @@ function Viewer({
           url.current = next;
           frameTimes.current.push(performance.now());
           if (frameTimes.current.length > 240) frameTimes.current.shift();
-          setPicture({
+          const nextPicture = {
             url: next,
             display,
             layout: Number(view.getBigUint64(9)),
             sequence,
             width: view.getUint32(33),
             height: view.getUint32(37),
-          });
+          };
+          // New pixels do not change toolbar or input state. Keep their hot path
+          // out of React; commit geometry changes together with new input handlers.
+          if (
+            sameFrameGeometry(pictureMetadata.current, nextPicture) &&
+            image.current
+          ) {
+            image.current.src = next;
+          } else {
+            setPicture(nextPicture);
+          }
           if (old) URL.revokeObjectURL(old);
         } catch (e) {
           if (live && !terminal) {
@@ -4797,8 +4822,19 @@ function Viewer({
         >
           {picture ? (
             <img
-              ref={image}
-              src={picture.url}
+              ref={(node) => {
+                image.current = node;
+                // A remount or unrelated UI update must retain the latest decoded
+                // image rather than resurrecting the metadata frame's revoked URL.
+                if (
+                  node &&
+                  url.current &&
+                  sameFrameGeometry(picture, pictureMetadata.current)
+                ) {
+                  if (node.getAttribute("src") !== url.current)
+                    node.src = url.current;
+                }
+              }}
               alt="远端桌面"
               style={{
                 cursor: inputBlocked ? "not-allowed" : "default",
