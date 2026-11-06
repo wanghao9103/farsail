@@ -36,3 +36,17 @@
 12 个公开附件独立下载并匹配 API SHA-256，三个平台签名、源码元信息、11 条校验和、原生托盘证据及逐字节重建通过；普通固定更新地址返回相同的 0.1.37 清单。初轮仅最后的通道比对失败；后续普通地址已相同，仅重试失败发布步骤，12 个版本附件的 ID、摘要、大小及时间均保持不变。未捕获初轮失败任务收到的响应正文，不推断其准确差异内容。一次慢速 Windows 重复下载改用同公开地址的独立匿名 HTTP/1.1 完整传输并核对摘要，原中断日志保留。
 
 证据：`.local/client-public-0.1.37/delivery-verification.json`、`verification.json`、`download-provenance.json`、`windows-http1-provenance.json`、`package-attempt1-status.json`、`immutable-assets-final.json`。Windows 安装包 SHA-256 为 `5b0e0adad38246653b0fd519dde361ff35494b322c8f2bde1e7b3d890641ae34`。控制端与 Windows 被控端均需更新才能覆盖界面及采集修复；没有发布安卓或协调服务。本次仍不代表原实体 GPU 故障或整夜运行验收通过。
+
+## 普通确认框与全屏覆盖补测（0.1.42）
+
+2026-11-06：用户补充普通软件、游戏或广告的确认框会使远控结束。此前三次重建预算不能覆盖较长的模式转换；现在同一次恢复最多持续 15 秒，退避从 150 ms 增至最多一秒，并每 25 ms 检查取消。只有重建后实际取得新帧，随后健康采集满五秒，才补充预算；成功构造或反复单帧不能延长失败期限。恢复时仍丢弃旧画面、坐标和输入，维持严格显示器身份、授权、会话及清理检查。
+
+`DuplicateOutput1` 返回的 `DXGI_ERROR_UNSUPPORTED`、`DXGI_ERROR_MODE_CHANGE_IN_PROGRESS`、`DXGI_ERROR_NOT_CURRENTLY_AVAILABLE` 和选中输出暂时消失现在进入上述有界恢复；这不是把所有错误统一重试。访问拒绝、授权终止和输入清理失败仍按原边界结束。持续采集失败只给当前会话提供显式“重新连接”，重新请求身份验证及批准，重复点击去重；没有自动无限新建会话。
+
+修复提交 `df6779b6d4faa9daaf02e805ee3d519011dd7fb6` 与 `aca78c9e6c179639d7ad495e3308e45bba630ffc` 均已包含于现网源码 `7ff536801d6e2bf2b426fab80ec9b6c9d805f9bc`。本地 main 已快进合并至该源码，未将过时的 0.1.40 候选发布覆盖较新的正式版。另一份固定 RGB 的测试实验已保存在本地补丁 / stash，未覆盖现网以窗口实际 GDI 颜色为参照的夹具。
+
+精确源 [Windows CI42133382209](https://github.com/wanghao9103/farsail/actions/runs/42133382209) 完整成功。真实 DXGI 读取自建窗口像素，五阶段分别为确认前、普通确认框可见、无边框全屏覆盖可见、覆盖关闭、确认框关闭；均命中本进程窗口，并与本窗口 GDI 参照逐通道相差不超过 24。参照值随阶段在 105 与 255 之间切换，帧数为 2 / 2 / 2 / 1 / 1。原先把主题色灰框当成纯黑的失败记录保留；最终夹具用实际主题颜色与阶段差异验证，未放宽画面归属检查。
+
+五阶段实际 reset 次数均为零。因此这是普通确认框及无边框覆盖期间真实采集继续的证据，不是实体用户 GPU 重置、独占全屏、分辨率切换或原现场 HRESULT 的复现。恢复期限与取消 / 新帧门禁另有纯状态回归。原始任务日志 49,839 字节，SHA-256 `1317e6e28ebf66cad3bc4d8f71c3c018e48281da98fd14ab6028f43a17f61e63`；见 `.local/capture-fullscreen-20261105/live-main-audit/native-capture-audit.json`。后来重复运行在全部测试步骤后取消，只作为补充，不替代上述完整成功运行。
+
+桌面 [0.1.42](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.42) 已正式发布，GitHub Latest 与普通固定更新入口一致，[发布流程42133536137](https://github.com/wanghao9103/farsail/actions/runs/42133536137)成功。只读公开审计通过 12 个附件、三个更新签名、11 条校验和、精确源码 CI、实际成功原生任务来源及重建；12 个版本附件身份和字节保持不变。Windows 安装包 8,842,288 字节，SHA-256 `76ccbd856f0c0c73fb9e518a7a465de4861e98f82713b1ec252e4c2797c28b2f`。证据 `.local/client-public-0.1.42-capture-audit/delivery-verification.json`。本次审计没有重发版本、修改通道或替用户安装；控制端与 Windows 被控端均需更新才覆盖完整修复。
