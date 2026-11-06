@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useId, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { flushSync } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { Device, Me, Pending, Remote, User } from "@farsail/ui";
@@ -3429,6 +3430,22 @@ function Viewer({
   const recoveryCycle = useRef(0);
   const minimumRecoveryCycle = useRef(0);
   const viewerLease = useRef({ active: true });
+  // Ending pixels must not invalidate the window lease used by manual recovery.
+  const mediaRunning = useRef(false);
+  const pendingFrame = useRef<{ image: HTMLImageElement; url: string } | null>(
+    null,
+  );
+  const stopMedia = () => {
+    mediaRunning.current = false;
+    const pending = pendingFrame.current;
+    pendingFrame.current = null;
+    if (pending) {
+      pending.image.removeAttribute("src");
+      URL.revokeObjectURL(pending.url);
+    }
+    if (url.current) URL.revokeObjectURL(url.current);
+    url.current = null;
+  };
   const displayGate = useRef(
     new ViewerDisplayGate(rememberedDisplay, resuming),
   );
@@ -3694,6 +3711,8 @@ function Viewer({
     }
     if (inputPending.current >= 16) {
       setProblem("输入队列过长，请停止并重新连接");
+      stopMedia();
+      displayGate.current.stop();
       generation.current++;
       controlRef.current = false;
       setEnded(true);
@@ -3720,6 +3739,8 @@ function Viewer({
             controlRef.current &&
             displayGate.current.canControl(),
           (e) => {
+            stopMedia();
+            displayGate.current.stop();
             generation.current++;
             controlRef.current = false;
             setEnded(true);
@@ -4028,12 +4049,12 @@ function Viewer({
     displayGate.current = gate;
     setDisplaySnapshot(gate.snapshot());
     last.current = 0;
-    let receiving = true;
+    mediaRunning.current = true;
     let terminal = false;
     const finish = (s?: RemoteStatus, error?: unknown) => {
       if (!live || terminal) return;
       terminal = true;
-      receiving = false;
+      stopMedia();
       gate.stop();
       generation.current++;
       controlRef.current = false;
@@ -4042,10 +4063,6 @@ function Viewer({
       setPicture(null);
       setFps(0);
       frameTimes.current = [];
-      if (url.current) {
-        URL.revokeObjectURL(url.current);
-        url.current = null;
-      }
       setProblem(s?.error || (error ? errorText(error) : "连接已结束"));
       const captureFailure =
         s?.state === "closed" && s.reason === "capture_failed";
@@ -4114,7 +4131,7 @@ function Viewer({
       );
     }, 1000);
     const receive = async () => {
-      while (live && receiving) {
+      while (live && mediaRunning.current) {
         if (!activeRef.current) {
           // Native transport ACKs independently; retain the latest frame without
           // repeatedly decoding invisible tabs or consuming a shared UI thread.
@@ -4128,7 +4145,7 @@ function Viewer({
               after: last.current,
             }),
           );
-          if (!live || !receiving) break;
+          if (!live || !mediaRunning.current) break;
           if (data.length < 50) continue;
           const view = new DataView(
             data.buffer,
@@ -4158,21 +4175,25 @@ function Viewer({
           }
           if (pending) setDisplaySnapshot(gate.snapshot());
           const next = URL.createObjectURL(
-            new Blob([data.slice(49)], { type: "image/jpeg" }),
+            new Blob([data.subarray(49)], { type: "image/jpeg" }),
           );
           // Present only a decoded frame. Otherwise a busy multi-view renderer
           // can keep replacing/revoking images before any of them is displayed.
           // Awaiting here also bounds decode work independently for each window;
           // native transport keeps ACKing and retains the newest available frame.
+          const decoded = new Image();
+          pendingFrame.current = { image: decoded, url: next };
           try {
-            const decoded = new Image();
             decoded.src = next;
             await decoded.decode();
           } catch {
             URL.revokeObjectURL(next);
             continue;
+          } finally {
+            if (pendingFrame.current?.image === decoded)
+              pendingFrame.current = null;
           }
-          if (!live || !receiving || !gate.acceptFrame(display)) {
+          if (!live || !mediaRunning.current || !gate.acceptFrame(display)) {
             URL.revokeObjectURL(next);
             continue;
           }
@@ -4201,7 +4222,10 @@ function Viewer({
           ) {
             image.current.src = next;
           } else {
-            setPicture(nextPicture);
+            // Commit new geometry and its input handlers before another decoded
+            // frame can enter the same-geometry fast path. React may otherwise
+            // defer this state update while the metadata ref already changed.
+            flushSync(() => setPicture(nextPicture));
           }
           if (old) URL.revokeObjectURL(old);
         } catch (e) {
@@ -4222,6 +4246,7 @@ function Viewer({
     return () => {
       live = false;
       lease.active = false;
+      stopMedia();
       gate.stop();
       window.clearInterval(statusTimer);
       window.clearInterval(fpsTimer);
@@ -4229,7 +4254,6 @@ function Viewer({
       generation.current++;
       controlRef.current = false;
       clearPointer();
-      if (url.current) URL.revokeObjectURL(url.current);
     };
   }, [id]);
   const point = (e: { clientX: number; clientY: number }, clamp = false) => {

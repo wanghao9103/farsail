@@ -454,10 +454,200 @@ const fs = require("node:fs");
       .getByAltText("远端桌面")
       .evaluate((image) => image.complete && image.naturalWidth > 0),
   );
+  // Defer scheduled React work while two frames with changed geometry decode.
+  // Pixels and input handlers must never expose different committed layouts.
+  const geometryPage = await browser.newPage({
+    viewport: { width: 1000, height: 900 },
+  });
+  const geometryErrors = [];
+  geometryPage.on("pageerror", (error) => geometryErrors.push(error.message));
+  await geometryPage.addInitScript(installFixture);
+  await geometryPage.addInitScript(() => {
+    const NativeChannel = window.MessageChannel;
+    window.MessageChannel = class extends NativeChannel {
+      constructor() {
+        super();
+        const port = this.port1;
+        const descriptor = Object.getOwnPropertyDescriptor(
+          MessagePort.prototype,
+          "onmessage",
+        );
+        let handler;
+        Object.defineProperty(port, "onmessage", {
+          get: () => handler,
+          set(fn) {
+            handler = fn;
+            descriptor.set.call(
+              port,
+              typeof fn === "function"
+                ? (event) => {
+                    const fixture = window.fixture;
+                    if (fixture?.holdReactCommit) {
+                      (fixture.reactWork ??= []).push(() =>
+                        fn.call(port, event),
+                      );
+                    } else fn.call(port, event);
+                  }
+                : fn,
+            );
+          },
+        });
+      }
+    };
+  });
+  await geometryPage.goto(
+    process.env.UI_URL || "http://127.0.0.1:1420/?viewer=geometry",
+  );
+  await geometryPage.getByAltText("远端桌面").waitFor();
+  await geometryPage.evaluate(() => {
+    window.fixture.heartbeat = false;
+  });
+  await geometryPage.waitForTimeout(400);
+  await geometryPage.evaluate(() => {
+    const fixture = window.fixture;
+    const image = document.querySelector('img[alt="远端桌面"]');
+    const key = Object.keys(image).find((key) =>
+      key.startsWith("__reactProps$"),
+    );
+    window.geometryOldHandler = image[key].onPointerDown;
+    window.geometryDecoded = 0;
+    const decode = HTMLImageElement.prototype.decode;
+    HTMLImageElement.prototype.decode = async function () {
+      await decode.call(this);
+      window.geometryDecoded++;
+    };
+    fixture.holdReactCommit = true;
+    fixture.layout++;
+    fixture.frame(450, 800);
+    fixture.lastFrame = 0;
+    fixture.heartbeat = true;
+  });
+  await geometryPage.waitForFunction(() => window.geometryDecoded >= 2);
+  const geometry = await geometryPage.evaluate(() => {
+    const image = document.querySelector('img[alt="远端桌面"]');
+    const key = Object.keys(image).find((key) =>
+      key.startsWith("__reactProps$"),
+    );
+    return {
+      width: image.naturalWidth,
+      handlerChanged: image[key].onPointerDown !== window.geometryOldHandler,
+      gated: window.fixture.reactWork?.length ?? 0,
+    };
+  });
+  assert(geometry.gated > 0, "React scheduled work must actually be held");
+  assert(
+    !(geometry.width === 450 && !geometry.handlerChanged),
+    "new pixels must not precede the new geometry input handlers",
+  );
+  await geometryPage.evaluate(() => {
+    window.fixture.holdReactCommit = false;
+    for (const run of window.fixture.reactWork.splice(0)) run();
+  });
+  await geometryPage.waitForFunction(() => {
+    const image = document.querySelector('img[alt="远端桌面"]');
+    return (
+      image.complete &&
+      image.naturalWidth === 450 &&
+      image.naturalHeight === 800
+    );
+  });
+  await geometryPage.getByAltText("远端桌面").click();
+  await geometryPage.waitForFunction(() =>
+    window.fixture.calls.some(
+      (call) =>
+        call.cmd === "remote_input" && call.args.input?.kind === "button",
+    ),
+  );
+  assert(
+    await geometryPage.evaluate(() =>
+      window.fixture.calls
+        .filter(
+          (call) =>
+            call.cmd === "remote_input" && call.args.input?.kind === "button",
+        )
+        .every((call) => call.args.input.layout === window.fixture.layout),
+    ),
+    "input must use the currently displayed layout",
+  );
+  assert.deepEqual(geometryErrors, []);
+  await geometryPage.close();
+  // A terminal local error must fence a decode that outlives native close IPC.
+  const failedPage = await browser.newPage();
+  const failedPageErrors = [];
+  failedPage.on("pageerror", (error) => failedPageErrors.push(error.message));
+  await failedPage.addInitScript(installFixture);
+  await failedPage.goto(
+    process.env.UI_URL || "http://127.0.0.1:1420/?viewer=late-frame",
+  );
+  await failedPage.getByAltText("远端桌面").waitFor();
+  await failedPage.locator(".remote-screen").focus();
+  await failedPage.evaluate(() => {
+    const fixture = window.fixture;
+    fixture.holdDecode = true;
+    fixture.lastFrame = 0;
+    fixture.revokedFrameURLs = [];
+    const decode = HTMLImageElement.prototype.decode;
+    HTMLImageElement.prototype.decode = function () {
+      fixture.pendingDecodeURL = this.src;
+      return decode.call(this);
+    };
+    const revoke = URL.revokeObjectURL.bind(URL);
+    URL.revokeObjectURL = (url) => {
+      fixture.revokedFrameURLs.push(url);
+      revoke(url);
+    };
+    const invoke = window.__TAURI_INTERNALS__.invoke;
+    window.__TAURI_INTERNALS__.invoke = (cmd, args = {}) => {
+      if (cmd === "remote_input" && args.input?.kind === "key")
+        return Promise.reject(Error("synthetic input transport failure"));
+      if (cmd === "transport_close") {
+        fixture.closeHeld = true;
+        return new Promise(() => {});
+      }
+      return invoke(cmd, args);
+    };
+  });
+  await failedPage.waitForFunction(() => !!window.fixture.releaseDecode);
+  await failedPage.keyboard.press("j");
+  await failedPage.waitForFunction(
+    () =>
+      window.fixture.closeHeld &&
+      !document.querySelector('img[alt="远端桌面"]'),
+  );
+  assert(
+    await failedPage.evaluate(() =>
+      window.fixture.revokedFrameURLs.includes(window.fixture.pendingDecodeURL),
+    ),
+    "an abandoned decode URL must be revoked without waiting for native close",
+  );
+  const endedReads = await failedPage.evaluate(
+    () =>
+      window.fixture.calls.filter((call) => call.cmd === "media_next").length,
+  );
+  await failedPage.evaluate(() => {
+    window.fixture.holdDecode = false;
+    window.fixture.releaseDecode();
+  });
+  await failedPage.waitForTimeout(300);
+  assert.equal(
+    await failedPage.getByAltText("远端桌面").count(),
+    0,
+    "late decoding must not resurrect an ended frame",
+  );
+  assert.equal(
+    await failedPage.evaluate(
+      () =>
+        window.fixture.calls.filter((call) => call.cmd === "media_next").length,
+    ),
+    endedReads,
+    "terminal media reads must stop even if native close is pending",
+  );
+  assert.deepEqual(failedPageErrors, []);
+  await failedPage.close();
   if (process.env.UI_ONLY_FRAME_HOTPATH === "1") {
     await browser.close();
     console.log(
-      "PASS decoded-frame isolation and latest URL across UI updates",
+      "PASS decoded-frame isolation, atomic geometry/input updates and terminal-frame cleanup",
     );
     return;
   }
