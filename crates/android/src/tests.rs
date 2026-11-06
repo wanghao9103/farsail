@@ -919,3 +919,61 @@ async fn presence_without_device_credentials_cannot_start_an_endpoint() {
     assert!(!h.client.transport_running().await);
     assert!(!h.local.lock().unwrap().capture);
 }
+
+// A stale cached frame must await new work, not monopolize a runtime worker.
+// Keep this single-threaded: a second worker could hide the busy loop.
+#[tokio::test(flavor = "current_thread")]
+async fn stale_cached_geometry_yields_to_runtime_timers() {
+    let (h, server) = host(61).await;
+    let desktop = Transport::bind([62; 32], Config::default()).await.unwrap();
+    let target = Transport::bind([63; 32], Config::default()).await.unwrap();
+    let (viewer, peer) = connect(&desktop, &target, "stale-geometry", RemotePermission::View).await;
+    h.local.lock().unwrap().session = Some(peer.clone());
+    let meta = FrameMeta {
+        monitor: 1,
+        layout: h.local.lock().unwrap().layout + 1,
+        sequence: 1,
+        captured_ms: 1,
+        width: 16,
+        height: 16,
+        origin_x: 0,
+        origin_y: 0,
+    };
+    let frame = JpegFrame::encode_rgb(meta, &[80; 16 * 16 * 3], 65).unwrap();
+    h.frames
+        .send_replace(Some(Arc::new(frame.to_wire().unwrap())));
+    let (_ack, ack) = watch::channel(0);
+    let (_demand, demand) = watch::channel(StreamDemand::default());
+    {
+        let sender = h.send_frames(peer, ack, demand);
+        tokio::pin!(sender);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), &mut sender)
+                .await
+                .is_err(),
+            "sender should remain idle while the runtime timer still fires"
+        );
+        let layout = h.local.lock().unwrap().layout;
+        assert!(h.publish(image(&h), 16, 16, layout));
+        let receive = async {
+            loop {
+                let frame = viewer.receive().await.unwrap();
+                if let Ok(image) = JpegFrame::from_wire(&frame.bytes) {
+                    return image.meta.layout;
+                }
+            }
+        };
+        tokio::select! {
+            _ = &mut sender => panic!("stale geometry must not terminate the session"),
+            received = tokio::time::timeout(Duration::from_secs(2), receive) => {
+                assert_eq!(received.unwrap(), layout, "fresh valid pixels must resume on the same session");
+            }
+        }
+    }
+    viewer.close();
+    h.stop_local();
+    h.client.stop_transport().await;
+    server.abort();
+    desktop.close().await;
+    target.close().await;
+}

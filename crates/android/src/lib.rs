@@ -725,6 +725,16 @@ impl Host {
                         }
                     };
                     let Some((source_width, source_height)) = source else {
+                        // Re-reading this same rejected watch value without an
+                        // await can monopolize a runtime worker indefinitely.
+                        // Wait for fresh work, while still servicing cancellation.
+                        tokio::select! {
+                            _ = frames.changed() => (),
+                            _ = ack.changed() => (),
+                            _ = demand.changed() => (),
+                            _ = tokio::time::sleep(Duration::from_millis(50)) => (),
+                            _ = session.wait_closed() => break,
+                        }
                         continue;
                     };
                     let now = SystemTime::now()
