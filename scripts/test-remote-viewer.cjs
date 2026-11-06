@@ -644,10 +644,65 @@ const fs = require("node:fs");
   );
   assert.deepEqual(failedPageErrors, []);
   await failedPage.close();
+  // u64 counters outside the JS cursor range must not be rounded and reread.
+  for (const offset of [17, 9]) {
+    const counterPage = await browser.newPage();
+    const counterErrors = [];
+    counterPage.on("pageerror", (error) => counterErrors.push(error.message));
+    await counterPage.addInitScript(installFixture);
+    await counterPage.goto(
+      process.env.UI_URL || "http://127.0.0.1:1420/?viewer=counter",
+    );
+    await counterPage.getByAltText("远端桌面").waitFor();
+    await counterPage.evaluate((offset) => {
+      const fixture = window.fixture;
+      const invoke = window.__TAURI_INTERNALS__.invoke;
+      window.__TAURI_INTERNALS__.invoke = async (cmd, args = {}) => {
+        if (cmd === "transport_close")
+          fixture.counterClosed = (fixture.counterClosed ?? 0) + 1;
+        const result = await invoke(
+          cmd,
+          cmd === "media_next" ? { ...args, after: 0 } : args,
+        );
+        if (cmd === "media_next" && result.byteLength >= 50) {
+          const view = new DataView(result);
+          view.setBigUint64(17, BigInt(args.after ?? 0) + 1n);
+          view.setBigUint64(offset, 9007199254740993n);
+          fixture.counterInjected = (fixture.counterInjected ?? 0) + 1;
+        }
+        return result;
+      };
+    }, offset);
+    await counterPage.waitForFunction(
+      () =>
+        window.fixture.counterClosed === 1 &&
+        !document.querySelector('img[alt="远端桌面"]'),
+    );
+    const stoppedReads = await counterPage.evaluate(
+      () =>
+        window.fixture.calls.filter((call) => call.cmd === "media_next").length,
+    );
+    await counterPage.waitForTimeout(250);
+    assert.equal(
+      await counterPage.evaluate(
+        () =>
+          window.fixture.calls.filter((call) => call.cmd === "media_next")
+            .length,
+      ),
+      stoppedReads,
+    );
+    assert.equal(
+      await counterPage.evaluate(() => window.fixture.counterInjected),
+      1,
+    );
+    assert.deepEqual(counterErrors, []);
+    await counterPage.close();
+  }
+  await page.getByAltText("远端桌面").waitFor();
   if (process.env.UI_ONLY_FRAME_HOTPATH === "1") {
     await browser.close();
     console.log(
-      "PASS decoded-frame isolation, atomic geometry/input updates and terminal-frame cleanup",
+      "PASS frame isolation, atomic geometry/input, terminal cleanup and safe counters",
     );
     return;
   }

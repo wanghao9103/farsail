@@ -4158,6 +4158,18 @@ function Viewer({
           )
             continue;
           const sequence = Number(view.getBigUint64(17));
+          const layout = Number(view.getBigUint64(9));
+          // Native counters are u64, but the IPC cursor/input API uses JS numbers.
+          // Rounding can make native repeatedly return a frame the UI ignores.
+          if (
+            !Number.isSafeInteger(sequence) ||
+            sequence <= 0 ||
+            !Number.isSafeInteger(layout)
+          ) {
+            finish(undefined, new Error("远端画面数据编号无效，请重新连接。"));
+            void invoke("transport_close", { id }).catch(() => {});
+            break;
+          }
           if (sequence <= last.current) continue;
           const display = view.getUint32(5);
           const pending = !gate.canControl();
@@ -4209,7 +4221,7 @@ function Viewer({
           const nextPicture = {
             url: next,
             display,
-            layout: Number(view.getBigUint64(9)),
+            layout,
             sequence,
             width: view.getUint32(33),
             height: view.getUint32(37),
