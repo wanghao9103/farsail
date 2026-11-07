@@ -24,3 +24,24 @@ jobs:
           sudo tc qdisc add dev lo parent 1:1 handle 10: netem delay 15ms loss 0.1%
           trap 'sudo tc qdisc del dev lo root || true' EXIT
           cargo test --locked -p farsail-android --lib four_streams_share_35mbit -- --ignored --nocapture --test-threads=1
+      - name: Five 1088-pixel streams on the same isolated shared link
+        env:
+          FARSAIL_MATRIX_STREAMS: '5'
+          FARSAIL_MATRIX_MODES: viewport
+          FARSAIL_MATRIX_EDGE: '1088'
+          FARSAIL_MATRIX_FPS: '30'
+          FARSAIL_MATRIX_SECONDS: '120'
+          FARSAIL_MATRIX_MAX_FRAME_AGE_MS: '1500'
+          FARSAIL_MATRIX_LABEL: isolated-35mbit-30ms-five-1088
+          FARSAIL_MATRIX_REPORT: ${{ github.workspace }}/five-stream-report.json
+        run: |
+          sudo tc qdisc replace dev lo root handle 1: tbf rate 35mbit burst 64kb latency 100ms
+          sudo tc qdisc add dev lo parent 1:1 handle 10: netem delay 15ms loss 0.1%
+          trap 'sudo tc qdisc del dev lo root || true' EXIT
+          cargo test --locked -p farsail-android --lib shared_link_matrix_reports_four_and_five_stream_delivery -- --ignored --nocapture --test-threads=1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: five-stream-shaped-report
+          path: five-stream-report.json
+          if-no-files-found: warn

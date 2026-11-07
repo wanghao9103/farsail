@@ -18,6 +18,13 @@ jobs:
           packages: platform-tools
           log-accepted-android-sdk-licenses: false
       - run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0' 'ndk;27.2.12479018'
+      - name: Native JPEG build tools
+        timeout-minutes: 5
+        run: |
+          if ! command -v cmake >/dev/null || ! command -v nasm >/dev/null; then
+            sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20 update
+            sudo apt-get install -y --no-install-recommends cmake nasm
+          fi
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.93.0
