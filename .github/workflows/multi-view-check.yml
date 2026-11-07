@@ -39,7 +39,9 @@ jobs:
           chmod 600 "$RUNNER_TEMP/farsail-installed.jks"
       - uses: gradle/actions/setup-gradle@v4
       - run: cargo test --locked -p farsail-client --lib
-      - run: cargo test --locked -p farsail-transport -p farsail-android
+      - run: cargo test --locked -p farsail-transport
+      # Keep concurrency inside each multi-host scenario, isolate timed cases.
+      - run: cargo test --locked -p farsail-android -- --test-threads=1
       - run: cargo clippy --locked -p farsail-transport -p farsail-android --all-targets -- -D warnings
       - name: Build signed Android APK
         env:
