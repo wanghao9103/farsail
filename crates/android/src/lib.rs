@@ -26,6 +26,7 @@ use tokio::sync::watch;
 struct MediaDiagnostics {
     bytes: usize,
     sent: u64,
+    sent_frames: u64,
     acknowledged: u64,
     send_ms: u64,
     publish_to_send_ms: u64,
@@ -818,6 +819,7 @@ impl Host {
                             .is_some_and(|s| s.stable_id() == session.stable_id())
                         {
                             l.media.sent = image.meta.sequence;
+                            l.media.sent_frames += 1;
                             l.media.send_ms = sent_at.elapsed().as_millis() as u64;
                             l.media.publish_to_send_ms = now.saturating_sub(image.meta.captured_ms);
                             l.media.pending.push_back((image.meta.sequence, sent_at));
@@ -926,11 +928,18 @@ impl Host {
         }
         let result = match op {
             "diagnostics" => {
+                let identity = tokio::time::timeout(Duration::from_secs(1), client.public_state())
+                    .await
+                    .ok();
                 let l = self.local.lock().unwrap();
                 let session = l.session.as_ref().filter(|s| s.is_open_now());
                 let (path, rtt) = session.map(|s| s.path()).unwrap_or(("none", None));
                 return Ok(json!({"path":path,"rttMs":rtt,"frameBytes":l.media.bytes,
+                    "deviceId":identity.as_ref().and_then(|state| state.get("deviceId")),
+                    "captureActive":l.capture,"captureEpoch":l.epoch,"hostingEnabled":client.hosting_enabled(),
+                    "controlEnabled":l.control,"sessionId":session.map(Session::id),
                     "published":l.sequence,"sent":l.media.sent,"acknowledged":l.media.acknowledged,
+                    "sentFrames":l.media.sent_frames,
                     "sendMs":l.media.send_ms,"publishToSendMs":l.media.publish_to_send_ms,
                     "ackMs":l.media.ack_ms,"inputWaitMs":l.media.input_wait_ms,
                     "encodeMs":l.media.encode_ms,"encodedWidth":l.media.encoded_width,"encodedHeight":l.media.encoded_height,

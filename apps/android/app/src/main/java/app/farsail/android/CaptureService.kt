@@ -277,6 +277,11 @@ class CaptureService : Service() {
         super.onDestroy()
     }
     override fun dump(fd: java.io.FileDescriptor, writer: java.io.PrintWriter, args: Array<out String>) {
+        val snapshot = app.state
+        val serverHash = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(snapshot.optString("server").trimEnd('/').toByteArray(Charsets.UTF_8))
+            .take(6).joinToString("") { "%02x".format(it.toInt() and 255) }
+        writer.println("identity=${JSONObject().put("cachedDeviceId", snapshot.optString("deviceId")).put("signedIn", snapshot.optBoolean("signedIn")).put("nativeSharing", snapshot.optBoolean("sharing")).put("serverFingerprint", serverHash)}")
         writer.println("running=$running phase=$phase accessibilityMode=$accessibilityMode screenshotFrames=$screenshotFrames")
         writer.println("width=$screenWidth height=$screenHeight frameAgeMs=${if (lastFrame == 0L) -1 else SystemClock.elapsedRealtime() - lastFrame}")
         writer.println("captureTargetFps=${CaptureCadence.TARGET_FPS} captureCallbacks=$captureCallbacks admittedFrames=$admittedFrames captureIntervalMs=$captureIntervalMs")

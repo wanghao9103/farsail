@@ -317,6 +317,7 @@ class MainActivity : Activity() {
     private fun home() {
         boundWhenBuilt = bound(); lastRequests = ""
         ui.text(body, "我的设备", 28f, bold = true); ui.gap(body, 16)
+        if (bound()) ui.text(body, "本机编号：${app.state.optString("deviceId").take(8)} · 下方列表显示其他设备", 12f, secondary = true)
         incoming = ui.link(body, "") { go(Page.SHARING) }.apply { visibility = View.GONE }
         if (bound()) ui.link(body, "锁屏与后台设置") { go(Page.BACKGROUND_SETUP) }
         if (bound() && Build.VERSION.SDK_INT >= 30 && !RemotePreferences.accessibilityCapture(this, app.state))
@@ -336,6 +337,7 @@ class MainActivity : Activity() {
     private fun sharing() {
         boundWhenBuilt = bound(); lastRequests = ""
         title("共享这台手机", "允许其他设备查看或控制本机。")
+        if (bound()) ui.text(body, "本机编号：${app.state.optString("deviceId").take(8)}", 12f, secondary = true)
         requestBox = ui.column(body)
         val card = ui.card(body)
         if (!bound()) {

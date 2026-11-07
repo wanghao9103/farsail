@@ -59,4 +59,8 @@ for name in ('turbojpeg', 'turbojpeg-sys'):
 (output / 'NOTICE.txt').write_text('This software is based in part on the work of the Independent JPEG Group.\nNative JPEG codec: libjpeg-turbo; Rust bindings: turbojpeg / turbojpeg-sys.\nSee the accompanying license notices.\n')
 PY
 cd apps/android
-./gradlew --no-daemon :app:assembleDebug :app:testDebugUnitTest :app:lintDebug "$@"
+version_args=()
+if [[ -n "${ANDROID_CANDIDATE_VERSION_NAME:-}" ]]; then
+  version_args+=("-PfarsailVersionName=$ANDROID_CANDIDATE_VERSION_NAME")
+fi
+./gradlew --no-daemon :app:assembleDebug :app:testDebugUnitTest :app:lintDebug "${version_args[@]}" "$@"
