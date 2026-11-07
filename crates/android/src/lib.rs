@@ -706,12 +706,16 @@ impl Host {
                     local.media.pending.retain(|(seq, _)| *seq != sequence);
                 }
             }
-            let auto_mode = self.local.lock().unwrap().viewport_edge.is_some();
-            // A small-window stream needs low latency, not two JPEGs queued
-            // ahead of the latest capture. A bounded probe after four seconds
-            // still recovers a lost single ACK without restarting the lease.
-            let auto_waiting =
-                auto_mode && !window.is_empty() && last_attempt.elapsed() < Duration::from_secs(4);
+            let serial_delivery = {
+                let local = self.local.lock().unwrap();
+                local.viewport_edge.is_some() && !local.delivery_quality.overlap_allowed
+            };
+            // Healthy delivery can use both bounded slots to overlap the RTT.
+            // On queueing, wait for the outstanding frame instead of adding more.
+            // The same bounded probe and no-progress deadline remain in force.
+            let auto_waiting = serial_delivery
+                && !window.is_empty()
+                && last_attempt.elapsed() < Duration::from_secs(4);
             if video_active && !auto_waiting && window.blocked_on().is_none() {
                 let next = frames.borrow_and_update().clone();
                 if let Some(wire) = next {
@@ -946,6 +950,7 @@ impl Host {
                     "convertMs":l.media.convert_ms,"jpegMs":l.media.jpeg_ms,"jpegEncoder":farsail_media::JPEG_ENCODER,
                     "profile":l.video_profile.profile,"profileGeneration":l.video_profile.generation,
                     "viewportEdge":l.viewport_edge,
+                    "overlapAllowed":l.delivery_quality.overlap_allowed,
                     "jpegQuality":Self::settings(&l).quality,
                     "pendingFrames":l.media.pending.len(),
                     "oldestPendingMs":l.media.pending.front().map(|(_, at)| at.elapsed().as_millis() as u64)}));

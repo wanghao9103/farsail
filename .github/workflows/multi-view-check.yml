@@ -57,7 +57,7 @@ jobs:
           if-no-files-found: error
       - name: Build signed Android APK
         env:
-          ANDROID_CANDIDATE_VERSION_NAME: ${{ github.ref == 'refs/heads/codex/android-capture-cadence' && '0.1.14-perf2' || '' }}
+          ANDROID_CANDIDATE_VERSION_NAME: ${{ github.ref == 'refs/heads/codex/android-capture-cadence' && '0.1.14-perf3' || '' }}
           ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/farsail-installed.jks
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_APK_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: androiddebugkey

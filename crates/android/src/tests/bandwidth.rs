@@ -72,12 +72,22 @@ struct HostSamples {
     last_ack: u64,
 }
 async fn phase(config: Phase, rgba: &[u8], source: (u32, u32)) -> ResultSet {
+    let edge: u16 = std::env::var("FARSAIL_MATRIX_EDGE")
+        .unwrap_or_else(|_| "704".into())
+        .parse()
+        .unwrap();
+    let source_fps: u64 = std::env::var("FARSAIL_MATRIX_FPS")
+        .unwrap_or_else(|_| "10".into())
+        .parse()
+        .unwrap();
+    assert!(ViewportRequest::valid_edge(edge));
+    assert!((1..=60).contains(&source_fps));
     let adaptive = config.mode.adaptive();
     let mut images = Vec::new();
     for quality in 80..=90 {
         let settings = capture::Settings {
             profile: Host::native_profile(),
-            edge: adaptive.then_some(704),
+            edge: adaptive.then_some(edge),
             quality,
         };
         images.push(
@@ -150,7 +160,7 @@ async fn phase(config: Phase, rgba: &[u8], source: (u32, u32)) -> ResultSet {
                     channel: Channel::Media,
                     bytes: ViewportRequest {
                         generation: 10,
-                        edge: 704,
+                        edge,
                     }
                     .packet(b"FSZ1"),
                 })
@@ -239,7 +249,7 @@ async fn phase(config: Phase, rgba: &[u8], source: (u32, u32)) -> ResultSet {
     let producer = tokio::spawn({
         let hosts = hosts.clone();
         async move {
-            let mut tick = tokio::time::interval(Duration::from_millis(100));
+            let mut tick = tokio::time::interval(Duration::from_nanos(1_000_000_000 / source_fps));
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 tick.tick().await;
@@ -303,7 +313,7 @@ async fn phase(config: Phase, rgba: &[u8], source: (u32, u32)) -> ResultSet {
         mode: config.mode.name().to_owned(),
         streams: usize::from(config.streams),
         duration_seconds: duration,
-        source_fps: 10,
+        source_fps,
         requested_ack_delay_ms: config.ack_delay.as_millis() as u64,
         output_size,
         jpeg_bytes_by_quality,
@@ -499,7 +509,7 @@ async fn shared_link_matrix_reports_four_and_five_stream_delivery() {
         "schema": 1,
         "synthetic_transport_only": true,
         "source_size": source,
-        "source_fps_limit": 10,
+        "source_fps_limit": env("FARSAIL_MATRIX_FPS", "10").parse::<u64>().unwrap(),
         "label": env("FARSAIL_MATRIX_LABEL", "unshaped"),
         "frame_age_boundary": "publish synthetic pre-encoded JPEG to native receive/metadata validation; excludes capture, encoding, JPEG decode, WebView paint and screen-to-screen latency",
         "rtt_boundary": "selected QUIC path smoothed RTT, not application ACK or paint",
@@ -528,6 +538,14 @@ async fn shared_link_matrix_reports_four_and_five_stream_delivery() {
                 result.fps.iter().all(|v| *v > 0.0),
                 "every stream must deliver real frames"
             );
+            if let Ok(max_age) = std::env::var("FARSAIL_MATRIX_MAX_FRAME_AGE_MS") {
+                let max_age: u64 = max_age.parse().unwrap();
+                assert!(
+                    result.age_p95.iter().all(|age| *age <= max_age),
+                    "five-stream delivery exceeded its explicit latency bound: {:?}",
+                    result.age_p95
+                );
+            }
         }
     }
 }

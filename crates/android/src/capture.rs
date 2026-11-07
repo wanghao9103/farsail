@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 /// on delivery queueing; recover slowly to avoid repeatedly filling a shared link.
 pub(crate) struct DeliveryQuality {
     pub value: u8,
+    pub overlap_allowed: bool,
     changed: Instant,
     healthy: Option<Instant>,
     base_rtt: Option<u64>,
@@ -14,6 +15,7 @@ impl Default for DeliveryQuality {
     fn default() -> Self {
         Self {
             value: 90,
+            overlap_allowed: false,
             changed: Instant::now(),
             healthy: None,
             base_rtt: None,
@@ -31,6 +33,9 @@ impl DeliveryQuality {
         let base = self.base_rtt.map_or(rtt_ms, |base| base.min(rtt_ms));
         self.base_rtt = Some(base);
         let high = base.saturating_mul(2).saturating_add(60).clamp(120, 220);
+        // Overlap a healthy network round trip, but return to one outstanding
+        // frame immediately when delivery queues. MediaWindow still caps at two.
+        self.overlap_allowed = ack_ms <= high && send_ms < 80 && rtt_ms <= base.saturating_add(20);
         if ack_ms > high || send_ms > high / 2 || rtt_ms > base.saturating_add(60) {
             self.healthy = None;
             if now.saturating_duration_since(self.changed) >= Duration::from_secs(1) {
@@ -383,6 +388,23 @@ mod tests {
         );
         quality.observe(35, 5, 20, start + Duration::from_secs(9));
         assert_eq!(quality.value, 81);
+    }
+
+    #[test]
+    fn healthy_delivery_can_overlap_but_queueing_immediately_disables_it() {
+        let mut quality = DeliveryQuality::with_rtt(Some(20));
+        let start = quality.changed;
+        assert!(!quality.overlap_allowed);
+        quality.observe(60, 5, 20, start);
+        assert!(quality.overlap_allowed);
+        quality.observe(343, 0, 95, start);
+        assert!(!quality.overlap_allowed);
+        quality.observe(60, 90, 20, start);
+        assert!(!quality.overlap_allowed);
+        quality.observe(60, 5, 50, start);
+        assert!(!quality.overlap_allowed);
+        quality.observe(60, 5, 20, start);
+        assert!(quality.overlap_allowed);
     }
 
     #[test]

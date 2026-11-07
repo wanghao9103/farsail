@@ -23,7 +23,7 @@ class DeviceListActivity : Activity() {
 }
 
 /** The home screen and standalone discovery screen share one device list. */
-class DeviceListContent(private val activity: Activity, private val ui: MobileUi, body: LinearLayout) {
+class DeviceListContent(private val activity: Activity, private val ui: MobileUi, body: LinearLayout, private val identity: LocalDeviceIdentity? = null) {
     private val app get() = activity.application as FarSailApp
     private lateinit var list: LinearLayout
     private lateinit var message: TextView
@@ -51,7 +51,7 @@ class DeviceListContent(private val activity: Activity, private val ui: MobileUi
                 check(state.optBoolean("signedIn")) { "请返回首页登录。" }
                 val own = state.optString("deviceId"); check(own.isNotBlank() && own != "null") { "请返回首页添加这台手机。" }
                 val devices = app.invoke("devices") as JSONArray
-                app.main.post { if (foreground && ticket == generation && !activity.isFinishing && !activity.isDestroyed) { loading = false; refresh.isEnabled = true; show(devices, own) } }
+                app.main.post { if (foreground && ticket == generation && !activity.isFinishing && !activity.isDestroyed) { loading = false; refresh.isEnabled = true; identity?.update(state, devices); show(devices, own) } }
             } catch (e: Exception) { app.main.post { if (foreground && ticket == generation && !activity.isFinishing && !activity.isDestroyed) { loading = false; refresh.isEnabled = true; message.text = app.friendly(e.message ?: "设备读取失败") } } }
         }
     }
