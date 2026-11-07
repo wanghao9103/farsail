@@ -53,6 +53,7 @@ class MainActivity : Activity() {
     private var updateProgress: ProgressBar? = null
     private var devices: DeviceListContent? = null
     private var incoming: Button? = null
+    private var localIdentity: LocalDeviceIdentity? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -72,6 +73,7 @@ class MainActivity : Activity() {
         val consentReturn = returningFromConsent; returningFromConsent = false
         if (!consentReturn && !consentOutstanding && CaptureService.phase !in listOf("consent", "starting")) restoreSharingPending = true
         app.observer = { draw() }; app.restoreControl(); draw(); devices?.resume(); app.updates.maybeCheck()
+        if (page == Page.SHARING) localIdentity?.refresh()
     }
     override fun onPause() { foreground = false; devices?.pause(); app.observer = null; super.onPause() }
     override fun onSaveInstanceState(outState: Bundle) { rememberEmail(); outState.putString("email", email); outState.putString("page", page.name); outState.putBoolean("pendingControlEnable", pendingControlEnable); outState.putBoolean("consentOutstanding", consentOutstanding && pendingProjection == null); outState.putLong("consentTicket", consentTicket); super.onSaveInstanceState(outState) }
@@ -125,6 +127,7 @@ class MainActivity : Activity() {
         if (page in listOf(Page.HOME, Page.SHARING) && boundWhenBuilt != bound()) rendered = null
         if (rendered != page) {
             devices?.close(); devices = null; incoming = null
+            localIdentity = null
             rendered = page; body.removeAllViews(); busyButtons.clear(); authEmail = null
             (body.parent as ScrollView).scrollTo(0, 0)
             status = null; sharingDetail = null; controlDetail = null; forgetControl = null; connectionDetail = null; backgroundDetail = null; share = null; control = null; requestBox = null; updateText = null; updateButton = null; updateProgress = null
@@ -153,6 +156,7 @@ class MainActivity : Activity() {
         notice.text = if (!app.ready && app.message.isBlank()) "正在恢复已保存的设置…" else if (app.busy && app.busyScope == page.name) "正在处理…" else if (app.messageScope == page.name) app.message else ""
         notice.visibility = if (notice.text.isNullOrEmpty()) View.GONE else View.VISIBLE
         if (page == Page.SHARING) updateSharing()
+        localIdentity?.render()
         incoming?.apply {
             val count = app.pending.length()
             visibility = if (count > 0) View.VISIBLE else View.GONE
@@ -317,12 +321,13 @@ class MainActivity : Activity() {
     private fun home() {
         boundWhenBuilt = bound(); lastRequests = ""
         ui.text(body, "我的设备", 28f, bold = true); ui.gap(body, 16)
+        if (bound()) localIdentity = LocalDeviceIdentity(this, ui, body)
         incoming = ui.link(body, "") { go(Page.SHARING) }.apply { visibility = View.GONE }
         if (bound()) ui.link(body, "锁屏与后台设置") { go(Page.BACKGROUND_SETUP) }
         if (bound() && Build.VERSION.SDK_INT >= 30 && !RemotePreferences.accessibilityCapture(this, app.state))
             ui.link(body, "启用免重复确认共享") { chooseAccessibilityCapture() }
         if (!bound()) bindPhone(ui.card(body))
-        else devices = DeviceListContent(this, ui, body).also { if (foreground) it.resume() }
+        else devices = DeviceListContent(this, ui, body, localIdentity).also { if (foreground) it.resume() }
     }
     private fun bindPhone(card: LinearLayout) {
         if (!signedIn()) {
@@ -336,6 +341,10 @@ class MainActivity : Activity() {
     private fun sharing() {
         boundWhenBuilt = bound(); lastRequests = ""
         title("共享这台手机", "允许其他设备查看或控制本机。")
+        if (bound()) {
+            localIdentity = LocalDeviceIdentity(this, ui, body).also { if (foreground) it.refresh() }
+            ui.link(body, "刷新本机名称") { localIdentity?.refresh() }
+        }
         requestBox = ui.column(body)
         val card = ui.card(body)
         if (!bound()) {

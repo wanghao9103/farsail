@@ -1,7 +1,7 @@
 name: Multi-view client verification
 on:
   push:
-    branches: ["codex/multi-viewer-resilience", "codex/immersive-viewer-cascade", "codex/parallel-viewer-auth-isolation", "codex/multiview-stream-demand", "codex/multiview-media-recovery"]
+    branches: ["codex/multi-viewer-resilience", "codex/immersive-viewer-cascade", "codex/parallel-viewer-auth-isolation", "codex/multiview-stream-demand", "codex/multiview-media-recovery", "codex/desktop-multiview-presentation"]
 permissions:
   contents: read
 jobs:
@@ -46,7 +46,12 @@ jobs:
           ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/farsail-installed.jks
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_APK_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: androiddebugkey
-        run: scripts/build-android.sh :app:assembleRelease :app:lintRelease :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin
+        run: |
+          version_args=()
+          if [[ "$GITHUB_REF" == 'refs/heads/codex/desktop-multiview-presentation' ]]; then
+            version_args+=('-PfarsailVersionName=0.1.14-lease1')
+          fi
+          scripts/build-android.sh :app:assembleRelease :app:lintRelease :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin "${version_args[@]}"
       - uses: actions/upload-artifact@v4
         with:
           name: Android-signed-apk
@@ -70,7 +75,7 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci
-      - run: node --experimental-strip-types --test scripts/test-feedback-policy.mjs scripts/test-viewer-display-policy.mjs scripts/test-viewer-notice-policy.mjs scripts/test-viewer-tabs-policy.mjs
+      - run: node --experimental-strip-types --test scripts/test-feedback-policy.mjs scripts/test-viewer-display-policy.mjs scripts/test-viewer-notice-policy.mjs scripts/test-viewer-tabs-policy.mjs scripts/test-viewer-frame-reader.mjs
       - run: npm run typecheck
       - name: First-frame and delayed-selection browser regressions
         shell: pwsh

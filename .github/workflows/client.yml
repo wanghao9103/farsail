@@ -20,7 +20,7 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Pure viewer and feedback state regressions
-        run: node --test scripts/test-feedback-policy.mjs scripts/test-viewer-display-policy.mjs scripts/test-viewer-notice-policy.mjs scripts/test-viewer-tabs-policy.mjs
+        run: node --test scripts/test-feedback-policy.mjs scripts/test-viewer-display-policy.mjs scripts/test-viewer-notice-policy.mjs scripts/test-viewer-tabs-policy.mjs scripts/test-viewer-frame-reader.mjs
       - run: npm run typecheck
       - run: npm run build
       - run: cargo fmt --all -- --check

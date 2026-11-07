@@ -1,5 +1,6 @@
 #requires -Version 7.0
 # Own debug process and isolated profile only. Requires the Vite server on 1420.
+param([string]$Executable = (Join-Path (Split-Path $PSScriptRoot -Parent) 'target/debug/farsail-desktop.exe'))
 $ErrorActionPreference = 'Stop'
 Set-Location (Split-Path $PSScriptRoot -Parent)
 $testRoot = Join-Path $PWD ('.local/native-viewer-' + [Guid]::NewGuid().ToString('N'))
@@ -10,7 +11,7 @@ $env:FARSAIL_IPC_SMOKE_PATH = Join-Path $testRoot 'report.json'
 $env:FARSAIL_VIEWER_SMOKE = '1'
 $process = $null
 try {
-    $process = Start-Process -FilePath (Join-Path $PWD 'target/debug/farsail-desktop.exe') -WorkingDirectory $PWD -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $testRoot 'stdout.log') -RedirectStandardError (Join-Path $testRoot 'stderr.log')
+    $process = Start-Process -FilePath $Executable -WorkingDirectory $PWD -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $testRoot 'stdout.log') -RedirectStandardError (Join-Path $testRoot 'stderr.log')
     $until = [DateTime]::UtcNow.AddSeconds(45)
     while (!(Test-Path ($env:FARSAIL_IPC_SMOKE_PATH + '.closed')) -and [DateTime]::UtcNow -lt $until -and !$process.HasExited) { Start-Sleep -Milliseconds 250 }
     if (!(Test-Path $env:FARSAIL_IPC_SMOKE_PATH)) { throw "No native result; inspect $testRoot" }

@@ -2090,6 +2090,15 @@ impl NativeClient {
     }
 }
 
+fn authority_error(error: Error) -> farsail_transport::Error {
+    match error {
+        Error::Network(_) | Error::Http(408 | 429 | 500..=599, _) => {
+            farsail_transport::Error::AuthorityUnavailable
+        }
+        _ => farsail_transport::Error::Denied,
+    }
+}
+
 impl Authority for NativeClient {
     async fn abandon(&self, id: &str) {
         self.invalidate_transport_grant(id).await;
@@ -2117,7 +2126,7 @@ impl Authority for NativeClient {
                 None,
             )
             .await
-            .map_err(|_| farsail_transport::Error::Denied)?;
+            .map_err(authority_error)?;
         let mut claims: Claims =
             serde_json::from_value(v).map_err(|_| farsail_transport::Error::Denied)?;
         // transport_request_as already deducted the HTTP time from expires_in.
@@ -2172,7 +2181,7 @@ impl Authority for NativeClient {
                 None,
             )
             .await
-            .map_err(|_| farsail_transport::Error::Denied)?;
+            .map_err(authority_error)?;
         let token = v["grant_token"]
             .as_str()
             .ok_or(farsail_transport::Error::Denied)?
@@ -2230,6 +2239,25 @@ fn read_json<T: DeserializeOwned>(store: &dyn SecureStore, key: &str) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn authority_outages_are_retryable_but_identity_rejections_are_not() {
+        for status in [408, 429, 500, 502, 503, 504] {
+            assert!(matches!(
+                authority_error(Error::Http(status, "redacted".into())),
+                farsail_transport::Error::AuthorityUnavailable
+            ));
+        }
+        for status in [400, 401, 403, 404, 409] {
+            assert!(matches!(
+                authority_error(Error::Http(status, "redacted".into())),
+                farsail_transport::Error::Denied
+            ));
+        }
+        assert!(matches!(
+            authority_error(Error::Invalid("bad proof".into())),
+            farsail_transport::Error::Denied
+        ));
+    }
     async fn lease_fixture(
         ttl: i64,
     ) -> (
