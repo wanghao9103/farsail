@@ -1973,6 +1973,8 @@ dependencies = [
  "tempfile",
  "tokio",
  "url",
+ "webview2-com",
+ "windows",
 ]
 
 [[package]]

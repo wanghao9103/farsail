@@ -15,6 +15,160 @@ use tauri::Manager;
 
 const MAX_RECOVERY_ATTEMPTS: u32 = 3;
 
+#[cfg(debug_assertions)]
+pub fn render_smoke_active(window: &tauri::WebviewWindow) -> bool {
+    std::env::var_os("FARSAIL_RENDER_SMOKE").is_some()
+        && std::env::var_os("FARSAIL_TEST_PROFILE_DIR").is_some()
+        && window.label().starts_with("viewer-render-smoke-")
+}
+
+#[cfg(debug_assertions)]
+pub fn render_smoke_status() -> Value {
+    json!({"state":"direct","platform":"android","permission":"view","sharing":false,
+        "rtt_ms":1,"verification_code":null,"error":null,
+        "displays":[{"id":1,"name":"Synthetic screen","width":1088,"height":502,"x":0,"y":0,"dpi":96,"rotation":0}],
+        "input":{"generation":0,"blocked":false},"mouse":{"generation":0,"rejected":false},
+        "files":{"supported":false},"video":{"supported":false,"profile":2,"generation":0,"max_profile":2}})
+}
+
+#[cfg(debug_assertions)]
+pub async fn render_smoke_sequence(after: u64) -> u64 {
+    static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    let start = *START.get_or_init(Instant::now);
+    loop {
+        let elapsed = start.elapsed().as_millis() as u64;
+        let sequence = elapsed / 33 + 1;
+        if sequence > after {
+            return sequence;
+        }
+        tokio::time::sleep(Duration::from_millis(33 - elapsed % 33)).await;
+    }
+}
+
+#[cfg(debug_assertions)]
+pub fn render_smoke_frame(after: u64) -> Result<Vec<u8>, String> {
+    static WIRE: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    let wire = WIRE.get_or_init(|| {
+        let (width, height) = (1088, 502);
+        let mut random = 37u32;
+        let rgb: Vec<u8> = (0..width * height * 3)
+            .map(|_| {
+                random ^= random << 13;
+                random ^= random >> 17;
+                random ^= random << 5;
+                (random & 127) as u8
+            })
+            .collect();
+        farsail_media::JpegFrame::encode_rgb(
+            farsail_media::FrameMeta {
+                monitor: 1,
+                layout: 1,
+                sequence: 1,
+                captured_ms: 0,
+                width,
+                height,
+                origin_x: 0,
+                origin_y: 0,
+            },
+            &rgb,
+            80,
+        )
+        .unwrap()
+        .to_wire()
+        .unwrap()
+    });
+    let mut result = wire.clone();
+    result[17..25].copy_from_slice(&after.saturating_add(1).to_be_bytes());
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    result[25..33].copy_from_slice(&stamp.to_be_bytes());
+    Ok(result)
+}
+
+#[cfg(debug_assertions)]
+#[tauri::command]
+pub fn ipc_render_smoke_report(window: tauri::WebviewWindow, result: String) -> Result<(), String> {
+    if !render_smoke_active(&window) || result.len() > 8192 {
+        return Err("not a render fixture".into());
+    }
+    let value: Value = serde_json::from_str(&result).map_err(|e| e.to_string())?;
+    let dir = std::env::var_os("FARSAIL_TEST_PROFILE_DIR").ok_or("missing isolated profile")?;
+    let path = std::path::PathBuf::from(dir).join(format!("{}.json", window.label()));
+    std::fs::write(
+        path,
+        serde_json::to_vec_pretty(&value).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[cfg(debug_assertions)]
+pub fn render_smoke_probe(webview: &tauri::Webview) {
+    if webview.label().starts_with("viewer-render-smoke-") {
+        if webview.label() == "viewer-render-smoke-0"
+            && std::env::var_os("FARSAIL_RENDER_SLOW_FIRST").is_some()
+        {
+            let _ = webview.eval("window.__farsailRenderSlow = true;");
+        }
+        let _ = webview.eval(include_str!("render_smoke.js"));
+    }
+}
+
+#[cfg(debug_assertions)]
+fn render_smoke_setup(app: &tauri::AppHandle) -> tauri::Result<()> {
+    if std::env::var_os("FARSAIL_TEST_PROFILE_DIR").is_none() {
+        return Ok(());
+    }
+    let _ = render_smoke_frame(0);
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.hide();
+    }
+    let count: u32 = std::env::var("FARSAIL_RENDER_SMOKE_COUNT")
+        .unwrap_or_else(|_| "5".into())
+        .parse()
+        .expect("fixture window count");
+    assert!((1..=5).contains(&count));
+    for number in 0..count {
+        let id = format!("00000000-0000-0000-0000-{number:012}");
+        let label = format!("viewer-render-smoke-{number}");
+        let binding = Arc::new(Binding {
+            host: Mutex::new(label.clone()),
+            name: format!("本机渲染测试 {}", number + 1),
+            selected: AtomicBool::new(true),
+            visibility_epoch: AtomicU64::new(next_visibility_epoch()),
+            minimized: AtomicBool::new(false),
+            id: Mutex::new(id.clone()),
+            instance: next_window_instance(),
+            opened: AtomicBool::new(true),
+            source: "synthetic".into(),
+            target: "synthetic".into(),
+            permission: RemotePermission::View,
+            cancelled: AtomicBool::new(false),
+            retrying: AtomicBool::new(false),
+            attempts: AtomicU32::new(0),
+            recovery_allowed: AtomicBool::new(false),
+            progress: Mutex::new(RecoveryProgress::default()),
+        });
+        app.state::<Windows>()
+            .0
+            .lock()
+            .unwrap()
+            .insert(label.clone(), binding);
+        tauri::WebviewWindowBuilder::new(
+            app,
+            &label,
+            tauri::WebviewUrl::App(format!("index.html?viewer={id}").into()),
+        )
+        .title(format!("FarSail 渲染测试 {}", number + 1))
+        .inner_size(640.0, 420.0)
+        .position(80.0, 80.0)
+        .decorations(false)
+        .build()?;
+    }
+    Ok(())
+}
+
 fn next_window_instance() -> String {
     static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(1);
     NEXT_INSTANCE
@@ -900,6 +1054,9 @@ pub async fn viewer_open(
 
 #[cfg(debug_assertions)]
 pub fn smoke_setup(app: &tauri::AppHandle) -> tauri::Result<()> {
+    if std::env::var_os("FARSAIL_RENDER_SMOKE").is_some() {
+        return render_smoke_setup(app);
+    }
     if std::env::var_os("FARSAIL_VIEWER_SMOKE").is_none() {
         return Ok(());
     }
@@ -1014,7 +1171,7 @@ pub fn smoke_probe(webview: &tauri::Webview) {
         const initial=await invoke('ipc_viewer_state');
         if(!initial.maximized) throw Error('viewer did not open maximized');
         if(initial.decorations || !document.querySelector('.viewer-titlebar')) throw Error('custom titlebar missing');
-        for(const [cmd,args] of [['state',{}],['update_status',{}],['update_preferences',{preferences:{autoCheck:false,autoInstall:true}}],['update_check',{}],['update_download',{}],['update_install',{}],['call',{op:'admin_users',args:{}}],['set_server',{server:'http://127.0.0.1:1'}],['files_status',{}],['app_exit',{}],['files_enable',{enabled:true}],['remote_paste_files',{id:'other'}],['remote_send_files',{id:'other'}],['files_send',{id:'other'}],['files_accept',{id:'other',transferId:'other'}],['files_reject',{id:'other',transferId:'other'}],['files_cancel',{id:'other',transferId:'other'}],['share_enable',{}],['remote_watch',{enabled:true}],['remote_input',{id:'other',input:null}],['media_profile',{id:'other',profile:1}],['media_viewport',{id:'other',edge:704}],['transport_connect',{id:'other',permission:'view'}],['plugin:window|close',{label:'main'}]]) {
+        for(const [cmd,args] of [['state',{}],['update_status',{}],['update_preferences',{preferences:{autoCheck:false,autoInstall:true}}],['update_check',{}],['update_download',{}],['update_install',{}],['call',{op:'admin_users',args:{}}],['set_server',{server:'http://127.0.0.1:1'}],['files_status',{}],['app_exit',{}],['files_enable',{enabled:true}],['remote_paste_files',{id:'other'}],['remote_send_files',{id:'other'}],['files_send',{id:'other'}],['files_accept',{id:'other',transferId:'other'}],['files_reject',{id:'other',transferId:'other'}],['files_cancel',{id:'other',transferId:'other'}],['share_enable',{}],['remote_watch',{enabled:true}],['remote_input',{id:'other',input:null}],['media_next_shared',{id:'other',after:0,request:1}],['media_profile',{id:'other',profile:1}],['media_viewport',{id:'other',edge:704}],['transport_connect',{id:'other',permission:'view'}],['plugin:window|close',{label:'main'}]]) {
           let blocked=false; try { await invoke(cmd,args); } catch { blocked=true; }
           if(!blocked) throw Error('unexpected permission: '+cmd); denied.push(cmd);
         }

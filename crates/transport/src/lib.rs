@@ -54,6 +54,8 @@ pub enum Error {
     Frame,
     #[error("transport timeout")]
     Timeout,
+    #[error("coordinator temporarily unavailable")]
+    AuthorityUnavailable,
 }
 pub type Result<T> = std::result::Result<T, Error>;
 fn io(e: impl std::fmt::Display) -> Error {
@@ -855,6 +857,7 @@ impl Session {
         let s = self.clone();
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(LEASE_POLL);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             let mut failed_at: Option<Instant> = None;
             loop {
                 if !s.is_open().await {
@@ -866,7 +869,17 @@ impl Session {
                         let Ok((mut tx, mut rx)) = incoming else { break };
                         let Ok(bytes) = within(async { rx.read_to_end(LIMIT).await.map_err(io) }).await else { break };
                         let Ok(offer) = serde_json::from_slice::<Offer>(&bytes) else { break };
-                        let Ok(c) = authority.inspect(&s.id, &offer.token).await else { break };
+                        let c = match authority.inspect(&s.id, &offer.token).await {
+                            Ok(c) => c,
+                            Err(Error::AuthorityUnavailable | Error::Timeout) => {
+                                // No proof is granted and no deadline is extended.
+                                // A current host can retry this same rotated token.
+                                let _ = tx.write_all(b"retry").await;
+                                let _ = tx.finish();
+                                continue;
+                            }
+                            Err(_) => break,
+                        };
                         if validate(&c, &s.id, s.permission, s.source, s.target).is_err() { break; }
                         let Ok(deadline) = c.deadline() else { break };
                         token = offer.token;
@@ -879,6 +892,10 @@ impl Session {
                             Ok(c) if validate(&c,&s.id,s.permission,s.source,s.target).is_ok() => {
                                 if let Ok(deadline) = c.deadline() { *s.deadline.write().unwrap() = deadline; failed_at = None; }
                                 else { break; }
+                            }
+                            Err(Error::AuthorityUnavailable | Error::Timeout) => {
+                                if failed_at.is_some_and(|at| at.elapsed() >= Duration::from_secs(2)) { break; }
+                                // The independently enforced, verified deadline remains unchanged.
                             }
                             _ => {
                                 // Renewal rotates the grant before its message can arrive.
@@ -894,41 +911,62 @@ impl Session {
             }
         });
     }
+    async fn offer_renewal(&self, token: &str) -> Result<()> {
+        let (mut tx, mut rx) = within(async { self.conn.open_bi().await.map_err(io) }).await?;
+        let bytes = serde_json::to_vec(&Offer {
+            token: token.to_owned(),
+        })
+        .map_err(io)?;
+        within(async {
+            tx.write_all(&bytes).await.map_err(io)?;
+            tx.finish().map_err(io)
+        })
+        .await?;
+        match within(async { rx.read_to_end(16).await.map_err(io) })
+            .await?
+            .as_slice()
+        {
+            b"ok" => Ok(()),
+            b"retry" => Err(Error::AuthorityUnavailable),
+            _ => Err(Error::Denied),
+        }
+    }
     fn watch_host<A: Authority>(&self, authority: Arc<A>, mut token: String) {
         let s = self.clone();
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(LEASE_POLL);
-            let mut n = 0;
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            let mut renew_at = Instant::now() + LEASE_POLL * 2;
+            let mut pending: Option<String> = None;
             loop {
                 tick.tick().await;
                 if !s.is_open().await {
                     break;
                 }
-                n += 1;
-                if n >= 3 {
-                    n = 0;
-                    let Ok(next) = authority.issue(&s.id, true).await else {
-                        break;
-                    };
-                    let Ok((mut tx, mut rx)) = s.conn.open_bi().await else {
-                        break;
-                    };
-                    let bytes = serde_json::to_vec(&Offer {
-                        token: next.clone(),
-                    })
-                    .unwrap();
-                    if tx.write_all(&bytes).await.is_err() || tx.finish().is_err() {
-                        break;
+                if pending.is_some() || Instant::now() >= renew_at {
+                    if pending.is_none() {
+                        match authority.issue(&s.id, true).await {
+                            Ok(next) => pending = Some(next),
+                            Err(Error::AuthorityUnavailable | Error::Timeout) => {
+                                tick.reset_after(Duration::from_millis(500));
+                                continue;
+                            }
+                            Err(_) => break,
+                        }
                     }
-                    if within(async { rx.read_to_end(16).await.map_err(io) })
-                        .await
-                        .ok()
-                        .as_deref()
-                        != Some(b"ok")
-                    {
-                        break;
+                    // Reuse an issued token until its peer acknowledges it; rotating
+                    // again after a lost ACK invalidates the proof the peer is checking.
+                    match s.offer_renewal(pending.as_deref().unwrap()).await {
+                        Ok(()) => {
+                            token = pending.take().unwrap();
+                            renew_at = Instant::now() + LEASE_POLL * 3;
+                        }
+                        Err(Error::AuthorityUnavailable | Error::Timeout | Error::Io(_)) => {
+                            tick.reset_after(Duration::from_millis(500));
+                            continue;
+                        }
+                        Err(_) => break,
                     }
-                    token = next;
                 }
                 match authority.inspect(&s.id, &token).await {
                     Ok(c) if validate(&c, &s.id, s.permission, s.source, s.target).is_ok() => {
@@ -937,6 +975,12 @@ impl Session {
                         } else {
                             break;
                         }
+                        tick.reset_after(LEASE_POLL);
+                    }
+                    Err(Error::AuthorityUnavailable | Error::Timeout) => {
+                        // A temporary coordinator failure is not revocation. The
+                        // expiry watcher still closes at the last verified deadline.
+                        tick.reset_after(Duration::from_millis(500));
                     }
                     _ => break,
                 }
@@ -996,6 +1040,152 @@ mod tests {
         }
     }
     struct FilesAuthority(TestAuthority);
+    struct FlakyAuthority {
+        inner: Arc<TestAuthority>,
+        inspect_failures: std::sync::atomic::AtomicUsize,
+        issue_failures: std::sync::atomic::AtomicUsize,
+        offer_failures: std::sync::atomic::AtomicUsize,
+    }
+    impl FlakyAuthority {
+        fn new(inner: Arc<TestAuthority>) -> Self {
+            Self {
+                inner,
+                inspect_failures: 0.into(),
+                issue_failures: 0.into(),
+                offer_failures: 0.into(),
+            }
+        }
+        fn fail(counter: &std::sync::atomic::AtomicUsize) -> bool {
+            counter
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                .is_ok()
+        }
+    }
+    impl Authority for FlakyAuthority {
+        async fn inspect(&self, id: &str, token: &str) -> Result<Claims> {
+            if Self::fail(&self.inspect_failures)
+                || (token != "grant-0" && Self::fail(&self.offer_failures))
+            {
+                return Err(Error::AuthorityUnavailable);
+            }
+            self.inner.inspect(id, token).await
+        }
+        async fn issue(&self, id: &str, renew: bool) -> Result<String> {
+            if renew && Self::fail(&self.issue_failures) {
+                return Err(Error::AuthorityUnavailable);
+            }
+            self.inner.issue(id, renew).await
+        }
+    }
+
+    #[tokio::test]
+    async fn five_sessions_retry_temporary_checks_and_rotated_offers_without_reconnecting() {
+        let mut sessions = Vec::new();
+        let mut transports = Vec::new();
+        let mut authorities = Vec::new();
+        for index in 0..5 {
+            let (source, target, authority) = pair().await;
+            let sender = Arc::new(FlakyAuthority::new(authority.clone()));
+            let receiver = Arc::new(FlakyAuthority::new(authority.clone()));
+            let accepted = tokio::spawn({
+                let target = target.clone();
+                let receiver = receiver.clone();
+                async move { target.accept(receiver).await.unwrap() }
+            });
+            let viewer = source
+                .connect(
+                    target.addr(),
+                    "test-session",
+                    RemotePermission::View,
+                    sender.clone(),
+                )
+                .await
+                .unwrap();
+            let host = accepted.await.unwrap();
+            if index == 0 {
+                receiver.inspect_failures.store(2, Ordering::SeqCst);
+            }
+            if index == 1 {
+                receiver.issue_failures.store(1, Ordering::SeqCst);
+            }
+            if index == 2 {
+                sender.offer_failures.store(1, Ordering::SeqCst);
+            }
+            if index == 3 {
+                sender.inspect_failures.store(1, Ordering::SeqCst);
+            }
+            sessions.push((viewer, host));
+            transports.push((source, target));
+            authorities.push(authority);
+        }
+        for _ in 0..16 {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            for (viewer, host) in &sessions {
+                assert!(
+                    viewer.is_open().await,
+                    "source closed during bounded renewal retry: {}",
+                    viewer.end_reason()
+                );
+                assert!(
+                    host.is_open().await,
+                    "host closed during bounded renewal retry: {}",
+                    host.end_reason()
+                );
+                host.send(Frame {
+                    channel: Channel::Media,
+                    bytes: b"still the original connection".to_vec(),
+                })
+                .await
+                .unwrap();
+                assert_eq!(
+                    viewer.receive().await.unwrap().bytes,
+                    b"still the original connection"
+                );
+            }
+        }
+        for authority in authorities {
+            assert!(*authority.current.lock().await >= 1);
+        }
+        for (viewer, host) in sessions {
+            viewer.close();
+            host.close();
+        }
+        for (source, target) in transports {
+            source.close().await;
+            target.close().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn unavailable_authority_never_extends_the_last_verified_lease() {
+        let (source, target, authority) = pair().await;
+        let flaky = Arc::new(FlakyAuthority::new(authority.clone()));
+        let accepted = tokio::spawn({
+            let target = target.clone();
+            let flaky = flaky.clone();
+            async move { target.accept(flaky).await.unwrap() }
+        });
+        let viewer = source
+            .connect(
+                target.addr(),
+                "test-session",
+                RemotePermission::View,
+                authority,
+            )
+            .await
+            .unwrap();
+        let host = accepted.await.unwrap();
+        let verified_deadline = *host.deadline.read().unwrap();
+        flaky.inspect_failures.store(usize::MAX, Ordering::SeqCst);
+        flaky.issue_failures.store(usize::MAX, Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_secs(9)).await;
+        assert!(!host.is_open().await);
+        assert_eq!(*host.deadline.read().unwrap(), verified_deadline);
+        assert_eq!(host.end_reason(), "lease_expired");
+        viewer.close();
+        source.close().await;
+        target.close().await;
+    }
     impl Authority for FilesAuthority {
         async fn inspect(&self, id: &str, token: &str) -> Result<Claims> {
             if !matches!(id, "test-session" | "next-files") {

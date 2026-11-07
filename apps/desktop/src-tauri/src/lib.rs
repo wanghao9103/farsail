@@ -19,6 +19,7 @@ use files::{files_accept, files_cancel, files_reject, files_send, files_status};
 mod updater;
 use updater::{update_check, update_download, update_install, update_preferences, update_status};
 mod capture_recovery;
+mod frame_delivery;
 mod input_recovery;
 mod remote;
 mod viewer;
@@ -153,6 +154,10 @@ async fn remote_status(
     id: String,
 ) -> Result<serde_json::Value, String> {
     viewer::scoped(&window, &id)?;
+    #[cfg(debug_assertions)]
+    if viewer::render_smoke_active(&window) {
+        return Ok(viewer::render_smoke_status());
+    }
     remote.status(&id).await
 }
 #[tauri::command]
@@ -163,9 +168,43 @@ async fn media_next(
     after: u64,
 ) -> Result<tauri::ipc::Response, String> {
     viewer::scoped(&window, &id)?;
+    #[cfg(debug_assertions)]
+    if viewer::render_smoke_active(&window) {
+        let sequence = viewer::render_smoke_sequence(after).await;
+        return Ok(tauri::ipc::Response::new(viewer::render_smoke_frame(
+            sequence - 1,
+        )?));
+    }
     Ok(tauri::ipc::Response::new(
         remote.next_frame(&id, after).await?,
     ))
+}
+
+#[tauri::command]
+async fn media_next_shared(
+    window: tauri::WebviewWindow,
+    remote: tauri::State<'_, Arc<RemoteRuntime>>,
+    id: String,
+    after: u64,
+    request: u64,
+) -> Result<&'static str, String> {
+    viewer::scoped(&window, &id)?;
+    if request == 0 || request > 9_007_199_254_740_991 {
+        return Err("invalid frame request".into());
+    }
+    #[cfg(debug_assertions)]
+    if viewer::render_smoke_active(&window) {
+        if std::env::var_os("FARSAIL_RENDER_FORCE_IPC").is_some() {
+            return Ok("unsupported");
+        }
+        let sequence = viewer::render_smoke_sequence(after).await;
+        let bytes = viewer::render_smoke_frame(sequence - 1)?;
+        viewer::scoped(&window, &id)?;
+        return frame_delivery::post(window, bytes, id, request).await;
+    }
+    let bytes = remote.next_frame(&id, after).await?;
+    viewer::scoped(&window, &id)?;
+    frame_delivery::post(window, bytes, id, request).await
 }
 #[tauri::command]
 async fn media_select(
@@ -175,6 +214,10 @@ async fn media_select(
     display: u32,
 ) -> Result<(), String> {
     viewer::scoped(&window, &id)?;
+    #[cfg(debug_assertions)]
+    if viewer::render_smoke_active(&window) {
+        return Ok(());
+    }
     remote.select(&id, display).await
 }
 #[tauri::command]
@@ -361,6 +404,8 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .on_page_load(|webview, _| {
             #[cfg(debug_assertions)]
+            if std::env::var_os("FARSAIL_RENDER_SMOKE").is_some() { viewer::render_smoke_probe(webview); return; }
+            #[cfg(debug_assertions)]
             if std::env::var_os("FARSAIL_TRAY_SMOKE").is_some() {
                 if webview.label() == "main" && !IPC_SMOKE_STARTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
                     let _ = webview.eval(include_str!("tray_smoke.js"));
@@ -521,6 +566,7 @@ pub fn run() {
         share_disable,
         remote_status,
         media_next,
+        media_next_shared,
         media_select,
         media_profile,
         media_viewport,
@@ -528,6 +574,7 @@ pub fn run() {
         ipc_viewer_state,
         ipc_smoke_report,
         ipc_media_smoke,
+        viewer::ipc_render_smoke_report,
         ipc_desktop_state,
         app_exit
     ]);
@@ -567,6 +614,7 @@ pub fn run() {
         share_disable,
         remote_status,
         media_next,
+        media_next_shared,
         media_select,
         media_profile,
         media_viewport,
