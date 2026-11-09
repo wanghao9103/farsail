@@ -356,6 +356,28 @@ impl Host {
         l.inputs.push_back((Instant::now(), command));
         Ok(())
     }
+    fn accept_session(&self, s: &Session) -> bool {
+        let mut l = self.local.lock().unwrap();
+        if !l.capture
+            || !self.client.hosting_enabled()
+            || (s.permission() == RemotePermission::Control && !l.control)
+            || l.session.as_ref().is_some_and(Session::is_open_now)
+        {
+            false
+        } else {
+            l.inputs.clear();
+            l.media = MediaDiagnostics::default();
+            l.session = Some(s.clone());
+            // Desktop input needs a displayed frame. Wake on an
+            // approved control connection so a sleeping projection
+            // can produce that first frame without a mouse click.
+            if s.permission() == RemotePermission::Control {
+                let command = json!({"session":s.id(), "epoch":l.epoch, "layout":l.layout, "input":{"kind":"wake"}});
+                l.inputs.push_back((Instant::now(), command));
+            }
+            true
+        }
+    }
     pub fn listen(self: &Arc<Self>) {
         let mut incoming = self.client.subscribe_sessions();
         let owner = self.clone();
@@ -363,21 +385,7 @@ impl Host {
             loop {
                 match incoming.recv().await {
                     Ok((s, true)) if s.permission() != RemotePermission::Files => {
-                        let accepted = {
-                            let mut l = owner.local.lock().unwrap();
-                            if !l.capture
-                                || !owner.client.hosting_enabled()
-                                || (s.permission() == RemotePermission::Control && !l.control)
-                                || l.session.as_ref().is_some_and(Session::is_open_now)
-                            {
-                                false
-                            } else {
-                                l.inputs.clear();
-                                l.media = MediaDiagnostics::default();
-                                l.session = Some(s.clone());
-                                true
-                            }
-                        };
+                        let accepted = owner.accept_session(&s);
                         if accepted {
                             let host = owner.clone();
                             tokio::spawn(async move {

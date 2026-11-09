@@ -51,7 +51,8 @@ jobs:
         run: |
           version_args=()
           if [[ "$GITHUB_REF" == 'refs/heads/codex/desktop-multiview-presentation' ]]; then
-            version_args+=('-PfarsailVersionName=0.1.14-lease1')
+            mobile_version="$(node -p "require('./apps/android/version.json').version")"
+            version_args+=("-PfarsailVersionName=${mobile_version}-lease1")
           fi
           scripts/build-android.sh :app:assembleRelease :app:lintRelease :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin "${version_args[@]}"
       - uses: actions/upload-artifact@v4

@@ -1003,3 +1003,44 @@ async fn stale_cached_geometry_yields_to_runtime_timers() {
     desktop.close().await;
     target.close().await;
 }
+
+#[tokio::test]
+async fn approved_control_connection_queues_wake_without_frame_but_view_and_revoked_leases_cannot_wake()
+ {
+    let (h, server) = host(151).await;
+    let source = Transport::bind([152; 32], Config::default()).await.unwrap();
+    let target = Transport::bind([153; 32], Config::default()).await.unwrap();
+    let (viewer, peer) = connect(&source, &target, "wake-control", RemotePermission::Control).await;
+    assert!(h.frames.borrow().is_none());
+    assert!(h.accept_session(&peer));
+    let commands = h.drain();
+    let command = &commands[0];
+    assert_eq!(commands.as_array().unwrap().len(), 1);
+    assert_eq!(command["input"], json!({"kind":"wake"}));
+    let epoch = command["epoch"].as_u64().unwrap();
+    let layout = command["layout"].as_u64().unwrap();
+    assert!(h.input_valid("wake-control", epoch, layout));
+    assert!(
+        !h.accept_session(&peer),
+        "duplicate connection cannot queue another wake"
+    );
+    assert_eq!(h.drain(), json!([]));
+    h.control(false);
+    assert!(!h.input_valid("wake-control", epoch, layout));
+    assert!(!h.accept_session(&peer));
+    viewer.close();
+    peer.close();
+    h.local.lock().unwrap().session = None;
+    let (view, view_peer) = connect(&source, &target, "wake-view", RemotePermission::View).await;
+    assert!(h.accept_session(&view_peer));
+    assert_eq!(h.drain(), json!([]), "view permission cannot wake");
+    assert!(!h.input_valid("wake-view", epoch, layout));
+    view.close();
+    view_peer.close();
+    h.stop_local();
+    assert!(!h.accept_session(&peer));
+    source.close().await;
+    target.close().await;
+    h.client.stop_transport().await;
+    server.abort();
+}

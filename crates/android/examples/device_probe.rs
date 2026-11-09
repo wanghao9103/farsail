@@ -149,6 +149,10 @@ async fn main() {
             tokio::time::sleep(Duration::from_secs(5)).await;
         }
     }
+    if args.get(5).is_some_and(|s| s == "--connection-wake") {
+        // No control input before Android verifies connection-only wake.
+        wait_for_owned_input_fixture(args.get(6).unwrap().parse().unwrap()).await;
+    }
     let first_input = if wake_first { 3 } else { 1 };
     input(
         &session,

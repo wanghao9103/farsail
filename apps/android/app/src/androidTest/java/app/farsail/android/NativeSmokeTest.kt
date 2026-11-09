@@ -183,7 +183,9 @@ class NativeSmokeTest {
         val realPeer = InstrumentationRegistry.getArguments().getString("realPeer") == "true"
         val screenshot = InstrumentationRegistry.getArguments().getString("captureBackend") == "accessibility"
         val wakePeer = InstrumentationRegistry.getArguments().getString("wakePeer") == "true"
+        val connectionWake = InstrumentationRegistry.getArguments().getString("connectionWake") == "true"
         val keyguard = context.getSystemService(android.app.KeyguardManager::class.java)
+        if (connectionWake) org.junit.Assume.assumeFalse("Owned password-free emulator only", keyguard.isDeviceSecure)
         if (wakePeer) { check(screenshot); org.junit.Assume.assumeFalse("Never replace an existing credential", keyguard.isDeviceSecure) }
         var peerCredential = false
         val oldPeerLockDelay = shell("settings get secure lock_screen_lock_after_timeout")
@@ -269,11 +271,31 @@ class NativeSmokeTest {
                     device.sleep()
                     await { keyguard.isKeyguardLocked && !context.getSystemService(android.os.PowerManager::class.java).isInteractive }
                 }
+                if (connectionWake) {
+                    device.sleep()
+                    await { !context.getSystemService(android.os.PowerManager::class.java).isInteractive }
+                    assertTrue("Projection must still be authorized while asleep", CaptureService.running)
+                    inst.runOnMainSync { ControlService.instance!!.startActivity(Intent(context, WakeActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+                    Thread.sleep(750)
+                    assertFalse("An unauthenticated wake Activity must not turn on the screen", context.getSystemService(android.os.PowerManager::class.java).isInteractive)
+                }
                 readyFile.writeText(endpoint.toString())
+                if (connectionWake) {
+                    // The peer waits for inputReady before sending ANY control input.
+                    await { context.getSystemService(android.os.PowerManager::class.java).isInteractive && !keyguard.isKeyguardLocked }
+                    assertTrue("Connection wake preserves projection", CaptureService.running && !CaptureService.accessibilityMode)
+                    java.io.File(context.filesDir, "p2p-wake.json").writeText(JSONObject().put("connectionWokeScreen", true).put("insecureKeyguardDismissed", true).toString())
+                    Thread.sleep(750)
+                    assertFalse("Temporary remote wake lock must be released", activeWakeLocks().contains("FarSail:RemoteWake"))
+                    context.startActivity(Intent(inst.context, InputFixtureActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                    assertTrue(device.wait(Until.hasObject(By.desc("remote-input-fixture")), 10000))
+                    device.findObject(By.desc("remote-input-fixture")).click()
+                    coordinator.inputReady.set(true)
+                }
                 if (wakePeer) {
                     await { context.getSystemService(android.os.PowerManager::class.java).isInteractive }
-                    assertTrue("Approved remote input may wake but must not unlock", keyguard.isKeyguardLocked)
-                    java.io.File(context.filesDir, "p2p-wake.json").writeText(JSONObject().put("approvedInputWokeScreen", true).put("secureStillLocked", true).toString())
+                    assertTrue("Approved controller connection may wake but must not unlock", keyguard.isKeyguardLocked)
+                    java.io.File(context.filesDir, "p2p-wake.json").writeText(JSONObject().put("approvedConnectionWokeScreen", true).put("secureStillLocked", true).toString())
                     // Let the transient wake window finish before dismissing the
                     // fixture keyguard; otherwise the shell request targets it.
                     Thread.sleep(1000)

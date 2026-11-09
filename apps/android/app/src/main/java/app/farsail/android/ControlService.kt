@@ -50,6 +50,8 @@ class ControlService : AccessibilityService() {
     private var pointerEpoch = 0L
     private fun valid(c: JSONObject): Boolean {
         if (!CaptureService.running) return false
+        // Connection wake carries no coordinates and does not require a first frame.
+        if (c.getJSONObject("input").getString("kind") == "wake") return NativeBridge.inputValid(c.getString("session"), c.getLong("epoch"), c.getLong("layout"))
         val (w, h) = dimensions(this)
         return w == CaptureService.screenWidth && h == CaptureService.screenHeight && NativeBridge.inputValid(c.getString("session"), c.getLong("epoch"), c.getLong("layout"))
     }
@@ -57,7 +59,11 @@ class ControlService : AccessibilityService() {
         (v.getDouble("x") * (CaptureService.screenWidth - 1)).toFloat() to (v.getDouble("y") * (CaptureService.screenHeight - 1)).toFloat()
     private fun apply(c: JSONObject) {
         val v = c.getJSONObject("input")
-        if (CaptureService.accessibilityMode && !getSystemService(PowerManager::class.java).isInteractive) {
+        if (v.getString("kind") == "wake") {
+            if (!getSystemService(PowerManager::class.java).isInteractive || getSystemService(android.app.KeyguardManager::class.java).isKeyguardLocked) WakeActivity.request(this, c)
+            clearGesture(); return
+        }
+        if (!getSystemService(PowerManager::class.java).isInteractive) {
             // The caller has already checked the native session/epoch/layout lease.
             // Consume the wake action so its coordinates cannot hit a newly visible UI.
             if (v.getString("kind") !in listOf("move", "release")) WakeActivity.request(this, c)
