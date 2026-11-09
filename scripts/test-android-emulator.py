@@ -40,6 +40,7 @@ redir = None
 ready_forward = None
 backend = os.environ.get("ANDROID_CAPTURE_BACKEND", "projection")
 assert backend in ("projection", "accessibility")
+connection_wake = backend == "projection" and os.environ.get("ANDROID_CONNECTION_WAKE") == "1"
 guest = os.environ.get("ANDROID_PROBE_IN_GUEST") == "1"
 if guest:
     guest_probe = ROOT / os.environ.get("CARGO_TARGET_DIR", "target") / "x86_64-linux-android/release/examples/device_probe"
@@ -47,7 +48,7 @@ if guest:
     adb("push", str(guest_probe), "/data/local/tmp/farsail-device-probe")
     adb("shell", "chmod", "700", "/data/local/tmp/farsail-device-probe")
 with (OUT / "instrumentation.log").open("wb") as log:
-    test = subprocess.Popen([*ADB, "shell", "am", "instrument", "-w", "-e", "class", "app.farsail.android.NativeSmokeTest#keystoreJniProjectionBackgroundAndStop", "-e", "realPeer", "true", "-e", "sourceKey", key, "-e", "captureBackend", backend, "-e", "wakePeer", str(backend == "accessibility").lower(),
+    test = subprocess.Popen([*ADB, "shell", "am", "instrument", "-w", "-e", "class", "app.farsail.android.NativeSmokeTest#keystoreJniProjectionBackgroundAndStop", "-e", "realPeer", "true", "-e", "sourceKey", key, "-e", "captureBackend", backend, "-e", "wakePeer", str(backend == "accessibility").lower(), "-e", "connectionWake", str(connection_wake).lower(),
                              "app.farsail.android.test/androidx.test.runner.AndroidJUnitRunner"], stdout=log, stderr=subprocess.STDOUT)
     try:
         end = time.monotonic() + 90
@@ -74,8 +75,8 @@ with (OUT / "instrumentation.log").open("wb") as log:
             assert b"OK" in result.stdout, result.stdout
             redir = host_port
             command = [str(probe), endpoint["id"], str(host_port), str(endpoint["tapX"]), str(endpoint["tapY"])]
-        if backend == "accessibility":
-            command.append("--wake-first")
+        if backend == "accessibility" or connection_wake:
+            command.append("--connection-wake")
             ready_port = endpoint["inputReadyPort"]
             if not guest:
                 ready_forward = int(adb("forward", "tcp:0", f"tcp:{ready_port}").stdout)
@@ -94,7 +95,11 @@ with (OUT / "instrumentation.log").open("wb") as log:
         assert any(f.get("input_sent") and f.get("still_open") for f in frames)
         if backend == "accessibility":
             wake = json.loads(adb("exec-out", "run-as", "app.farsail.android", "cat", "files/p2p-wake.json").stdout)
-            assert wake.get("approvedInputWokeScreen") and wake.get("secureStillLocked"), wake
+            assert wake.get("approvedConnectionWokeScreen") and wake.get("secureStillLocked"), wake
+            (OUT / "wake.json").write_text(json.dumps(wake, indent=2))
+        if connection_wake:
+            wake = json.loads(adb("exec-out", "run-as", "app.farsail.android", "cat", "files/p2p-wake.json").stdout)
+            assert wake.get("connectionWokeScreen") and wake.get("insecureKeyguardDismissed"), wake
             (OUT / "wake.json").write_text(json.dumps(wake, indent=2))
         print(f"PASS: Android Keystore/JNI, {backend}, background/task removal, authenticated QUIC frames and owned text/click input, local stop and notification cleanup")
     finally:

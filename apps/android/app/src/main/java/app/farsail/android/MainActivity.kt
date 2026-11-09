@@ -353,9 +353,9 @@ class MainActivity : Activity() {
             ui.toggle(card, "共享期间防止自动熄屏", SharingPower.enabled(this)).apply {
                 setOnCheckedChangeListener { _, enabled -> SharingPower.preference(this@MainActivity, enabled) }
             }
-            ui.text(card, if (RemotePreferences.accessibilityCapture(this, app.state)) "截图共享不依赖录屏会话；系统保护页面和厂商后台策略仍可能限制共享。" else "锁屏后可能黑屏或中断；发生中断时需解锁并重新授权。", 12f, secondary = true)
+            ui.text(card, if (RemotePreferences.accessibilityCapture(this, app.state)) "截图共享不依赖录屏会话；系统保护页面和厂商后台策略仍可能限制共享。" else "已允许的控制连接会尝试唤醒屏幕；锁屏导致录屏中断时仍需在手机上重新授权。", 12f, secondary = true)
             ui.link(card, "共享与锁屏说明") {
-                AlertDialog.Builder(this).setTitle("共享与锁屏").setMessage(if (RemotePreferences.accessibilityCapture(this, app.state)) "辅助功能截图不依赖录屏会话，无需重复确认录屏。系统保护页面可能黑屏，锁屏和后台兼容性取决于手机系统；此功能不会绕过密码。\n\n防止自动熄屏会增加耗电，可按需要关闭；手动锁屏不会主动停止截图服务。\n\n控制其他设备无需开启这台手机的共享或辅助功能。" else "防止自动熄屏开启后，屏幕可变暗但不会自动熄屏，切到其他应用也有效，会增加耗电。\n\n锁屏后，系统可能停止录屏或限制画面。发生中断时，解锁后点击恢复屏幕共享并确认系统授权。\n\n控制其他设备无需开启这台手机的共享或辅助功能。")
+                AlertDialog.Builder(this).setTitle("共享与锁屏").setMessage(if (RemotePreferences.accessibilityCapture(this, app.state)) "辅助功能截图不依赖录屏会话，无需重复确认录屏。系统保护页面可能黑屏，锁屏和后台兼容性取决于手机系统；此功能不会绕过密码。\n\n防止自动熄屏会增加耗电，可按需要关闭；手动锁屏不会主动停止截图服务。\n\n控制其他设备无需开启这台手机的共享或辅助功能。" else "防止自动熄屏开启后，屏幕可变暗但不会自动熄屏，切到其他应用也有效，会增加耗电。\n\n已允许的远程控制连接建立时会尝试亮屏，无密码时会请求收起锁屏。有密码时不会解除密码锁。\n\n锁屏后，系统可能停止录屏或限制画面。发生中断时，解锁后点击恢复屏幕共享并确认系统授权。\n\n控制其他设备无需开启这台手机的共享或辅助功能。")
                     .setPositiveButton("知道了", null).show()
             }
             ui.divider(card)
@@ -445,7 +445,7 @@ class MainActivity : Activity() {
     private fun chooseAccessibilityCapture() {
         if (CaptureService.running) { say("请先停止共享，再切换采集方式。"); draw(); return }
         AlertDialog.Builder(this).setTitle("免重复确认共享")
-            .setMessage("使用系统辅助功能截图，需在系统设置中一次性允许 FarSail 远程控制服务。开启共享后会持续取得屏幕画面并显示通知，可随时停止。\n\n此方式约每秒两帧。熄屏时远程首次点击用于唤醒，请再次点击操作，不会自动解锁；受保护页面可能黑屏。锁屏及后台兼容性取决于手机系统，无需 ADB 激活。")
+            .setMessage("使用系统辅助功能截图，需在系统设置中一次性允许 FarSail 远程控制服务。开启共享后会持续取得屏幕画面并显示通知，可随时停止。\n\n此方式约每秒两帧。已允许的远程控制连接会尝试亮屏，无密码时请求收起锁屏。连接后再次熄屏时，首次远程点击仅用于唤醒，请再次点击操作；不会解除密码锁，受保护页面可能黑屏。锁屏及后台兼容性取决于手机系统，无需 ADB 激活。")
             .setPositiveButton("启用并共享") { _, _ ->
                 RemotePreferences.accessibilityCapture(this, app.state, true)
                 go(Page.SHARING); rendered = null; restoreSharingPending = false; consent()
