@@ -1675,6 +1675,14 @@ impl NativeClient {
         let start = Instant::now();
         let mut response = request.send().await?;
         let status = response.status();
+        // Error bodies are not used as proof. Preserve the HTTP classification
+        // even when a gateway returns a large HTML error page.
+        if !status.is_success() {
+            return Err(Error::Http(
+                status.as_u16(),
+                status.canonical_reason().unwrap_or("request failed").into(),
+            ));
+        }
         let mut bytes = Vec::new();
         const MAX: usize = 4096;
         if response.content_length().is_some_and(|n| n > MAX as u64) {
@@ -1685,12 +1693,6 @@ impl NativeClient {
                 return Err(Error::Invalid("transport response too large".into()));
             }
             bytes.extend_from_slice(&chunk);
-        }
-        if !status.is_success() {
-            return Err(Error::Http(
-                status.as_u16(),
-                status.canonical_reason().unwrap_or("request failed").into(),
-            ));
         }
         let mut value: Value = if bytes.is_empty() {
             Value::Null
@@ -2090,6 +2092,15 @@ impl NativeClient {
     }
 }
 
+fn authority_error(error: Error) -> farsail_transport::Error {
+    match error {
+        Error::Network(_) | Error::Http(408 | 429 | 500..=599, _) => {
+            farsail_transport::Error::AuthorityUnavailable
+        }
+        _ => farsail_transport::Error::Denied,
+    }
+}
+
 impl Authority for NativeClient {
     async fn abandon(&self, id: &str) {
         self.invalidate_transport_grant(id).await;
@@ -2117,7 +2128,7 @@ impl Authority for NativeClient {
                 None,
             )
             .await
-            .map_err(|_| farsail_transport::Error::Denied)?;
+            .map_err(authority_error)?;
         let mut claims: Claims =
             serde_json::from_value(v).map_err(|_| farsail_transport::Error::Denied)?;
         // transport_request_as already deducted the HTTP time from expires_in.
@@ -2172,7 +2183,7 @@ impl Authority for NativeClient {
                 None,
             )
             .await
-            .map_err(|_| farsail_transport::Error::Denied)?;
+            .map_err(authority_error)?;
         let token = v["grant_token"]
             .as_str()
             .ok_or(farsail_transport::Error::Denied)?
@@ -2230,6 +2241,65 @@ fn read_json<T: DeserializeOwned>(store: &dyn SecureStore, key: &str) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn authority_outages_are_retryable_but_identity_rejections_are_not() {
+        for status in [408, 429, 500, 502, 503, 504] {
+            assert!(matches!(
+                authority_error(Error::Http(status, "redacted".into())),
+                farsail_transport::Error::AuthorityUnavailable
+            ));
+        }
+        for status in [400, 401, 403, 404, 409] {
+            assert!(matches!(
+                authority_error(Error::Http(status, "redacted".into())),
+                farsail_transport::Error::Denied
+            ));
+        }
+        assert!(matches!(
+            authority_error(Error::Invalid("bad proof".into())),
+            farsail_transport::Error::Denied
+        ));
+    }
+    #[tokio::test]
+    async fn gateway_error_pages_preserve_status_without_relaxing_proof_size_limits() {
+        use axum::{Router, extract::Path, http::StatusCode, routing::get};
+        let app = Router::new().route(
+            "/{status}",
+            get(|Path(status): Path<u16>| async move {
+                (
+                    StatusCode::from_u16(status).unwrap(),
+                    "<html>gateway</html>".repeat(1000),
+                )
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let identity = DeviceSnapshot {
+            base: format!("http://{}", listener.local_addr().unwrap()),
+            token: "synthetic-device".into(),
+            generation: 1,
+        };
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = NativeClient::new(Arc::new(MemoryStore::default())).unwrap();
+        for status in [503, 403, 200] {
+            let error = client
+                .transport_request_as(&identity, Method::GET, &format!("/{status}"), None, None)
+                .await
+                .unwrap_err();
+            if status == 200 {
+                assert!(matches!(error, Error::Invalid(_)));
+            } else {
+                assert!(matches!(error, Error::Http(code, _) if code == status));
+                assert_eq!(
+                    matches!(
+                        authority_error(error),
+                        farsail_transport::Error::AuthorityUnavailable
+                    ),
+                    status == 503
+                );
+            }
+        }
+        server.abort();
+    }
     async fn lease_fixture(
         ttl: i64,
     ) -> (

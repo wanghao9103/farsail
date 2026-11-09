@@ -36,5 +36,9 @@ libloading = "0.8"
 gtk = "0.18.2"
 gdk = "0.18.2"
 
+[target.'cfg(windows)'.dependencies]
+webview2-com = "=0.39.1"
+windows = "=0.62.2"
+
 [build-dependencies]
 tauri-build = { version = "2.5.5", features = [] }

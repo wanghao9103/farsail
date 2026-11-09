@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useId, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
+import { ViewerFrameReader, type DeliveredFrame } from "./viewer-frame-reader";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { Device, Me, Pending, Remote, User } from "@farsail/ui";
@@ -3410,6 +3411,7 @@ function Viewer({
       image.current.releasePointerCapture(id);
   };
   const last = useRef(0);
+  const [frameReader] = useState(() => new ViewerFrameReader());
   const frameTimes = useRef<number[]>([]);
   const url = useRef<string | null>(null);
   const inputQueue = useRef<Promise<unknown>>(Promise.resolve());
@@ -3437,6 +3439,7 @@ function Viewer({
   );
   const stopMedia = () => {
     mediaRunning.current = false;
+    frameReader.cancel();
     const pending = pendingFrame.current;
     pendingFrame.current = null;
     if (pending) {
@@ -4145,13 +4148,12 @@ function Viewer({
           await new Promise((resolve) => window.setTimeout(resolve, 50));
           continue;
         }
+        let borrowed: DeliveredFrame | null = null;
         try {
-          const data = new Uint8Array(
-            await invoke<ArrayBuffer>("media_next", {
-              id,
-              after: last.current,
-            }),
-          );
+          const requestStarted = performance.now();
+          borrowed = await frameReader.next(id, last.current);
+          const ipcMs = performance.now() - requestStarted;
+          const data = borrowed.bytes;
           if (!live || !mediaRunning.current) break;
           if (data.length < 50) continue;
           const view = new DataView(
@@ -4240,6 +4242,11 @@ function Viewer({
             image.current
           ) {
             image.current.src = next;
+            image.current.dataset.ipcMs = String(ipcMs);
+            image.current.dataset.delivery = borrowed.delivery;
+            image.current.dataset.responseMs = String(
+              Date.now() - Number(view.getBigUint64(25)),
+            );
           } else {
             // Commit new geometry and its input handlers before another decoded
             // frame can enter the same-geometry fast path. React may otherwise
@@ -4256,6 +4263,8 @@ function Viewer({
             }
           }
           break;
+        } finally {
+          borrowed?.release();
         }
       }
     };

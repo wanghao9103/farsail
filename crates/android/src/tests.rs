@@ -193,7 +193,7 @@ async fn acknowledged_image(viewer: &Session, source: (u32, u32)) -> JpegFrame {
 async fn four_window_sizes_reduce_payload_and_restore_native_quality_without_changing_input_geometry()
  {
     let source = (2340, 1080);
-    let rgba = textured_rgba(source.0, source.1);
+    let rgba = Arc::new(textured_rgba(source.0, source.1));
     let full = capture::encode_rgba(&rgba, source.0, source.1, source.0 as usize * 4, 1).unwrap();
     let desktop = Transport::bind([120; 32], Config::default()).await.unwrap();
     let mut hosts = Vec::new();
@@ -235,8 +235,34 @@ async fn four_window_sizes_reduce_payload_and_restore_native_quality_without_cha
         servers.push(server);
         viewers.push((viewer.clone(), viewer.stable_id(), request.edge));
     }
-    for (h, layout, _) in &hosts {
-        assert!(h.publish_rgba(&rgba, source.0, source.1, source.0 as usize * 4, *layout));
+    // These fixtures represent separate phones. Encoding all four synchronously
+    // on this current-thread runtime prevents transport tasks from polling and
+    // can age the first one-shot frame past the 700 ms freshness gate.
+    let captures: Vec<_> = hosts
+        .iter()
+        .map(|(h, layout, _)| {
+            let h = h.clone();
+            let layout = *layout;
+            let rgba = rgba.clone();
+            tokio::task::spawn_blocking(move || {
+                h.publish_rgba(&rgba, source.0, source.1, source.0 as usize * 4, layout)
+            })
+        })
+        .collect();
+    for capture in captures {
+        assert!(capture.await.unwrap());
+    }
+    for (index, (h, _, _)) in hosts.iter().enumerate() {
+        let cached = h.frames.borrow().clone().unwrap();
+        let image = JpegFrame::from_wire(&cached).unwrap();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        eprintln!(
+            "fixture host {index}: cached frame age before viewer read={}ms",
+            now.saturating_sub(image.meta.captured_ms)
+        );
     }
     let mut compact_bytes = 0;
     for (index, (viewer, _, edge)) in viewers.iter().enumerate() {

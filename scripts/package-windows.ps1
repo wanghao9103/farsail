@@ -38,7 +38,7 @@ if ([BitConverter]::ToUInt16($bytes, $pe + 4) -ne 0x8664) { throw 'Application i
 if ([BitConverter]::ToUInt16($bytes, $pe + 24 + 68) -ne 2) { throw 'Release must use Windows GUI subsystem' }
 Assert-ApplicationManifest $exe
 $strings = [Text.Encoding]::ASCII.GetString($bytes)
-foreach ($probe in @('FARSAIL_IPC_SMOKE_PATH','FARSAIL_TEST_PROFILE_DIR','ipc_smoke_report','ipc_media_smoke','FARSAIL_VIEWER_SMOKE','ipc_viewer_state','FARSAIL_SHARE_SMOKE','FARSAIL_TRAY_SMOKE','ipc_desktop_state')) {
+foreach ($probe in @('FARSAIL_IPC_SMOKE_PATH','FARSAIL_TEST_PROFILE_DIR','ipc_smoke_report','ipc_media_smoke','FARSAIL_VIEWER_SMOKE','ipc_viewer_state','FARSAIL_SHARE_SMOKE','FARSAIL_TRAY_SMOKE','ipc_desktop_state','FARSAIL_RENDER_SMOKE','FARSAIL_RENDER_FORCE_IPC','FARSAIL_RENDER_SLOW_FIRST','ipc_render_smoke_report')) {
     if ($strings.Contains($probe)) { throw "Debug probe in release: $probe" }
 }
 if ((Get-FileHash apps/desktop/src-tauri/icons/icon.ico).Hash -ne (Get-FileHash assets/branding/farsail-v2/icon.ico).Hash) {
