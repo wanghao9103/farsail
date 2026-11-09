@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 /// on delivery queueing; recover slowly to avoid repeatedly filling a shared link.
 pub(crate) struct DeliveryQuality {
     pub value: u8,
+    pub overlap_allowed: bool,
     changed: Instant,
     healthy: Option<Instant>,
     base_rtt: Option<u64>,
@@ -14,6 +15,7 @@ impl Default for DeliveryQuality {
     fn default() -> Self {
         Self {
             value: 90,
+            overlap_allowed: false,
             changed: Instant::now(),
             healthy: None,
             base_rtt: None,
@@ -31,6 +33,9 @@ impl DeliveryQuality {
         let base = self.base_rtt.map_or(rtt_ms, |base| base.min(rtt_ms));
         self.base_rtt = Some(base);
         let high = base.saturating_mul(2).saturating_add(60).clamp(120, 220);
+        // Overlap a healthy network round trip, but return to one outstanding
+        // frame immediately when delivery queues. MediaWindow still caps at two.
+        self.overlap_allowed = ack_ms <= high && send_ms < 80 && rtt_ms <= base.saturating_add(20);
         if ack_ms > high || send_ms > high / 2 || rtt_ms > base.saturating_add(60) {
             self.healthy = None;
             if now.saturating_duration_since(self.changed) >= Duration::from_secs(1) {
@@ -148,6 +153,25 @@ pub(crate) fn encode_rgba_profile(
     layout: u64,
     profile: Settings,
 ) -> Option<JpegFrame> {
+    encode_rgba_profile_timed(bytes, width, height, row_stride, layout, profile)
+        .map(|out| out.frame)
+}
+
+pub(crate) struct EncodedCapture {
+    pub frame: JpegFrame,
+    pub convert_ms: u64,
+    pub jpeg_ms: u64,
+}
+
+pub(crate) fn encode_rgba_profile_timed(
+    bytes: &[u8],
+    width: u32,
+    height: u32,
+    row_stride: usize,
+    layout: u64,
+    profile: Settings,
+) -> Option<EncodedCapture> {
+    let started = Instant::now();
     let span = rgba_span(width, height, row_stride, 4)?;
     let bytes = bytes.get(..span)?;
     let (out_w, out_h) = profile.output_size(width, height)?;
@@ -189,12 +213,20 @@ pub(crate) fn encode_rgba_profile(
         origin_x: 0,
         origin_y: 0,
     };
+    let convert_ms = started.elapsed().as_millis() as u64;
+    let jpeg_started = Instant::now();
     // All fallback qualities retain 4:4:4 sampling and the existing byte bound.
     // A native noisy frame may need Q80 even when Q85 is still too large.
     let mut quality = profile.quality;
     loop {
         match JpegFrame::encode_rgb(meta.clone(), &rgb, quality) {
-            Ok(frame) => return Some(frame),
+            Ok(frame) => {
+                return Some(EncodedCapture {
+                    frame,
+                    convert_ms,
+                    jpeg_ms: jpeg_started.elapsed().as_millis() as u64,
+                });
+            }
             Err(farsail_media::Error::TooLarge) if quality > 80 => {
                 quality = (quality - 5).max(80);
             }
@@ -356,6 +388,23 @@ mod tests {
         );
         quality.observe(35, 5, 20, start + Duration::from_secs(9));
         assert_eq!(quality.value, 81);
+    }
+
+    #[test]
+    fn healthy_delivery_can_overlap_but_queueing_immediately_disables_it() {
+        let mut quality = DeliveryQuality::with_rtt(Some(20));
+        let start = quality.changed;
+        assert!(!quality.overlap_allowed);
+        quality.observe(60, 5, 20, start);
+        assert!(quality.overlap_allowed);
+        quality.observe(343, 0, 95, start);
+        assert!(!quality.overlap_allowed);
+        quality.observe(60, 90, 20, start);
+        assert!(!quality.overlap_allowed);
+        quality.observe(60, 5, 50, start);
+        assert!(!quality.overlap_allowed);
+        quality.observe(60, 5, 20, start);
+        assert!(quality.overlap_allowed);
     }
 
     #[test]

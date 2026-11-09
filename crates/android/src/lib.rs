@@ -26,12 +26,15 @@ use tokio::sync::watch;
 struct MediaDiagnostics {
     bytes: usize,
     sent: u64,
+    sent_frames: u64,
     acknowledged: u64,
     send_ms: u64,
     publish_to_send_ms: u64,
     ack_ms: u64,
     input_wait_ms: u64,
     encode_ms: u64,
+    convert_ms: u64,
+    jpeg_ms: u64,
     encoded_width: u32,
     encoded_height: u32,
     pending: VecDeque<(u64, Instant)>,
@@ -226,7 +229,7 @@ impl Host {
         };
         let started = Instant::now();
         let Some(image) =
-            capture::encode_rgba_profile(bytes, width, height, stride, layout, profile)
+            capture::encode_rgba_profile_timed(bytes, width, height, stride, layout, profile)
         else {
             return false;
         };
@@ -238,7 +241,14 @@ impl Host {
             return false;
         }
         local.media.encode_ms = started.elapsed().as_millis() as u64;
-        self.publish_locked(&mut local, image.jpeg, image.meta.width, image.meta.height)
+        local.media.convert_ms = image.convert_ms;
+        local.media.jpeg_ms = image.jpeg_ms;
+        self.publish_locked(
+            &mut local,
+            image.frame.jpeg,
+            image.frame.meta.width,
+            image.frame.meta.height,
+        )
     }
     fn publish_accessibility_encoded(
         &self,
@@ -704,12 +714,16 @@ impl Host {
                     local.media.pending.retain(|(seq, _)| *seq != sequence);
                 }
             }
-            let auto_mode = self.local.lock().unwrap().viewport_edge.is_some();
-            // A small-window stream needs low latency, not two JPEGs queued
-            // ahead of the latest capture. A bounded probe after four seconds
-            // still recovers a lost single ACK without restarting the lease.
-            let auto_waiting =
-                auto_mode && !window.is_empty() && last_attempt.elapsed() < Duration::from_secs(4);
+            let serial_delivery = {
+                let local = self.local.lock().unwrap();
+                local.viewport_edge.is_some() && !local.delivery_quality.overlap_allowed
+            };
+            // Healthy delivery can use both bounded slots to overlap the RTT.
+            // On queueing, wait for the outstanding frame instead of adding more.
+            // The same bounded probe and no-progress deadline remain in force.
+            let auto_waiting = serial_delivery
+                && !window.is_empty()
+                && last_attempt.elapsed() < Duration::from_secs(4);
             if video_active && !auto_waiting && window.blocked_on().is_none() {
                 let next = frames.borrow_and_update().clone();
                 if let Some(wire) = next {
@@ -817,6 +831,7 @@ impl Host {
                             .is_some_and(|s| s.stable_id() == session.stable_id())
                         {
                             l.media.sent = image.meta.sequence;
+                            l.media.sent_frames += 1;
                             l.media.send_ms = sent_at.elapsed().as_millis() as u64;
                             l.media.publish_to_send_ms = now.saturating_sub(image.meta.captured_ms);
                             l.media.pending.push_back((image.meta.sequence, sent_at));
@@ -925,16 +940,25 @@ impl Host {
         }
         let result = match op {
             "diagnostics" => {
+                let identity = tokio::time::timeout(Duration::from_secs(1), client.public_state())
+                    .await
+                    .ok();
                 let l = self.local.lock().unwrap();
                 let session = l.session.as_ref().filter(|s| s.is_open_now());
                 let (path, rtt) = session.map(|s| s.path()).unwrap_or(("none", None));
                 return Ok(json!({"path":path,"rttMs":rtt,"frameBytes":l.media.bytes,
+                    "deviceId":identity.as_ref().and_then(|state| state.get("deviceId")),
+                    "captureActive":l.capture,"captureEpoch":l.epoch,"hostingEnabled":client.hosting_enabled(),
+                    "controlEnabled":l.control,"sessionId":session.map(Session::id),
                     "published":l.sequence,"sent":l.media.sent,"acknowledged":l.media.acknowledged,
+                    "sentFrames":l.media.sent_frames,
                     "sendMs":l.media.send_ms,"publishToSendMs":l.media.publish_to_send_ms,
                     "ackMs":l.media.ack_ms,"inputWaitMs":l.media.input_wait_ms,
                     "encodeMs":l.media.encode_ms,"encodedWidth":l.media.encoded_width,"encodedHeight":l.media.encoded_height,
+                    "convertMs":l.media.convert_ms,"jpegMs":l.media.jpeg_ms,"jpegEncoder":farsail_media::JPEG_ENCODER,
                     "profile":l.video_profile.profile,"profileGeneration":l.video_profile.generation,
                     "viewportEdge":l.viewport_edge,
+                    "overlapAllowed":l.delivery_quality.overlap_allowed,
                     "jpegQuality":Self::settings(&l).quality,
                     "pendingFrames":l.media.pending.len(),
                     "oldestPendingMs":l.media.pending.front().map(|(_, at)| at.elapsed().as_millis() as u64)}));

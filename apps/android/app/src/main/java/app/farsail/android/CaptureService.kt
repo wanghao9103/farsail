@@ -57,6 +57,10 @@ class CaptureService : Service() {
     @Volatile private var stopped = false
     private var layout = 0L
     private var lastFrame = 0L
+    private val cadence = CaptureCadence()
+    @Volatile private var captureCallbacks = 0L
+    @Volatile private var admittedFrames = 0L
+    @Volatile private var captureIntervalMs = 0L
     // onCapturedContentResize is only delivered on Android 14+. Older phones
     // must resize the capture surface when the physical display rotates too.
     private val displayListener = object : DisplayManager.DisplayListener {
@@ -203,11 +207,17 @@ class CaptureService : Service() {
         val old = reader
         val next = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
         reader = next
+        cadence.reset()
         next.setOnImageAvailableListener({ source ->
             val image = try { source.acquireLatestImage() } catch (_: Exception) { null } ?: return@setOnImageAvailableListener
             try {
-                val now = SystemClock.elapsedRealtime()
-                if (stopped || now - lastFrame < 100 || source !== reader) return@setOnImageAvailableListener
+                if (stopped || source !== reader) return@setOnImageAvailableListener
+                captureCallbacks++
+                val nanos = SystemClock.elapsedRealtimeNanos()
+                if (!cadence.admit(nanos)) return@setOnImageAvailableListener
+                val now = nanos / 1_000_000L
+                captureIntervalMs = if (lastFrame == 0L) 0 else now - lastFrame
+                admittedFrames++
                 lastFrame = now
                 val plane = image.planes[0]
                 check(plane.pixelStride == 4) { "不支持的录屏像素格式" }
@@ -267,8 +277,14 @@ class CaptureService : Service() {
         super.onDestroy()
     }
     override fun dump(fd: java.io.FileDescriptor, writer: java.io.PrintWriter, args: Array<out String>) {
+        val snapshot = app.state
+        val serverHash = java.security.MessageDigest.getInstance("SHA-256")
+            .digest(snapshot.optString("server").trimEnd('/').toByteArray(Charsets.UTF_8))
+            .take(6).joinToString("") { "%02x".format(it.toInt() and 255) }
+        writer.println("identity=${JSONObject().put("cachedDeviceId", snapshot.optString("deviceId")).put("signedIn", snapshot.optBoolean("signedIn")).put("nativeSharing", snapshot.optBoolean("sharing")).put("serverFingerprint", serverHash)}")
         writer.println("running=$running phase=$phase accessibilityMode=$accessibilityMode screenshotFrames=$screenshotFrames")
         writer.println("width=$screenWidth height=$screenHeight frameAgeMs=${if (lastFrame == 0L) -1 else SystemClock.elapsedRealtime() - lastFrame}")
+        writer.println("captureTargetFps=${CaptureCadence.TARGET_FPS} captureCallbacks=$captureCallbacks admittedFrames=$admittedFrames captureIntervalMs=$captureIntervalMs")
         writer.println("controlServiceConnected=${ControlSetup.connected(this)} interactive=${getSystemService(PowerManager::class.java).isInteractive}")
         if (Build.VERSION.SDK_INT >= 30) accessibilityFrames?.let {
             writer.println("screenshotCaptureMs=${it.captureMs} screenshotAgeMs=${it.captureAgeMs} screenshotEncodeMs=${it.encodeMs} screenshotIntervalMs=${it.intervalMs}")

@@ -6,6 +6,11 @@ use std::time::{Duration, Instant};
 
 pub const MAX_PIXELS: u32 = 8_294_400;
 pub const MAX_BYTES: usize = 4_000_000;
+pub const JPEG_ENCODER: &str = if cfg!(target_os = "android") {
+    "libjpeg-turbo"
+} else {
+    "jpeg-encoder"
+};
 /// JPEG payload budget, excluding QUIC/TLS/IP headers and retransmissions.
 pub const BASELINE_PAYLOAD_BPS: u64 = 6_000_000;
 const HEADER: usize = 49;
@@ -293,19 +298,10 @@ impl JpegFrame {
         {
             return Err(Error::Invalid);
         }
-        let mut jpeg = Vec::new();
-        let mut encoder = jpeg_encoder::Encoder::new(&mut jpeg, quality);
-        if quality >= 80 {
-            encoder.set_sampling_factor(jpeg_encoder::SamplingFactor::F_1_1);
-        }
-        encoder
-            .encode(
-                rgb,
-                meta.width as u16,
-                meta.height as u16,
-                jpeg_encoder::ColorType::Rgb,
-            )
-            .map_err(|e| Error::Codec(e.to_string()))?;
+        #[cfg(target_os = "android")]
+        let jpeg = android_jpeg(rgb, meta.width, meta.height, quality)?;
+        #[cfg(not(target_os = "android"))]
+        let jpeg = portable_jpeg(rgb, meta.width, meta.height, quality)?;
         let frame = Self { meta, jpeg };
         frame.validate()?;
         Ok(frame)
@@ -380,9 +376,89 @@ impl JpegFrame {
     }
 }
 
+// Keep one compressor per capture thread. The library's ARM NEON path keeps
+// full-color JPEG affordable without changing the media protocol or quality floor.
+#[cfg(target_os = "android")]
+fn android_jpeg(rgb: &[u8], width: u32, height: u32, quality: u8) -> Result<Vec<u8>> {
+    thread_local! {
+        static ENCODER: std::cell::RefCell<Option<turbojpeg::Compressor>> = const { std::cell::RefCell::new(None) };
+    }
+    ENCODER.with(|slot| {
+        let codec = |error: turbojpeg::Error| Error::Codec(error.to_string());
+        let mut slot = slot.borrow_mut();
+        if slot.is_none() {
+            *slot = Some(turbojpeg::Compressor::new().map_err(codec)?);
+        }
+        let encoder = slot
+            .as_mut()
+            .ok_or_else(|| Error::Codec("JPEG encoder unavailable".into()))?;
+        encoder.set_quality(i32::from(quality)).map_err(codec)?;
+        encoder
+            .set_subsamp(if quality >= 80 {
+                turbojpeg::Subsamp::None
+            } else {
+                turbojpeg::Subsamp::Sub2x2
+            })
+            .map_err(codec)?;
+        encoder
+            .compress_to_vec(turbojpeg::Image {
+                pixels: rgb,
+                width: width as usize,
+                pitch: width as usize * 3,
+                height: height as usize,
+                format: turbojpeg::PixelFormat::RGB,
+            })
+            .map_err(codec)
+    })
+}
+
+#[cfg(any(not(target_os = "android"), test))]
+fn portable_jpeg(rgb: &[u8], width: u32, height: u32, quality: u8) -> Result<Vec<u8>> {
+    let mut jpeg = Vec::new();
+    let mut encoder = jpeg_encoder::Encoder::new(&mut jpeg, quality);
+    if quality >= 80 {
+        encoder.set_sampling_factor(jpeg_encoder::SamplingFactor::F_1_1);
+    }
+    encoder
+        .encode(
+            rgb,
+            width as u16,
+            height as u16,
+            jpeg_encoder::ColorType::Rgb,
+        )
+        .map_err(|error| Error::Codec(error.to_string()))?;
+    Ok(jpeg)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "android")]
+    #[test]
+    #[ignore = "explicit short benchmark on an attached ARM phone; synthetic pixels only"]
+    fn android_codec_comparison() {
+        let (width, height) = (1088, 502);
+        let rgb: Vec<u8> = (0..width * height * 3)
+            .map(|n| ((n * 37 + n / 17) % 256) as u8)
+            .collect();
+        let _ = android_jpeg(&rgb, width, height, 80).unwrap();
+        let mut portable_us = 0;
+        let mut accelerated_us = 0;
+        let mut portable_bytes = 0;
+        let mut accelerated_bytes = 0;
+        for _ in 0..5 {
+            let start = Instant::now();
+            portable_bytes = portable_jpeg(&rgb, width, height, 80).unwrap().len();
+            portable_us += start.elapsed().as_micros();
+            let start = Instant::now();
+            accelerated_bytes = android_jpeg(&rgb, width, height, 80).unwrap().len();
+            accelerated_us += start.elapsed().as_micros();
+        }
+        eprintln!(
+            "codec_comparison width={width} height={height} quality=80 frames=5 portable_us={portable_us} accelerated_us={accelerated_us} portable_bytes={portable_bytes} accelerated_bytes={accelerated_bytes}"
+        );
+    }
 
     #[test]
     fn viewport_and_preset_requests_are_bounded_and_preserve_aspect_ratio() {

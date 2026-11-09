@@ -54,3 +54,5 @@ apps/android/app/src/main/jniLibs/
 
 # Ignore dependency symlinks as well as directories.
 /node_modules
+# Generated from the Cargo-verified codec sources during Android packaging.
+apps/android/app/src/main/assets/third-party/native-jpeg/
