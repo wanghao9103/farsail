@@ -9,6 +9,11 @@ on:
         ".github/workflows/system-host-check.yml",
       ]
   workflow_dispatch:
+    inputs:
+      system_tools:
+        description: "Open, capture, activate and close real system tools through the installed broker"
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -44,4 +49,12 @@ jobs:
           }
       - name: Validate session agent and capture
         shell: pwsh
-        run: ./scripts/test-system-host.ps1
+        run: |
+          if ('${{ inputs.system_tools }}' -eq 'true') { ./scripts/test-system-host.ps1 -SystemTools }
+          else { ./scripts/test-system-host.ps1 }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: system-tools-${{ github.sha }}
+          path: .local/system-tools-report.json
+          if-no-files-found: ignore

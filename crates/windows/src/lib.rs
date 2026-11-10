@@ -198,3 +198,6 @@ mod tests {
         assert!(serde_json::from_str::<Input>(r#"{"kind":"button","button":"middle","down":true,"display":1,"layout":1,"x":0.5,"y":0.5}"#).is_err());
     }
 }
+
+#[cfg(all(test, windows))]
+mod system_tools_test;
