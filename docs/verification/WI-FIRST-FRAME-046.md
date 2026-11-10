@@ -34,3 +34,7 @@ Before publishing, the user requested a closer match to the reference title bar.
 ## Vertical controls and mouse-exit dismissal
 
 The final requested interaction replaces the horizontal controls row with a narrow vertical dropdown. Desktop settings disclose the resolution selector; supported actions retain their existing authorization and transport paths. Mouse exit closes expanded sections after 650 ms, while keyboard navigation and focused form controls remain accessible. Opening permits 1600 ms to reach the menu. The previous title-bar-only candidate was cancelled before publication. In-app browser inspection and the focused comparison are recorded in the root design QA report; a standard Chromium/WebKit regression also exercises mouse dismissal and retained keyboard focus.
+
+## Build registry recovery
+
+Earlier cloud jobs failed with HTTP 504 while downloading yallist 3.1.1 from the npmmirror URL embedded in the lockfile. The 142 resolved mirror URLs now use the official npm registry; versions, integrity fields and all other parsed lockfile data are unchanged. An isolated manifest-only npm ci completed in 18 seconds, and the official yallist tarball matches the original SHA-512 integrity. Historical failed jobs remain evidence; the final source must complete cloud checks separately.
