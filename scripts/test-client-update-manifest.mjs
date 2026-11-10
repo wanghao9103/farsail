@@ -330,3 +330,41 @@ test("0.1.25 publication requires the signed helper sandbox on both Linux archit
     next.version,
   );
 });
+
+test("system desktop releases require matching helper and service boundary evidence", () => {
+  withArtifacts((root) => {
+    const helper = "c".repeat(64);
+    changeMetadata(root, "windows", { system_host_sha256: helper });
+    assert.throws(
+      () => buildManifest(root, join(root, "missing-service"), config, commit),
+      /system desktop service/,
+    );
+    const path = join(root, "windows", "installation-verification.json");
+    const report = JSON.parse(readFileSync(path, "utf8"));
+    Object.assign(report, {
+      system_host_sha256: "d".repeat(64),
+      system_desktop_service_install_and_capture: "passed",
+      system_desktop_service_uninstall: "passed",
+      untrusted_broker_peer_refusal: "passed",
+    });
+    writeFileSync(path, JSON.stringify(report));
+    assert.throws(
+      () => buildManifest(root, join(root, "wrong-helper"), config, commit),
+      /system desktop service/,
+    );
+    report.system_host_sha256 = helper;
+    report.untrusted_broker_peer_refusal = "failed";
+    writeFileSync(path, JSON.stringify(report));
+    assert.throws(
+      () => buildManifest(root, join(root, "unsafe-peer"), config, commit),
+      /system desktop service/,
+    );
+    report.untrusted_broker_peer_refusal = "passed";
+    writeFileSync(path, JSON.stringify(report));
+    assert.equal(
+      buildManifest(root, join(root, "verified-service"), config, commit)
+        .version,
+      config.version,
+    );
+  });
+});

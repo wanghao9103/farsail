@@ -19,6 +19,7 @@ Run { npm.cmd ci }
 Run { npm.cmd run typecheck }
 Run { cargo fmt --all -- --check }
 Run { cargo build --locked --release -p farsail-windows --bin farsail-system-host }
+Run { cargo test --locked --release -p farsail-windows --lib }
 # Only package builds embed the release helper. Ordinary cargo test/debug builds
 # must not depend on an unrelated release output existing first.
 $serviceResources = @{}

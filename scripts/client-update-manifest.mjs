@@ -199,6 +199,19 @@ export function buildManifest(
         throw new Error(
           "Windows installer verification has not passed for this artifact",
         );
+      if (
+        metadata.system_host_sha256 !== undefined &&
+        (!/^[a-f0-9]{64}$/.test(metadata.system_host_sha256) ||
+          report.system_host_sha256 !== metadata.system_host_sha256 ||
+          [
+            "system_desktop_service_install_and_capture",
+            "system_desktop_service_uninstall",
+            "untrusted_broker_peer_refusal",
+          ].some((field) => report[field] !== "passed"))
+      )
+        throw new Error(
+          "Windows system desktop service verification has not passed for this artifact",
+        );
       files.push([reportPath, "windows-installation-verification.json"]);
     }
     platforms[platform] = {
