@@ -145,8 +145,16 @@ fn peer(file: &File, server: bool, expected: &Path, sid: u32) -> Result<Handle> 
         }
     })?;
     let p = process(pid)?;
-    if session(pid)? != sid || image(p.0)? != expected || (server && !system(p.0)) {
-        return Err(Error::InputDenied);
+    if session(pid)? != sid {
+        return Err(Error::Unavailable("broker peer session mismatch".into()));
+    }
+    if image(p.0)? != expected {
+        return Err(Error::Unavailable("broker peer executable mismatch".into()));
+    }
+    if server && !system(p.0) {
+        return Err(Error::Unavailable(
+            "broker server token is not LocalSystem".into(),
+        ));
     }
     Ok(p)
 }
@@ -879,31 +887,53 @@ fn stop_service(remove: bool) -> Result<()> {
 fn probe() -> Result<()> {
     let _ = installed()?;
     let until = Instant::now() + Duration::from_secs(10);
-    loop {
-        if let Ok(mut c) = Client::connect()
-            && let Ok(Response::Displays { displays }) = c.request(&Request::Displays {})
-            && let Some(d) = displays.first()
-        {
-            for sequence in 1..=60 {
-                if let Response::Frame { bytes, desktop } = c.request(&Request::Capture {
+    let mut last = String::from("probe has not connected");
+    while Instant::now() < until {
+        let mut c = match Client::connect() {
+            Ok(c) => c,
+            Err(error) => {
+                last = format!("probe connect: {error}");
+                thread::sleep(Duration::from_millis(100));
+                continue;
+            }
+        };
+        let displays = match c.request(&Request::Displays {}) {
+            Ok(Response::Displays { displays }) => displays,
+            Ok(_) => return Err(Error::Unavailable("probe display response rejected".into())),
+            Err(error) => return Err(Error::Unavailable(format!("probe display IPC: {error}"))),
+        };
+        let d = displays
+            .first()
+            .ok_or_else(|| Error::Unavailable("probe found no interactive monitors".into()))?;
+        for sequence in 1..=60 {
+            match c
+                .request(&Request::Capture {
                     display: d.id,
                     profile: 0,
                     layout: 1,
                     sequence,
-                })? {
+                })
+                .map_err(|error| Error::Unavailable(format!("probe capture IPC: {error}")))?
+            {
+                Response::Frame { bytes, desktop } => {
                     let frame = farsail_media::JpegFrame::from_wire(&bytes)?;
                     if frame.meta.monitor == d.id && !desktop.is_empty() {
                         return Ok(());
                     }
+                    return Err(Error::Geometry);
                 }
-                thread::sleep(Duration::from_millis(30));
+                Response::Empty | Response::Reset => (),
+                _ => {
+                    return Err(Error::Unavailable(
+                        "probe capture response rejected; inspect service event data".into(),
+                    ));
+                }
             }
+            thread::sleep(Duration::from_millis(30));
         }
-        if Instant::now() >= until {
-            return Err(failure());
-        }
-        thread::sleep(Duration::from_millis(100));
+        last = "probe received no fresh desktop frame".into();
     }
+    Err(Error::Unavailable(last))
 }
 
 /// Numeric/platform diagnostics only; never log frames, keys or IPC payloads.
