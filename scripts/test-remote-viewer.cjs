@@ -475,17 +475,19 @@ const fs = require("node:fs");
       name: "切换远端窗口（Alt+Tab）",
       exact: true,
     });
-  const leaveToolbar = async () => {
+  const leaveToolbar = async (target = page) => {
     // The centre and fixed coordinates can be inside a vertical dropdown.
     // The remote canvas corner stays outside it across responsive sizes.
-    const canvas = await page.locator(".remote-screen").boundingBox();
+    const canvas = await target.locator(".remote-screen:visible").boundingBox();
     assert(canvas);
-    await page.mouse.move(
+    await target.mouse.move(
       canvas.x + canvas.width - 8,
       canvas.y + canvas.height - 8,
     );
-    await page.locator(".remote-screen").focus();
-    await page.locator(".viewer-toolbar").waitFor({ state: "hidden" });
+    await target.locator(".remote-screen:visible").focus();
+    await target
+      .locator(".viewer-toolbar:visible")
+      .waitFor({ state: "hidden" });
   };
   const revealToolbar = async () => {
     await leaveToolbar();
@@ -652,6 +654,7 @@ const fs = require("node:fs");
       image.naturalHeight === 800
     );
   });
+  await leaveToolbar(geometryPage);
   await geometryPage.getByAltText("远端桌面").click();
   await geometryPage.waitForFunction(() =>
     window.fixture.calls.some(
@@ -1294,6 +1297,7 @@ const fs = require("node:fs");
         ),
     beforeContainClick,
   );
+  await leaveToolbar();
   await page.getByAltText("远端桌面").click();
   assert.equal(
     await page.evaluate(() => document.activeElement.className),
@@ -1696,6 +1700,7 @@ const fs = require("node:fs");
   await page.waitForFunction(
     () => window.fixture.deliveredLayout === window.fixture.layout,
   );
+  await leaveToolbar();
   await page.getByAltText("远端桌面").click();
   await page.keyboard.press("G");
   await page.waitForFunction(
@@ -1782,6 +1787,7 @@ const fs = require("node:fs");
     .waitFor({ state: "detached" });
   assert(await page.getByAltText("远端桌面").isVisible());
   await page.getByText("更多操作", { exact: true }).click();
+  await leaveToolbar();
   await page.getByAltText("远端桌面").click();
   await page.keyboard.press("Z");
   await page.waitForFunction(() =>
@@ -2029,6 +2035,7 @@ const fs = require("node:fs");
   await retryButton.click();
   await page.getByAltText("远端桌面").waitFor();
   assert.equal(await retryButton.count(), 0);
+  await leaveToolbar();
   await page.getByAltText("远端桌面").click();
   await page.keyboard.press("H");
   await page.waitForFunction(() =>
@@ -2120,6 +2127,7 @@ const fs = require("node:fs");
     0,
     "view permission cannot switch",
   );
+  await leaveToolbar();
   await page.getByAltText("远端桌面").click();
   await page.keyboard.press("A");
   assert.equal(
@@ -2722,6 +2730,7 @@ const fs = require("node:fs");
   assert.equal(await page.getByRole("tabpanel").count(), 1);
   await page.getByRole("tab", { name: "测试手机 B", exact: true }).click();
   await page.getByRole("tabpanel").getByAltText("远端桌面").waitFor();
+  await leaveToolbar();
   await page.getByRole("tabpanel").getByAltText("远端桌面").click();
   const beforeKey = await page.evaluate(() => window.fixture.calls.length);
   await page.keyboard.press("J");
