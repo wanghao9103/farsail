@@ -185,7 +185,35 @@ fn real_system_tools_through_broker() {
         std::env::var("FARSAIL_SYSTEM_TOOLS_TEST").as_deref(),
         Ok("1")
     );
+    assert_eq!(std::env::var("GITHUB_ACTIONS").as_deref(), Ok("true"));
+    assert_eq!(
+        std::env::var("RUNNER_ENVIRONMENT").as_deref(),
+        Ok("github-hosted")
+    );
     crate::ensure_dpi_awareness().unwrap();
+    // This disposable runner image starts a Performance property sheet before checkout.
+    // Dismiss only that exact system fixture without applying any settings, so opening
+    // Advanced System Properties below must create a fresh tool window.
+    let mut fixture_reset = Vec::new();
+    for w in windows().into_iter().filter(|w| {
+        w.image
+            .ends_with("\\system32\\systempropertiesperformance.exe")
+            && w.title == "System Properties"
+    }) {
+        fixture_reset.push(w.pid);
+        unsafe {
+            PostMessageW(w.handle, WM_CLOSE, 0, 0);
+        }
+        let until = Instant::now() + Duration::from_secs(5);
+        while unsafe { IsWindow(w.handle) != 0 && IsWindowVisible(w.handle) != 0 } {
+            assert!(
+                Instant::now() < until,
+                "runner's initial Performance property sheet did not close"
+            );
+            thread::sleep(Duration::from_millis(100));
+        }
+    }
+    println!("Disposed hosted-image initial Performance property sheet pids: {fixture_reset:?}");
     let display = crate::displays().unwrap().remove(0);
     let capture = Capture::new_with_profile(display.id, 0).unwrap();
     let mut probe = Probe {
@@ -304,7 +332,7 @@ fn real_system_tools_through_broker() {
             }
         }
         println!("SYSTEM TOOL {name}: {result:?}");
-        report.push(serde_json::json!({"name":name,"elapsed_ms":started.elapsed().as_millis(),"result":result,"failure_windows":diagnostics}));
+        report.push(serde_json::json!({"name":name,"elapsed_ms":started.elapsed().as_millis(),"result":result,"failure_windows":diagnostics,"hosted_image_fixture_reset_pids":fixture_reset}));
     }
     std::fs::write(
         std::env::var("FARSAIL_SYSTEM_TOOLS_REPORT").unwrap(),
