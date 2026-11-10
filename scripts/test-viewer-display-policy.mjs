@@ -154,7 +154,7 @@ test("failure is not reissued by polling and stop rejects every late frame or ca
   assert(gate.requested(ticket));
   assert(gate.fail(ticket, "timeout"));
   assert.equal(gate.resolve([primary, secondary]), null);
-  assert(!gate.acceptFrame(2));
+  assert(!gate.acceptFrame(1));
   const retry = gate.choose(secondary);
   gate.stop();
   assert(!gate.requested(retry));
@@ -198,4 +198,27 @@ test("real reconnect phases retain attempt counts and approval is not reported a
     /正在建立连接/,
   );
   assert.match(recoveryStageText({ ...status, phase: "cancelled" }), /已取消/);
+});
+
+test("a target arriving after timeout recovers without a second selection", () => {
+  const gate = new ViewerDisplayGate(secondary, true);
+  const ticket = gate.resolve([primary, secondary]);
+  gate.requested(ticket);
+  gate.fail(ticket, "timeout");
+  assert(!gate.canControl());
+  assert(!gate.acceptFrame(1));
+  assert(gate.acceptFrame(2));
+  assert(gate.canControl());
+  assert.equal(gate.snapshot().issue, null);
+});
+test("late target cannot override a newer explicit choice or request failure", () => {
+  const gate = new ViewerDisplayGate(secondary, true);
+  const old = gate.resolve([primary, secondary]);
+  gate.requested(old);
+  gate.fail(old, "timeout");
+  const next = gate.choose(primary);
+  gate.requested(next);
+  assert(!gate.acceptFrame(2));
+  gate.fail(next, "request");
+  assert(!gate.acceptFrame(1));
 });

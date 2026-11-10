@@ -71,6 +71,7 @@ type PublicState = {
   canShareLocalScreen?: boolean;
   computerName?: string | null;
   administratorMode?: boolean | null;
+  systemDesktopHost?: boolean;
   server: string;
   signedIn: boolean;
   deviceId: string | null;
@@ -967,7 +968,9 @@ function App() {
                         {publicState.administratorMode === false
                           ? "重新启动 FarSail 并同意系统授权后，可控制管理员窗口。"
                           : "启动时会申请管理员权限。"}
-                        系统授权与登录画面需在被控电脑处理。
+                        {publicState.systemDesktopHost
+                          ? "安全桌面服务已连接，授权的远程会话可通过服务采集和控制系统桌面。"
+                          : "安全桌面服务未连接；UAC 和登录画面暂不支持，请运行新版安装程序。"}
                       </p>
                     </details>
                   )}
@@ -4150,7 +4153,11 @@ function Viewer({
         // These stages are advanced by status/selection, never by a frame.
         // Leave the cursor untouched so a static cached frame remains available.
         const stage = gate.snapshot().stage;
-        if (stage !== "ready" && stage !== "awaiting_frame") {
+        if (
+          stage !== "ready" &&
+          stage !== "awaiting_frame" &&
+          !(stage === "unavailable" && gate.snapshot().issue === "timeout")
+        ) {
           await new Promise((resolve) => window.setTimeout(resolve, 50));
           continue;
         }
@@ -4706,6 +4713,25 @@ function Viewer({
                       </button>
                     )}
                     {control && status?.platform !== "android" && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          releaseInputs();
+                          for (const [vk, down] of [
+                            [0xa2, true],
+                            [0xa0, true],
+                            [0x1b, true],
+                            [0x1b, false],
+                            [0xa0, false],
+                            [0xa2, false],
+                          ] as const)
+                            send({ kind: "key", vk, down });
+                        }}
+                      >
+                        打开任务管理器
+                      </button>
+                    )}
+                    {control && status?.platform !== "android" && (
                       <button type="button" onClick={switchRemoteWindow}>
                         切换远端窗口（Alt+Tab）
                       </button>
@@ -4747,7 +4773,9 @@ function Viewer({
                     </button>
                   </form>
                 )}
-                <p className="hint">系统授权与登录画面需在被控电脑上处理。</p>
+                <p className="hint">
+                  系统授权画面需要被控端已安装并运行安全桌面服务。
+                </p>
               </div>
             </details>
             <button
@@ -5006,12 +5034,38 @@ function Viewer({
                             ? "连接已建立，但尚未收到画面。"
                             : "正在接收远端首帧…"}
               </p>
+              {displaySnapshot.stage === "unavailable" &&
+                !ended &&
+                !reconnecting && (
+                  <div className="row-actions">
+                    <button
+                      onClick={() => {
+                        const display = currentDisplays.current.find(
+                          (d) => d.id === displaySnapshot.target,
+                        );
+                        const gate = displayGate.current;
+                        const ticket = display && gate.choose(display);
+                        if (ticket) requestDisplay(gate, ticket);
+                      }}
+                      disabled={
+                        !status?.displays.some(
+                          (d) => d.id === displaySnapshot.target,
+                        )
+                      }
+                    >
+                      重试当前屏幕
+                    </button>
+                    <button onClick={() => beginReconnect(true)}>
+                      重新连接
+                    </button>
+                  </div>
+                )}
               {firstFrameSlow && !ended && !reconnecting && !displayBusy && (
                 <>
                   <p>
                     {status?.platform === "android"
                       ? "请检查手机是否亮屏、屏幕共享是否仍在运行；系统若已结束录屏，请在手机上恢复屏幕共享。"
-                      : "请检查被控端是否有 UAC 提示或已锁屏，处理后将恢复采集。"}
+                      : "请检查被控端是否有 UAC 提示或已锁屏，处理后若仍无画面，请重试连接。"}
                   </p>
                   <button className="secondary" onClick={reconnect}>
                     重新连接

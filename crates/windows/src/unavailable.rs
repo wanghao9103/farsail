@@ -19,6 +19,9 @@ impl Capture {
     pub fn new_with_profile(_id: u32, _profile: u8) -> Result<Self> {
         Err(unsupported())
     }
+    pub fn desktop_context(&self) -> &[u16] {
+        &[]
+    }
     pub fn display(&self) -> &Display {
         &self.display
     }
@@ -32,6 +35,7 @@ pub struct InputSink {
     _private: (),
 }
 impl InputSink {
+    pub fn bind_desktop(&mut self, _desktop: &[u16]) {}
     pub fn apply(&mut self, _input: Input, _display: Option<&Display>, _layout: u64) -> Result<()> {
         Err(unsupported())
     }

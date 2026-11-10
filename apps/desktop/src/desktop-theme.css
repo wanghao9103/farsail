@@ -2144,3 +2144,66 @@ td {
 .viewer-window .viewer-toolbar .viewer-collapse {
   color: var(--muted);
 }
+
+/* More actions use their own readable panel instead of stretching every menu row. */
+.viewer-window .viewer-popover {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.viewer-window .viewer-popover > button,
+.viewer-window .viewer-popover .viewer-pin {
+  width: 100%;
+  margin: 0;
+}
+.viewer-window .viewer-popover .viewer-pin {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.viewer-window .viewer-popover .section-switcher {
+  display: flex;
+  gap: 6px;
+}
+.viewer-window .viewer-popover .section-switcher button {
+  flex: 1;
+  padding: 8px;
+}
+.viewer-window .viewer-popover .hint,
+.viewer-window .viewer-popover p {
+  margin: 0;
+  line-height: 1.6;
+}
+@media (min-width: 760px) and (min-height: 440px) {
+  .viewer-window .viewer-toolbar {
+    overflow: visible;
+  }
+  .viewer-window.tools-visible .viewer-toolbar:has(.viewer-more[open]) {
+    transform: translate(calc(-50% - 164px), 0);
+  }
+  .viewer-window .viewer-more {
+    position: static;
+  }
+  .viewer-window .viewer-more[open] > summary > svg:last-child {
+    transform: none;
+  }
+  .viewer-window .viewer-more > .viewer-popover {
+    position: absolute;
+    top: 0;
+    left: calc(100% + 8px);
+    right: auto;
+    width: 320px;
+    max-width: none;
+    max-height: calc(100dvh - var(--viewer-title-height) - 24px);
+    overflow: auto;
+    padding: 16px;
+    margin: 0;
+    border: 1px solid #424b53;
+    box-shadow: 0 6px 22px #0005;
+  }
+}
+@media (max-width: 759px), (max-height: 439px) {
+  .viewer-window .viewer-toolbar:has(.viewer-more[open]) {
+    width: 360px;
+  }
+}

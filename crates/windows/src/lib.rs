@@ -5,8 +5,7 @@ use serde::{Deserialize, Serialize};
 pub mod clipboard;
 mod input_context;
 pub use input_context::{
-    ForegroundWindow, administrator_mode, capture_desktop_ready, foreground_window,
-    input_context_ready,
+    ForegroundWindow, administrator_mode, foreground_window, input_context_ready,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -105,11 +104,19 @@ pub fn map_point(display: &Display, x: f64, y: f64) -> Result<(i32, i32)> {
 }
 
 #[cfg(windows)]
+mod broker;
+#[cfg(windows)]
 mod dxgi;
 #[cfg(windows)]
 mod native;
 #[cfg(windows)]
-pub use native::{Capture, InputSink, displays, ensure_dpi_awareness};
+pub mod system_host;
+#[cfg(any(windows, test))]
+mod system_protocol;
+#[cfg(windows)]
+pub use broker::{Capture, InputSink, displays};
+#[cfg(windows)]
+pub use native::ensure_dpi_awareness;
 
 #[cfg(not(windows))]
 mod unavailable;
@@ -144,6 +151,21 @@ pub fn encode_bgra(
         }
     }
     Ok(JpegFrame::encode_rgb(meta, &rgb, 55)?)
+}
+
+/// A protected installed broker may capture the secure desktop in this session.
+/// Dev/portable runs retain the ordinary input-desktop restriction.
+pub fn capture_desktop_ready() -> bool {
+    input_context::capture_desktop_ready() || {
+        #[cfg(windows)]
+        {
+            system_host::available()
+        }
+        #[cfg(not(windows))]
+        {
+            false
+        }
+    }
 }
 
 #[cfg(test)]

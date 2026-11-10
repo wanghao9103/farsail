@@ -14,7 +14,7 @@ Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
 $artifacts = Join-Path $PWD '.local/windows-package/artifacts'
 $meta = Get-Content (Join-Path $artifacts 'release-metadata.json') -Raw | ConvertFrom-Json
 $installer = Join-Path $artifacts $meta.installer
-$installDir = Join-Path $PWD '.local/windows-package/installed'
+$installDir = Join-Path $env:ProgramFiles 'FarSail'
 $profileDir = Join-Path $env:LOCALAPPDATA 'app.farsail.desktop'
 if (Test-Path $profileDir) { throw 'Runner already has an application profile' }
 if (Test-Path $installDir) { throw 'Runner already has an installation' }
@@ -155,7 +155,14 @@ try {
     $exe = Join-Path $installDir 'farsail-desktop.exe'
     if ((Get-FileHash $exe).Hash.ToLowerInvariant() -ne $meta.application_sha256) { throw 'Installed binary differs' }
     Assert-ApplicationManifest $exe
-    $entry = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\FarSail' -ErrorAction Stop
+    $service = Get-CimInstance Win32_Service -Filter "Name='FarSailDesktopHost'"
+    if (!$service -or $service.StartName -ne 'LocalSystem' -or $service.StartMode -ne 'Auto') { throw 'System desktop service configuration differs' }
+    if ($service.PathName -ne ('"' + (Join-Path $installDir 'farsail-system-host.exe') + '" --service')) { throw 'Service binary path differs' }
+    $hostExe = Join-Path $installDir 'farsail-system-host.exe'
+    if ((Get-FileHash $hostExe).Hash.ToLowerInvariant() -ne $meta.system_host_sha256) { throw 'Installed system host differs' }
+    $probe = Start-Process $hostExe -ArgumentList '--probe' -PassThru -Wait
+    if ($probe.ExitCode -ne 0) { throw 'Authenticated system-host capture probe failed' }
+    $entry = Get-ItemProperty 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\FarSail' -ErrorAction Stop
     if ($entry.DisplayVersion -ne $meta.version) { throw 'Installed version differs' }
     # No remote debugging port or production test command. Accessibility drives ordinary UI.
     $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = '--force-renderer-accessibility'
@@ -277,10 +284,11 @@ try {
     $until = [DateTime]::UtcNow.AddSeconds(30)
     while ((Test-Path $exe) -and [DateTime]::UtcNow -lt $until) { Start-Sleep -Milliseconds 500 }
     if (Test-Path $exe) { throw 'Installed binary remains after uninstall' }
-    if (Test-Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\FarSail') { throw 'Uninstall registration remains' }
+    if (Get-Service FarSailDesktopHost -ErrorAction SilentlyContinue) { throw 'Uninstall retained desktop service' }
+    if (Test-Path 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\FarSail') { throw 'Uninstall registration remains' }
     if ((Get-FileHash $sentinel).Hash -ne $before) { throw 'Uninstall deleted user data' }
     if ((Get-FileHash $preferencePath).Hash -ne $retainedPreferenceHash) { throw 'Uninstall changed sharing preferences' }
-    [ordered]@{ source_commit=$meta.source_commit; installer_sha256=$meta.installer_sha256; install='passed'; embedded_frontend='passed'; administrator_manifest='passed'; elevated_process='passed'; updater_restart='passed'; updater_restarted_process_id=$restarted.Id; updater_restart_launcher='NSIS /S /UPDATE /R'; background_close_and_single_instance_restore='passed'; interactive_uac_consent_and_cancel='not tested'; native_settings_ipc_restart='passed'; sharing_preferences_restart='passed'; sharing_desktop_preflight=$sharingPreflight; reinstall_retention='passed'; uninstall_retention='passed'; debug_probes_absent='passed'; capture_input_or_public_network='not tested' } |
+    [ordered]@{ source_commit=$meta.source_commit; installer_sha256=$meta.installer_sha256; install='passed'; embedded_frontend='passed'; administrator_manifest='passed'; system_desktop_service_install_and_capture='passed'; system_desktop_service_uninstall='passed'; physical_uac_capture_and_input='not tested'; elevated_process='passed'; updater_restart='passed'; updater_restarted_process_id=$restarted.Id; updater_restart_launcher='NSIS /S /UPDATE /R'; background_close_and_single_instance_restore='passed'; interactive_uac_consent_and_cancel='not tested'; native_settings_ipc_restart='passed'; sharing_preferences_restart='passed'; sharing_desktop_preflight=$sharingPreflight; reinstall_retention='passed'; uninstall_retention='passed'; debug_probes_absent='passed'; capture_input_or_public_network='not tested' } |
         ConvertTo-Json | Set-Content (Join-Path $artifacts 'installation-verification.json') -Encoding utf8
 } finally {
     if ($script:appProcess -and !$script:appProcess.HasExited) { Stop-Process -Id $script:appProcess.Id -Force }

@@ -880,6 +880,11 @@ impl RemoteRuntime {
                             );
                             break;
                         }
+                        worker_live
+                            .input
+                            .lock()
+                            .unwrap()
+                            .bind_desktop(capture.as_ref().unwrap().desktop_context());
                         frame.meta.layout = activate_capture(
                             &current,
                             &layout,
@@ -1102,6 +1107,9 @@ impl RemoteRuntime {
                     let id = u32::from_be_bytes(frame.bytes[4..8].try_into().unwrap());
                     if live.displays.lock().unwrap().iter().any(|d| d.id == id) {
                         live.selected.store(id, Ordering::SeqCst);
+                        // Explicitly selecting the same display is also a capture
+                        // retry, including after the viewer's first-frame timeout.
+                        live.capture_revision.fetch_add(1, Ordering::SeqCst);
                     }
                 } else if frame.channel == Channel::Media
                     && VideoProfile::parse(&frame.bytes, b"FSQ1").is_some()

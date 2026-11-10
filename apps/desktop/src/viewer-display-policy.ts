@@ -126,8 +126,15 @@ export class ViewerDisplayGate {
     return true;
   }
   acceptFrame(display: number) {
-    if (this.stage === "awaiting_frame" && display === this.target) {
+    // A timeout is a notice, not cancellation of an already-sent selection.
+    // Keep accepting that target until a newer explicit choice supersedes it.
+    if (
+      (this.stage === "awaiting_frame" ||
+        (this.stage === "unavailable" && this.issue === "timeout")) &&
+      display === this.target
+    ) {
       this.stage = "ready";
+      this.issue = null;
       return true;
     }
     return (

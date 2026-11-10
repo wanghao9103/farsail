@@ -417,6 +417,15 @@ const fs = require("node:fs");
       menu.width <= 220 && menu.height > menu.width,
       "remote controls form a narrow vertical menu",
     );
+    const panel = await dropdown.locator(".viewer-popover").boundingBox();
+    assert(
+      panel.x >= menu.x + menu.width && panel.width >= 300,
+      "more actions use a separate readable side panel",
+    );
+    assert(
+      panel.x + panel.width <= 1200 && panel.y + panel.height <= 800,
+      "side panel stays within the viewport",
+    );
     await dropdown.mouse.move(950, 600);
     await dropdown
       .locator(".viewer-toolbar")
@@ -446,6 +455,21 @@ const fs = require("node:fs");
       0,
       "old keyboard modality cannot retain a menu whose focus has left",
     );
+    await dropdown.setViewportSize({ width: 440, height: 640 });
+    await dropdown
+      .getByRole("button", { name: "显示工具栏", exact: true })
+      .click();
+    await dropdown.getByText("更多操作", { exact: true }).click();
+    const narrow = await dropdown.locator(".viewer-toolbar").boundingBox();
+    assert(
+      narrow.x >= 0 &&
+        narrow.x + narrow.width <= 440 &&
+        narrow.y + narrow.height <= 640,
+      "narrow screens use a bounded scrollable menu",
+    );
+    await dropdown.screenshot({
+      path: ".local/ui-verification/viewer-more-narrow.png",
+    });
     await dropdown.close();
   }
   if (process.env.UI_DROPDOWN_ONLY === "1") {

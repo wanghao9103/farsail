@@ -18,6 +18,7 @@ New-Item -ItemType Directory -Force $output | Out-Null
 Run { npm.cmd ci }
 Run { npm.cmd run typecheck }
 Run { cargo fmt --all -- --check }
+Run { cargo build --locked --release -p farsail-windows --bin farsail-system-host }
 # Native updater fixes the NSIS target explicitly. Preserve the established installed EXE digest check.
 if ($env:TAURI_SIGNING_PRIVATE_KEY) {
     Run { npm.cmd run --workspace @farsail/desktop tauri build -- --bundles nsis --no-binary-patching -- --locked }
@@ -58,7 +59,8 @@ $hash = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLowerInvariant()
     icon_sha256 = (Get-FileHash apps/desktop/src-tauri/icons/icon.ico).Hash.ToLowerInvariant()
     signature = (Get-AuthenticodeSignature $installer).Status.ToString()
     webview2 = 'embedded bootstrapper; internet required if runtime missing'
-    configuration = 'release, embedded frontend, per-user NSIS'
+    configuration = 'release, embedded frontend, per-machine NSIS with LocalSystem desktop service'
+    system_host_sha256 = (Get-FileHash 'target/release/farsail-system-host.exe').Hash.ToLowerInvariant()
     application_execution_level = 'requireAdministrator'; application_ui_access = $false
 } | ConvertTo-Json | Set-Content (Join-Path $output 'release-metadata.json') -Encoding utf8
 Write-Output "Packaged $name SHA256=$hash source=$source"

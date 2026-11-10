@@ -1,0 +1,13 @@
+{
+  "bundle": {
+    "resources": {
+      "../../../target/release/farsail-system-host.exe": "farsail-system-host.exe"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "perMachine",
+        "installerHooks": "windows-service-hooks.nsh"
+      }
+    }
+  }
+}

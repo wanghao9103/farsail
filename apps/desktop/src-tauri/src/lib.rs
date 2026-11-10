@@ -43,6 +43,10 @@ async fn state(
     state["computerName"] = serde_json::json!(computer::name());
     state["platform"] = serde_json::json!(std::env::consts::OS);
     state["canShareLocalScreen"] = serde_json::json!(cfg!(windows));
+    #[cfg(windows)]
+    {
+        state["systemDesktopHost"] = serde_json::json!(farsail_windows::system_host::available());
+    }
     state["administratorMode"] = serde_json::json!(farsail_windows::administrator_mode());
     Ok(state)
 }

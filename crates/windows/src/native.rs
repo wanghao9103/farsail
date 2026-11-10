@@ -122,6 +122,7 @@ fn output_size(width: usize, height: usize, profile: u8) -> Result<(usize, usize
     ))
 }
 impl Capture {
+    #[allow(dead_code)] // Direct native capture is also used by Windows-only regressions.
     pub fn new(id: u32) -> Result<Self> {
         Self::new_with_profile(id, 1)
     }
