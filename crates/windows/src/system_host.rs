@@ -157,7 +157,7 @@ fn nowait(file: &File) -> Result<()> {
 fn transfer(file: &mut File, bytes: &mut [u8], write: bool, deadline: Instant) -> Result<()> {
     let mut done = 0;
     while done < bytes.len() {
-        if STOP.load(Ordering::SeqCst) {
+        if STOP.load(Ordering::SeqCst) || Instant::now() >= deadline {
             return Err(failure());
         }
         let r = if write {

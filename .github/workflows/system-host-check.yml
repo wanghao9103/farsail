@@ -27,6 +27,9 @@ jobs:
       - name: Build system host
         shell: pwsh
         run: cargo build --locked --release -p farsail-windows --bin farsail-system-host
+      - name: Validate native pipe backpressure and input policy
+        shell: pwsh
+        run: cargo test --locked --release -p farsail-windows --lib
       - name: Validate session agent and capture
         shell: pwsh
         run: ./scripts/test-system-host.ps1

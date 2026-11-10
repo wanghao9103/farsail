@@ -429,6 +429,7 @@ const fs = require("node:fs");
     fs.mkdirSync(".local/ui-verification", { recursive: true });
     await dropdown.screenshot({
       path: ".local/ui-verification/viewer-more-desktop.png",
+      animations: "disabled",
     });
     const bounds = dropdown.viewportSize();
     await dropdown.mouse.move(bounds.width - 4, bounds.height - 4);
@@ -474,6 +475,7 @@ const fs = require("node:fs");
     );
     await dropdown.screenshot({
       path: ".local/ui-verification/viewer-more-narrow.png",
+      animations: "disabled",
     });
     await dropdown.close();
   }
