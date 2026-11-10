@@ -290,7 +290,7 @@ impl Client {
                     0,
                     null(),
                     OPEN_EXISTING,
-                    FILE_ATTRIBUTE_NORMAL,
+                    FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED,
                     null_mut(),
                 )
             };
