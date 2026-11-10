@@ -2049,6 +2049,9 @@ impl RemoteRuntime {
                     return Ok(());
                 }
             } else if !state.allows_input(&payload, observed) {
+                if task_manager.is_some() {
+                    return Err("控制状态已变化，请恢复控制后重新打开任务管理器".into());
+                }
                 return Ok(());
             }
         }

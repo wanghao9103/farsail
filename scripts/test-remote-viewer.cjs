@@ -140,6 +140,14 @@ const fs = require("node:fs");
       metadata: { currentWindow: { label: "viewer-test" } },
       invoke: async (cmd, args = {}) => {
         f.calls.push({ cmd, args });
+        if (cmd === "remote_task_manager") {
+          if (f.holdTaskManager)
+            await new Promise((resolve) => {
+              f.releaseTaskManager = resolve;
+            });
+          if (f.taskManagerError) throw f.taskManagerError;
+          return {};
+        }
         if (["remote_paste_files", "remote_send_files"].includes(cmd)) {
           if (f.holdPaste)
             await new Promise((resolve) => {
@@ -530,6 +538,7 @@ const fs = require("node:fs");
   await page.getByText("更多操作", { exact: true }).click();
   await page.evaluate(() => {
     window.fixture.calls = [];
+    window.fixture.holdTaskManager = true;
   });
   await page
     .getByRole("button", { name: "打开任务管理器", exact: true })
@@ -555,6 +564,20 @@ const fs = require("node:fs");
     0,
     "Task Manager requests a host action rather than synthetic hotkeys",
   );
+  assert.equal(
+    await page
+      .getByRole("button", { name: "正在打开任务管理器…", exact: true })
+      .isDisabled(),
+    true,
+  );
+  await page.evaluate(() => {
+    window.fixture.holdTaskManager = false;
+    window.fixture.releaseTaskManager();
+  });
+  await page
+    .getByRole("button", { name: "打开任务管理器", exact: true })
+    .waitFor();
+
   await leaveToolbar();
   // One slow decoder retains its last image and does not stall another viewer.
   const previousImage = await page.getByAltText("远端桌面").getAttribute("src");
