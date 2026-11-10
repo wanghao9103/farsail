@@ -41,3 +41,5 @@
 早期失败的测试记录保留在 .local/task-manager-20261110：云端镜像可能预先打开不同标题的性能属性页，只在一次性测试机内关闭该精确镜像初始窗口且不应用设置，再测试新建属性页。控制台 HWND 所属进程可能是 cmd/powershell 而非 conhost；执行前回读运行框文本，所有命令遵守真实的 64 字符输入限制；UWP 框架按窗口关系匹配，并等前台激活完成再检查输入。这些属于测试条件更正，没有额外修改产品权限。
 
 验收范围为一次性 Windows Server 2022 的被控端服务采集、输入链路。实体 Windows 10/11、这些工具的两机公网会话、实际 UAC 同意或拒绝、锁屏、RDP、多用户切换、Ctrl+Alt+Del 和修改系统配置未覆盖，不能据此宣布所有 Windows 系统功能都能远程使用。机器证据为 .local/task-manager-20261110/system-tools-verification.json 与 .local/client-public-0.1.46/delivery-verification.json。
+
+最终服务路径断言：测试源码 `551fc46e9bdd9631491e279013bcf5d0326bc0de` 的工作流 42787983521 再次通过全部 15 项。仅 cfg(test) 可用的检查函数在任何输入前明确要求产品 InputSink 持有已认证系统服务客户端；每个成功项目均记录 input_broker_authenticated=true，本地管理员输入兜底无法满足验收条件。新增 broker 代码全部由测试条件限定，不改变不可变产品运行时。
