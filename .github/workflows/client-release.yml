@@ -33,6 +33,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   browser-ui:
+    if: github.event_name != 'release' || startsWith(github.event.release.tag_name, 'client-v')
     uses: ./.github/workflows/viewer-ui.yml
   package:
     if: github.event_name != 'release' || startsWith(github.event.release.tag_name, 'client-v')
