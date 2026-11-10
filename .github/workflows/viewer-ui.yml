@@ -1,5 +1,6 @@
 name: Viewer browser regressions
 on:
+  workflow_call:
   workflow_dispatch:
 permissions:
   contents: read

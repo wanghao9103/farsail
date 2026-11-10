@@ -32,6 +32,8 @@ concurrency:
   group: client-release-${{ (github.event_name == 'push' || github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.publish_release)) && 'publication' || github.ref }}
   cancel-in-progress: false
 jobs:
+  browser-ui:
+    uses: ./.github/workflows/viewer-ui.yml
   package:
     if: github.event_name != 'release' || startsWith(github.event.release.tag_name, 'client-v')
     strategy:
@@ -131,7 +133,7 @@ jobs:
           retention-days: 14
   publish:
     if: github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.publish_release)
-    needs: package
+    needs: [package, browser-ui]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
