@@ -26,7 +26,7 @@ use windows_sys::Win32::{
     Security::*,
     Storage::FileSystem::*,
     System::{
-        Com::CoTaskMemFree, Pipes::*, RemoteDesktop::*, Services::*, StationsAndDesktops::*,
+        Com::CoTaskMemFree, IO::*, Pipes::*, RemoteDesktop::*, Services::*, StationsAndDesktops::*,
         Threading::*,
     },
     UI::Shell::{FOLDERID_ProgramFiles, SHGetKnownFolderPath},
@@ -157,19 +157,34 @@ fn peer(file: &File, server: bool, expected: &Path, sid: u32) -> Result<Handle> 
     }
     Ok(p)
 }
-fn nowait(file: &File) -> Result<()> {
-    let mode = PIPE_READMODE_BYTE | PIPE_NOWAIT;
-    check(unsafe { SetNamedPipeHandleState(file.as_raw_handle(), &mode, null(), null()) })
+fn event() -> Result<Handle> {
+    let handle = unsafe { CreateEventW(null(), 1, 0, null()) };
+    if handle.is_null() {
+        Err(failure())
+    } else {
+        Ok(Handle(handle))
+    }
+}
+fn cancel_operation(file: &File, operation: &mut OVERLAPPED) {
+    // Cancellation is not completion. Drain it before its buffer/OVERLAPPED or
+    // event can leave scope, including races where I/O completed concurrently.
+    unsafe {
+        CancelIoEx(file.as_raw_handle(), operation);
+        let mut count = 0;
+        GetOverlappedResult(file.as_raw_handle(), operation, &mut count, 1);
+    }
 }
 fn transfer(file: &mut File, bytes: &mut [u8], write: bool, deadline: Instant) -> Result<()> {
     let mut done = 0;
     while done < bytes.len() {
         if STOP.load(Ordering::SeqCst) || Instant::now() >= deadline {
-            return Err(failure());
+            return Err(Error::Unavailable(
+                "system broker I/O cancelled or timed out".into(),
+            ));
         }
-        // std::fs::File normalizes BrokenPipe-kind errors to EOF on read.
-        // ERROR_NO_DATA belongs to that kind, but means "try later" for a
-        // PIPE_NOWAIT handle. Preserve the original Win32 status here.
+        let ready = event()?;
+        let mut operation: OVERLAPPED = unsafe { zeroed() };
+        operation.hEvent = ready.0;
         let mut count = 0;
         let length = u32::try_from(bytes.len() - done).map_err(|_| Error::Geometry)?;
         let ok = unsafe {
@@ -179,7 +194,7 @@ fn transfer(file: &mut File, bytes: &mut [u8], write: bool, deadline: Instant) -
                     bytes[done..].as_ptr(),
                     length,
                     &mut count,
-                    null_mut(),
+                    &mut operation,
                 )
             } else {
                 ReadFile(
@@ -187,38 +202,39 @@ fn transfer(file: &mut File, bytes: &mut [u8], write: bool, deadline: Instant) -
                     bytes[done..].as_mut_ptr(),
                     length,
                     &mut count,
-                    null_mut(),
+                    &mut operation,
                 )
             }
         };
-        let r = if ok != 0 {
-            Ok(count as usize)
-        } else {
-            Err(std::io::Error::last_os_error())
-        };
-        match r {
-            // A nonblocking byte pipe may successfully write zero bytes when
-            // its kernel buffer is full. That is backpressure, not EOF.
-            Ok(0) if write => {
-                if Instant::now() >= deadline {
-                    return Err(failure());
-                }
-                thread::sleep(Duration::from_millis(2));
-            }
-            Ok(0) => return Err(Error::Unavailable("system broker pipe closed".into())),
-            Ok(n) => done += n,
-            Err(e) if matches!(e.raw_os_error(), Some(232 | 536 | 231)) => {
-                if Instant::now() >= deadline {
-                    return Err(failure());
-                }
-                thread::sleep(Duration::from_millis(2));
-            }
-            Err(error) => {
+        if ok == 0 {
+            let error = unsafe { GetLastError() };
+            if error != ERROR_IO_PENDING {
                 return Err(Error::Unavailable(format!(
-                    "system broker pipe I/O: {error}"
+                    "system broker I/O failed ({error})"
                 )));
             }
+            loop {
+                if STOP.load(Ordering::SeqCst) || Instant::now() >= deadline {
+                    cancel_operation(file, &mut operation);
+                    return Err(Error::Unavailable(
+                        "system broker I/O cancelled or timed out".into(),
+                    ));
+                }
+                match unsafe { WaitForSingleObject(ready.0, 20) } {
+                    WAIT_OBJECT_0 => break,
+                    WAIT_TIMEOUT => (),
+                    _ => {
+                        cancel_operation(file, &mut operation);
+                        return Err(failure());
+                    }
+                }
+            }
         }
+        check(unsafe { GetOverlappedResult(file.as_raw_handle(), &operation, &mut count, 0) })?;
+        if count == 0 {
+            return Err(Error::Unavailable("system broker pipe closed".into()));
+        }
+        done += count as usize;
     }
     Ok(())
 }
@@ -287,7 +303,6 @@ impl Client {
             thread::sleep(Duration::from_millis(5));
         };
         let file = unsafe { File::from_raw_handle(h) };
-        nowait(&file)?;
         let p = peer(&file, true, &expected, sid)?;
         *LAST_CONTACT.lock().unwrap() = Some(Instant::now());
         Ok(Self { file, _peer: p })
@@ -498,17 +513,83 @@ enum PipeConnection {
     Connected,
     Disconnected,
 }
-fn poll_connection(file: &File) -> PipeConnection {
-    // In PIPE_NOWAIT mode TRUE only transitions a disconnected instance to
-    // listening. Microsoft documents ERROR_PIPE_CONNECTED as the actual peer
-    // connection witness; a successful return alone must never dispatch it.
-    if unsafe { ConnectNamedPipe(file.as_raw_handle(), null_mut()) } != 0 {
-        return PipeConnection::Listening;
+struct PendingPipe {
+    file: Option<File>,
+    operation: Box<OVERLAPPED>,
+    _ready: Handle,
+    active: bool,
+    connected: bool,
+}
+impl PendingPipe {
+    fn new(name: &[u16], security: *const SECURITY_ATTRIBUTES, buffer: u32) -> Result<Self> {
+        let h = unsafe {
+            CreateNamedPipeW(
+                name.as_ptr(),
+                PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
+                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+                16,
+                buffer,
+                buffer,
+                0,
+                security,
+            )
+        };
+        if h == INVALID_HANDLE_VALUE {
+            return Err(failure());
+        }
+        let file = unsafe { File::from_raw_handle(h) };
+        let ready = event()?;
+        let mut operation: Box<OVERLAPPED> = Box::new(unsafe { zeroed() });
+        operation.hEvent = ready.0;
+        let mut pending = Self {
+            file: Some(file),
+            operation,
+            _ready: ready,
+            active: false,
+            connected: false,
+        };
+        let ok = unsafe { ConnectNamedPipe(h, pending.operation.as_mut()) };
+        if ok != 0 {
+            pending.connected = true;
+        } else {
+            match unsafe { GetLastError() } {
+                ERROR_IO_PENDING => pending.active = true,
+                ERROR_PIPE_CONNECTED => pending.connected = true,
+                _ => return Err(failure()),
+            }
+        }
+        Ok(pending)
     }
-    match unsafe { GetLastError() } {
-        ERROR_PIPE_CONNECTED => PipeConnection::Connected,
-        ERROR_PIPE_LISTENING => PipeConnection::Listening,
-        _ => PipeConnection::Disconnected,
+    fn poll(&mut self) -> PipeConnection {
+        if self.connected {
+            return PipeConnection::Connected;
+        }
+        let mut count = 0;
+        if unsafe {
+            GetOverlappedResult(
+                self.file.as_ref().unwrap().as_raw_handle(),
+                self.operation.as_ref(),
+                &mut count,
+                0,
+            )
+        } != 0
+        {
+            self.active = false;
+            self.connected = true;
+            return PipeConnection::Connected;
+        }
+        if unsafe { GetLastError() } == ERROR_IO_INCOMPLETE {
+            return PipeConnection::Listening;
+        }
+        self.active = false;
+        PipeConnection::Disconnected
+    }
+}
+impl Drop for PendingPipe {
+    fn drop(&mut self) {
+        if self.active {
+            cancel_operation(self.file.as_ref().unwrap(), self.operation.as_mut());
+        }
     }
 }
 fn agent(parent: u32) -> Result<()> {
@@ -561,27 +642,12 @@ fn agent(parent: u32) -> Result<()> {
             continue;
         }
         if pending.is_none() {
-            let h = unsafe {
-                CreateNamedPipeW(
-                    pipe_name(sid).as_ptr(),
-                    PIPE_ACCESS_DUPLEX,
-                    PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_NOWAIT | PIPE_REJECT_REMOTE_CLIENTS,
-                    16,
-                    65536,
-                    65536,
-                    0,
-                    &security,
-                )
-            };
-            if h == INVALID_HANDLE_VALUE {
-                break;
-            }
-            pending = Some(unsafe { File::from_raw_handle(h) });
+            pending = Some(PendingPipe::new(&pipe_name(sid), &security, 65536)?);
         }
-        let f = pending.as_ref().unwrap();
-        match poll_connection(f) {
+        match pending.as_mut().unwrap().poll() {
             PipeConnection::Connected => {
-                let file = pending.take().unwrap();
+                let mut listener = pending.take().unwrap();
+                let file = listener.file.take().unwrap();
                 let expected = expected.clone();
                 threads.push(thread::spawn(move || serve(file, sid, expected)));
             }
@@ -992,42 +1058,26 @@ pub fn report_error(error: &Error) {
 mod tests {
     use super::*;
     #[test]
-    fn nonblocking_pipe_transfers_large_payload_after_zero_progress_backpressure() {
+    fn overlapped_pipe_waits_for_data_drains_cancelled_reads_and_transfers_large_frames() {
         let name = wide(format!(
             r"\\.\pipe\FarSail.TransferTest.{}.{}",
             unsafe { GetCurrentProcessId() },
             unsafe { GetCurrentThreadId() }
         ));
-        let handle = unsafe {
-            CreateNamedPipeW(
-                name.as_ptr(),
-                PIPE_ACCESS_OUTBOUND,
-                PIPE_TYPE_BYTE | PIPE_NOWAIT | PIPE_REJECT_REMOTE_CLIENTS,
-                1,
-                1024,
-                1024,
-                0,
-                null(),
-            )
-        };
-        assert_ne!(handle, INVALID_HANDLE_VALUE);
-        let mut server = unsafe { File::from_raw_handle(handle) };
-        assert_eq!(
-            poll_connection(&server),
-            PipeConnection::Listening,
-            "a newly listening pipe has no authenticated client yet"
-        );
+        let mut listener = PendingPipe::new(&name, null(), 1024).unwrap();
+        assert_eq!(listener.poll(), PipeConnection::Listening);
+        let (cancelled_tx, cancelled_rx) = std::sync::mpsc::channel();
         let reader = thread::spawn(move || {
             let until = Instant::now() + Duration::from_secs(3);
             let h = loop {
                 let h = unsafe {
                     CreateFileW(
                         name.as_ptr(),
-                        GENERIC_READ | FILE_WRITE_ATTRIBUTES,
+                        GENERIC_READ | GENERIC_WRITE,
                         0,
                         null(),
                         OPEN_EXISTING,
-                        FILE_ATTRIBUTE_NORMAL,
+                        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED,
                         null_mut(),
                     )
                 };
@@ -1038,37 +1088,34 @@ mod tests {
                 thread::sleep(Duration::from_millis(2));
             };
             let mut file = unsafe { File::from_raw_handle(h) };
-            nowait(&file).unwrap();
             let mut header = [0];
-            transfer(
-                &mut file,
-                &mut header,
-                false,
-                Instant::now() + Duration::from_secs(3),
-            )
-            .unwrap();
+            assert!(
+                transfer(
+                    &mut file,
+                    &mut header,
+                    false,
+                    Instant::now() + Duration::from_millis(30)
+                )
+                .is_err()
+            );
+            cancelled_tx.send(()).unwrap();
+            transfer(&mut file, &mut header, false, until).unwrap();
             assert_eq!(header, [42]);
             thread::sleep(Duration::from_millis(150));
             let mut data = vec![0; 256 * 1024];
-            transfer(
-                &mut file,
-                &mut data,
-                false,
-                Instant::now() + Duration::from_secs(3),
-            )
-            .unwrap();
+            transfer(&mut file, &mut data, false, until).unwrap();
             assert!(data.iter().all(|b| *b == 173));
         });
         let until = Instant::now() + Duration::from_secs(3);
         loop {
-            if poll_connection(&server) == PipeConnection::Connected {
+            if listener.poll() == PipeConnection::Connected {
                 break;
             }
             assert!(Instant::now() < until);
             thread::sleep(Duration::from_millis(2));
         }
-        // The client first reads an empty nonblocking pipe; preserve NO_DATA.
-        thread::sleep(Duration::from_millis(100));
+        let mut server = listener.file.take().unwrap();
+        cancelled_rx.recv_timeout(Duration::from_secs(2)).unwrap();
         transfer(&mut server, &mut [42], true, until).unwrap();
         let mut data = vec![173; 256 * 1024];
         transfer(&mut server, &mut data, true, until).unwrap();
