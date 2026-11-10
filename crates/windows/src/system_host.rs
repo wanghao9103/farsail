@@ -9,7 +9,6 @@ use crate::{
 use std::{
     collections::HashMap,
     fs::File,
-    io::{Read, Write},
     mem::{size_of, zeroed},
     os::windows::{
         ffi::OsStrExt,
@@ -168,10 +167,34 @@ fn transfer(file: &mut File, bytes: &mut [u8], write: bool, deadline: Instant) -
         if STOP.load(Ordering::SeqCst) || Instant::now() >= deadline {
             return Err(failure());
         }
-        let r = if write {
-            file.write(&bytes[done..])
+        // std::fs::File normalizes BrokenPipe-kind errors to EOF on read.
+        // ERROR_NO_DATA belongs to that kind, but means "try later" for a
+        // PIPE_NOWAIT handle. Preserve the original Win32 status here.
+        let mut count = 0;
+        let length = u32::try_from(bytes.len() - done).map_err(|_| Error::Geometry)?;
+        let ok = unsafe {
+            if write {
+                WriteFile(
+                    file.as_raw_handle(),
+                    bytes[done..].as_ptr(),
+                    length,
+                    &mut count,
+                    null_mut(),
+                )
+            } else {
+                ReadFile(
+                    file.as_raw_handle(),
+                    bytes[done..].as_mut_ptr(),
+                    length,
+                    &mut count,
+                    null_mut(),
+                )
+            }
+        };
+        let r = if ok != 0 {
+            Ok(count as usize)
         } else {
-            file.read(&mut bytes[done..])
+            Err(std::io::Error::last_os_error())
         };
         match r {
             // A nonblocking byte pipe may successfully write zero bytes when
@@ -182,7 +205,7 @@ fn transfer(file: &mut File, bytes: &mut [u8], write: bool, deadline: Instant) -
                 }
                 thread::sleep(Duration::from_millis(2));
             }
-            Ok(0) => return Err(failure()),
+            Ok(0) => return Err(Error::Unavailable("system broker pipe closed".into())),
             Ok(n) => done += n,
             Err(e) if matches!(e.raw_os_error(), Some(232 | 536 | 231)) => {
                 if Instant::now() >= deadline {
@@ -190,7 +213,11 @@ fn transfer(file: &mut File, bytes: &mut [u8], write: bool, deadline: Instant) -
                 }
                 thread::sleep(Duration::from_millis(2));
             }
-            Err(_) => return Err(failure()),
+            Err(error) => {
+                return Err(Error::Unavailable(format!(
+                    "system broker pipe I/O: {error}"
+                )));
+            }
         }
     }
     Ok(())
@@ -1011,9 +1038,25 @@ mod tests {
                 thread::sleep(Duration::from_millis(2));
             };
             let mut file = unsafe { File::from_raw_handle(h) };
+            nowait(&file).unwrap();
+            let mut header = [0];
+            transfer(
+                &mut file,
+                &mut header,
+                false,
+                Instant::now() + Duration::from_secs(3),
+            )
+            .unwrap();
+            assert_eq!(header, [42]);
             thread::sleep(Duration::from_millis(150));
             let mut data = vec![0; 256 * 1024];
-            file.read_exact(&mut data).unwrap();
+            transfer(
+                &mut file,
+                &mut data,
+                false,
+                Instant::now() + Duration::from_secs(3),
+            )
+            .unwrap();
             assert!(data.iter().all(|b| *b == 173));
         });
         let until = Instant::now() + Duration::from_secs(3);
@@ -1024,6 +1067,9 @@ mod tests {
             assert!(Instant::now() < until);
             thread::sleep(Duration::from_millis(2));
         }
+        // The client first reads an empty nonblocking pipe; preserve NO_DATA.
+        thread::sleep(Duration::from_millis(100));
+        transfer(&mut server, &mut [42], true, until).unwrap();
         let mut data = vec![173; 256 * 1024];
         transfer(&mut server, &mut data, true, until).unwrap();
         reader.join().unwrap();
