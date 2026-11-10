@@ -907,18 +907,25 @@ mod tests {
         assert_ne!(handle, INVALID_HANDLE_VALUE);
         let mut server = unsafe { File::from_raw_handle(handle) };
         let reader = thread::spawn(move || {
-            let h = unsafe {
-                CreateFileW(
-                    name.as_ptr(),
-                    GENERIC_READ,
-                    0,
-                    null(),
-                    OPEN_EXISTING,
-                    FILE_ATTRIBUTE_NORMAL,
-                    null_mut(),
-                )
+            let until = Instant::now() + Duration::from_secs(3);
+            let h = loop {
+                let h = unsafe {
+                    CreateFileW(
+                        name.as_ptr(),
+                        GENERIC_READ,
+                        0,
+                        null(),
+                        OPEN_EXISTING,
+                        FILE_ATTRIBUTE_NORMAL,
+                        null_mut(),
+                    )
+                };
+                if h != INVALID_HANDLE_VALUE {
+                    break h;
+                }
+                assert!(Instant::now() < until);
+                thread::sleep(Duration::from_millis(2));
             };
-            assert_ne!(h, INVALID_HANDLE_VALUE);
             let mut file = unsafe { File::from_raw_handle(h) };
             thread::sleep(Duration::from_millis(150));
             let mut data = vec![0; 256 * 1024];
