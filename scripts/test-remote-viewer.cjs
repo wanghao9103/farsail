@@ -80,6 +80,8 @@ const fs = require("node:fs");
       delay: false,
       release: null,
     });
+    f.noFrames = !!options.noFrames;
+    if (options.noFrames) f.platform = "android";
     if (options.viewportStartup) {
       f.platform = "android";
       f.video = {
@@ -269,6 +271,7 @@ const fs = require("node:fs");
         if (cmd === "media_next") {
           await new Promise((r) => setTimeout(r, 150));
           if (f.closed) throw Error("closed");
+          if (f.noFrames) return new ArrayBuffer(0);
           if (f.holdNativeFirstFrame && !f.video.viewport_edge)
             return new ArrayBuffer(0);
           if (
@@ -360,6 +363,39 @@ const fs = require("node:fs");
       },
     };
   };
+  if (process.env.UI_FIRST_FRAME_ONLY === "1") {
+    await page.addInitScript(installFixture, { noFrames: true });
+    await page.goto(process.env.UI_URL || "http://127.0.0.1:1420/?viewer=test");
+    await page.getByText("正在接收远端首帧…", { exact: true }).waitFor();
+    await page
+      .getByText("连接已建立，但尚未收到画面。", { exact: true })
+      .waitFor({ timeout: 8000 });
+    await page.getByRole("button", { name: "重新连接", exact: true }).waitFor();
+    assert.equal(
+      await page.evaluate(
+        () =>
+          window.fixture.calls.filter((c) => c.cmd === "viewer_reconnect")
+            .length,
+      ),
+      0,
+    );
+    await page.evaluate(() => {
+      window.fixture.noFrames = false;
+    });
+    await page.getByAltText("远端桌面").waitFor();
+    assert.equal(
+      await page
+        .getByText("连接已建立，但尚未收到画面。", { exact: true })
+        .count(),
+      0,
+    );
+    assert.deepEqual(errors, []);
+    await browser.close();
+    console.log(
+      "PASS delayed first frame has guidance and manual retry; same-session pixels clear the warning without reconnecting. Synthetic IPC only.",
+    );
+    return;
+  }
   await page.addInitScript(installFixture);
   if (process.env.UI_ONLY_VIEWPORT === "1") {
     await testAdaptiveViewports();
@@ -758,9 +794,9 @@ const fs = require("node:fs");
     .getByRole("button", { name: "显示工具栏", exact: true })
     .press("Enter");
   await page.waitForFunction(
-    () => document.activeElement?.getAttribute("aria-label") === "对方的显示器",
+    () => document.activeElement?.getAttribute("aria-label") === "画面分辨率",
   );
-  await page.getByLabel("对方的显示器", { exact: true }).press("Tab");
+  await page.getByLabel("画面分辨率", { exact: true }).press("Tab");
   await page.waitForTimeout(2500);
   assert(await page.locator(".viewer-toolbar").isVisible());
   assert(

@@ -262,6 +262,7 @@ fn ended_message(reason: &str) -> &'static str {
         "renewal_failed" => "授权续期失败，会话已安全结束；请检查双方到协调服务的连接",
         "input_failed" => "被控端无法执行输入；请检查窗口权限、UAC 或桌面切换",
         "input_sequence" => "输入消息缺失或顺序异常，会话已安全结束",
+        "desktop_unavailable" => "被控端仍处于系统安全桌面或锁屏，请在本地处理后重新连接",
         "capture_failed" => "被控端屏幕采集中断，请重试连接",
         "stopped" => "会话已结束，画面与输入已停止",
         _ => "对方已结束连接或授权失效，画面与输入已停止",
@@ -751,11 +752,51 @@ impl RemoteRuntime {
             let mut recovery = CaptureRecovery::default();
             let mut capture_has_frame = false;
             let mut last_reset = None;
+            let mut desktop_paused: Option<std::time::Instant> = None;
             while alive.load(Ordering::SeqCst)
                 && client.hosting_enabled()
                 && worker_live.session.is_open_now()
             {
                 let frame_started = std::time::Instant::now();
+                if !farsail_windows::capture_desktop_ready() {
+                    let since = *desktop_paused.get_or_insert_with(|| {
+                        *current.lock().unwrap() = None;
+                        drop(capture.take());
+                        capture_has_frame = false;
+                        last_frame = None;
+                        tx.send_replace(None);
+                        // Releases may be rejected by the secure desktop. Keep
+                        // ownership in the sink and retry before resuming input.
+                        let _ = worker_live.input.lock().unwrap().release_all();
+                        trace.record(json!({"at_ms":trace_time_ms(),"event":"capture_desktop_paused","session":worker_live.session.id(),"host":true}));
+                        frame_started
+                    });
+                    if frame_started.duration_since(since) >= Duration::from_secs(120) {
+                        worker_live.session.close_with_reason("desktop_unavailable");
+                        break;
+                    }
+                    if !wait_capture_retry(Duration::from_millis(100), || {
+                        alive.load(Ordering::SeqCst)
+                            && client.hosting_enabled()
+                            && worker_live.session.is_open_now()
+                    }) {
+                        break;
+                    }
+                    continue;
+                }
+                if let Some(since) = desktop_paused.take() {
+                    if let Err(e) = worker_live.input.lock().unwrap().release_all() {
+                        if !farsail_windows::capture_desktop_ready() {
+                            desktop_paused = Some(since);
+                            continue;
+                        }
+                        *error.lock().unwrap() = Some(format!("input cleanup incomplete: {e}"));
+                        worker_live.session.close_with_reason("input_failed");
+                        break;
+                    }
+                    recovery.suspend(frame_started.duration_since(since));
+                    trace.record(json!({"at_ms":trace_time_ms(),"event":"capture_desktop_resumed","session":worker_live.session.id(),"host":true}));
+                }
                 if recovery.timed_out(frame_started) {
                     end_capture(
                         &worker_live,
@@ -890,6 +931,11 @@ impl RemoteRuntime {
                         }
                     }
                     Err(e) => {
+                        // A switch may race the pre-frame check. Recheck the
+                        // desktop before classifying access denial as fatal.
+                        if !farsail_windows::capture_desktop_ready() {
+                            continue;
+                        }
                         *current.lock().unwrap() = None;
                         drop(capture.take());
                         capture_has_frame = false;
@@ -897,6 +943,9 @@ impl RemoteRuntime {
                         tx.send_replace(None);
                         // Release held input while coordinates are invalid; no stale frame/geometry reuse.
                         if let Err(input_error) = worker_live.input.lock().unwrap().release_all() {
+                            if !farsail_windows::capture_desktop_ready() {
+                                continue;
+                            }
                             trace.record(json!({"at_ms":trace_time_ms(),"event":"capture_input_cleanup_failed","session":worker_live.session.id(),"host":true,"stage":capture_stage,"detail":input_error.to_string().chars().take(512).collect::<String>(),"capture_detail":e.to_string().chars().take(512).collect::<String>()}));
                             *error.lock().unwrap() =
                                 Some(format!("input cleanup incomplete: {input_error}"));

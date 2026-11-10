@@ -56,6 +56,7 @@ class CaptureService : Service() {
     private var polling = false
     @Volatile private var stopped = false
     private var layout = 0L
+    private var projectionRead: Runnable? = null
     private var lastFrame = 0L
     // onCapturedContentResize is only delivered on Android 14+. Older phones
     // must resize the capture surface when the physical display rotates too.
@@ -203,16 +204,29 @@ class CaptureService : Service() {
         val old = reader
         val next = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
         reader = next
+        projectionRead?.let { capture.removeCallbacks(it) }
+        var scheduled = false
+        val readLatest = object : Runnable {
+            override fun run() {
+                scheduled = false
+                if (stopped || next !== reader) return
+                val image = try { next.acquireLatestImage() } catch (_: Exception) { null } ?: return
+                try {
+                    val plane = image.planes[0]
+                    check(plane.pixelStride == 4) { "不支持的录屏像素格式" }
+                    NativeBridge.publishRgba(plane.buffer.slice(), width, height, plane.rowStride, geometry)
+                    lastFrame = SystemClock.elapsedRealtime()
+                } catch (e: Exception) { fail(e) } finally { image.close() }
+            }
+        }
+        projectionRead = readLatest
         next.setOnImageAvailableListener({ source ->
-            val image = try { source.acquireLatestImage() } catch (_: Exception) { null } ?: return@setOnImageAvailableListener
-            try {
-                val now = SystemClock.elapsedRealtime()
-                if (stopped || now - lastFrame < 100 || source !== reader) return@setOnImageAvailableListener
-                lastFrame = now
-                val plane = image.planes[0]
-                check(plane.pixelStride == 4) { "不支持的录屏像素格式" }
-                NativeBridge.publishRgba(plane.buffer.slice(), width, height, plane.rowStride, geometry)
-            } catch (e: Exception) { fail(e) } finally { image.close() }
+            if (stopped || source !== reader || scheduled) return@setOnImageAvailableListener
+            // Defer acquisition rather than discarding a throttled image. A
+            // static screen may never emit another callback after that image.
+            scheduled = true
+            val delay = if (lastFrame == 0L) 0L else (100 - (SystemClock.elapsedRealtime() - lastFrame)).coerceAtLeast(0L)
+            capture.postDelayed(readLatest, delay)
         }, capture)
         if (display == null) {
             display = projection!!.createVirtualDisplay("FarSail", width, height, resources.displayMetrics.densityDpi,
@@ -255,6 +269,7 @@ class CaptureService : Service() {
         NativeBridge.stopLocal(); ControlService.cancel()
         handler.removeCallbacks(poll)
         capture.post {
+            projectionRead?.let { capture.removeCallbacks(it) }; projectionRead = null
             display?.release(); display = null
             reader?.close(); reader = null
             projection?.unregisterCallback(callback); projection?.stop(); projection = null

@@ -1018,3 +1018,84 @@ async fn approved_control_connection_queues_wake_without_frame_but_view_and_revo
     h.client.stop_transport().await;
     server.abort();
 }
+
+#[tokio::test]
+async fn static_projection_cached_before_connection_delivers_first_frame_without_new_capture() {
+    let (h, server) = host(211).await;
+    let desktop = Transport::bind([212; 32], Config::default()).await.unwrap();
+    let target = Transport::bind([213; 32], Config::default()).await.unwrap();
+    let layout = h.local.lock().unwrap().layout;
+    assert!(h.publish(image(&h), 16, 16, layout));
+    // Deliberately age the sole cached capture without waiting on a timer.
+    let wire = h.frames.borrow().clone().unwrap();
+    let mut cached = JpegFrame::from_wire(&wire).unwrap();
+    cached.meta.captured_ms = 1;
+    h.frames
+        .send_replace(Some(Arc::new(cached.to_wire().unwrap())));
+    let (viewer, peer) = connect(
+        &desktop,
+        &target,
+        "static-bootstrap",
+        RemotePermission::View,
+    )
+    .await;
+    h.local.lock().unwrap().session = Some(peer.clone());
+    let running = tokio::spawn({
+        let h = h.clone();
+        async move { h.run(peer).await }
+    });
+    let received = acknowledged_image(&viewer, (16, 16)).await;
+    assert_eq!(
+        received.meta.captured_ms, 1,
+        "do not relabel cached pixels as a fresh capture"
+    );
+    assert_eq!(received.meta.layout, layout);
+    assert_eq!(received.meta.sequence, cached.meta.sequence);
+    // Stop invalidates the cache and this session; it cannot seed a later one.
+    h.stop_local();
+    assert!(h.frames.borrow().is_none());
+    tokio::time::timeout(Duration::from_secs(2), running)
+        .await
+        .unwrap()
+        .unwrap();
+    server.abort();
+}
+
+#[tokio::test]
+async fn reconnect_preserves_static_bootstrap_even_when_previous_viewport_was_smaller() {
+    let (h, server) = host(214).await;
+    let desktop = Transport::bind([215; 32], Config::default()).await.unwrap();
+    let target = Transport::bind([216; 32], Config::default()).await.unwrap();
+    let layout = {
+        let mut local = h.local.lock().unwrap();
+        local.video_profile.generation = 7;
+        local.viewport_edge = Some(8);
+        local.layout
+    };
+    assert!(h.publish_rgba(&[80; 16 * 16 * 4], 16, 16, 64, layout));
+    let wire = h.frames.borrow().clone().unwrap();
+    let cached = JpegFrame::from_wire(&wire).unwrap();
+    assert_eq!((cached.meta.width, cached.meta.height), (8, 8));
+    let (viewer, peer) = connect(
+        &desktop,
+        &target,
+        "static-profile-bootstrap",
+        RemotePermission::View,
+    )
+    .await;
+    h.local.lock().unwrap().session = Some(peer.clone());
+    let running = tokio::spawn({
+        let h = h.clone();
+        async move { h.run(peer).await }
+    });
+    let received = acknowledged_image(&viewer, (16, 16)).await;
+    assert_eq!((received.meta.width, received.meta.height), (8, 8));
+    assert_eq!(received.meta.layout, layout);
+    assert_eq!(received.meta.captured_ms, cached.meta.captured_ms);
+    h.stop_local();
+    tokio::time::timeout(Duration::from_secs(2), running)
+        .await
+        .unwrap()
+        .unwrap();
+    server.abort();
+}

@@ -422,7 +422,8 @@ impl Host {
                     local.video_profile = Self::native_profile();
                     local.viewport_edge = None;
                     local.delivery_quality = capture::DeliveryQuality::default();
-                    self.frames.send_replace(None);
+                    // Keep the active capture's latest pixels for bootstrap;
+                    // a static projection may not issue a replacement callback.
                 }
             }
         }
@@ -495,7 +496,9 @@ impl Host {
                         local.viewport_edge = Some(request.edge);
                         local.delivery_quality =
                             capture::DeliveryQuality::with_rtt(session.path().1);
-                        self.frames.send_replace(None);
+                        if local.media.sent != 0 {
+                            self.frames.send_replace(None);
+                        }
                     }
                     Self::profile_packet(&local)
                 };
@@ -526,7 +529,9 @@ impl Host {
                         local.video_profile = request;
                         local.viewport_edge = None;
                         local.delivery_quality = capture::DeliveryQuality::default();
-                        self.frames.send_replace(None);
+                        if local.media.sent != 0 {
+                            self.frames.send_replace(None);
+                        }
                     }
                     Self::profile_packet(&local)
                 };
@@ -720,8 +725,9 @@ impl Host {
                         let local = self.local.lock().unwrap();
                         if !local.capture
                             || local.layout != image.meta.layout
-                            || Self::settings(&local).output_size(local.width, local.height)
-                                != Some((image.meta.width, image.meta.height))
+                            || (last != 0
+                                && Self::settings(&local).output_size(local.width, local.height)
+                                    != Some((image.meta.width, image.meta.height)))
                             || local
                                 .session
                                 .as_ref()
@@ -750,7 +756,11 @@ impl Host {
                         .unwrap_or_default()
                         .as_millis() as u64;
                     if image.meta.sequence > last
-                        && now.saturating_sub(image.meta.captured_ms) <= 700
+                        // A static projection may have only one frame from before
+                        // connection. It is still the latest image of this active
+                        // capture/layout; deliver it once without falsifying its
+                        // capture time. Later frames retain the live age limit.
+                        && (last == 0 || now.saturating_sub(image.meta.captured_ms) <= 700)
                     {
                         let wait = budget.charge(wire.len());
                         if !wait.is_zero() {

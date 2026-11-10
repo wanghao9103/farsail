@@ -14,6 +14,13 @@ pub(crate) struct CaptureRecovery {
     waiting_for_frame: bool,
 }
 impl CaptureRecovery {
+    /// A system desktop interruption consumes its own bounded wait, not the
+    /// graphics reset budget. Preserve failures accumulated before the switch.
+    pub(crate) fn suspend(&mut self, elapsed: Duration) {
+        self.started = self.started.map(|start| start + elapsed);
+        self.healthy_since = None;
+        self.waiting_for_frame = self.started.is_some();
+    }
     pub(crate) fn rebuilt(&mut self) {
         if self.started.is_some() {
             self.waiting_for_frame = true;
@@ -62,6 +69,19 @@ impl CaptureRecovery {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn desktop_pause_preserves_the_remaining_reset_budget_and_requires_new_pixels() {
+        let mut recovery = CaptureRecovery::default();
+        let now = Instant::now();
+        recovery.retry(now);
+        recovery.frame(now + Duration::from_secs(1));
+        recovery.suspend(Duration::from_secs(60));
+        assert!(!recovery.timed_out(now + Duration::from_secs(74)));
+        assert!(recovery.timed_out(now + Duration::from_secs(75)));
+        assert_eq!(recovery.failures, 1);
+        recovery.poll(now + Duration::from_secs(80));
+        assert!(recovery.timed_out(now + Duration::from_secs(80)));
+    }
     #[test]
     fn fullscreen_transition_can_recover_after_several_seconds() {
         let mut recovery = CaptureRecovery::default();

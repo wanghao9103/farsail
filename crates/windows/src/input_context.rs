@@ -458,7 +458,7 @@ mod platform {
             && receives_input.as_bool()
     }
 
-    fn thread_desktop_receives_input() -> bool {
+    pub fn capture_desktop_ready() -> bool {
         desktop_receives_input(unsafe { GetCurrentThreadId() })
     }
 
@@ -535,7 +535,7 @@ mod platform {
             visible: unsafe { IsWindowVisible(hit).as_bool() && IsWindowVisible(root).as_bool() },
             enabled: unsafe { IsWindowEnabled(hit).as_bool() && IsWindowEnabled(root).as_bool() },
             no_activate: style as u32 & WS_EX_NOACTIVATE.0 != 0,
-            input_desktop: thread_desktop_receives_input() && desktop_receives_input(thread_id),
+            input_desktop: capture_desktop_ready() && desktop_receives_input(thread_id),
             own_integrity: integrity_level(unsafe { GetCurrentProcess() }),
             target_integrity: integrity_level(process.0),
         })
@@ -629,7 +629,7 @@ mod platform {
         if expected.window == 0
             || expected.process_id == 0
             || foreground_window() != Some(expected)
-            || !thread_desktop_receives_input()
+            || !capture_desktop_ready()
         {
             return false;
         }
@@ -649,7 +649,7 @@ mod platform {
         ) else {
             return false;
         };
-        target <= own && thread_desktop_receives_input() && foreground_window() == Some(expected)
+        target <= own && capture_desktop_ready() && foreground_window() == Some(expected)
     }
 
     #[cfg(test)]
@@ -681,7 +681,9 @@ mod platform {
 }
 
 #[cfg(windows)]
-pub use platform::{administrator_mode, foreground_window, input_context_ready};
+pub use platform::{
+    administrator_mode, capture_desktop_ready, foreground_window, input_context_ready,
+};
 
 #[cfg(windows)]
 pub(crate) use platform::try_activate_at;
@@ -699,4 +701,10 @@ pub fn foreground_window() -> Option<ForegroundWindow> {
 #[cfg(not(windows))]
 pub fn input_context_ready(_expected: ForegroundWindow) -> bool {
     false
+}
+
+// Other supported hosts do not use the Windows input desktop boundary.
+#[cfg(not(windows))]
+pub fn capture_desktop_ready() -> bool {
+    true
 }

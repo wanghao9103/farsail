@@ -3392,6 +3392,13 @@ function Viewer({
     pictureMetadata.current = next;
     setPictureState(next);
   };
+  const [firstFrameSlow, setFirstFrameSlow] = useState(false);
+  useEffect(() => {
+    setFirstFrameSlow(false);
+    if (picture || !active) return;
+    const timer = window.setTimeout(() => setFirstFrameSlow(true), 5000);
+    return () => window.clearTimeout(timer);
+  }, [id, !!picture, active]);
   const [fps, setFps] = useState(0);
   const [text, setText] = useState("");
   const [problem, setProblem] = useState("");
@@ -4065,7 +4072,8 @@ function Viewer({
       frameTimes.current = [];
       setProblem(s?.error || (error ? errorText(error) : "连接已结束"));
       const captureFailure =
-        s?.state === "closed" && s.reason === "capture_failed";
+        s?.state === "closed" &&
+        (s.reason === "capture_failed" || s.reason === "desktop_unavailable");
       setCaptureManualRetry(captureFailure);
       if (s?.retryable && !captureFailure) {
         beginReconnect(false);
@@ -4474,41 +4482,39 @@ function Viewer({
               {fps > 0 ? `${fps} 帧/秒` : picture ? "画面暂未更新" : "等待画面"}
             </span>
           </div>
-          <label className="viewer-display-selector">
-            <span className="sr-only">对方的显示器</span>
-            <select
-              aria-label="对方的显示器"
-              disabled={
-                ended ||
-                !status?.displays.length ||
-                displaySnapshot.stage === "selecting" ||
-                displaySnapshot.stage === "awaiting_frame"
-              }
-              value={
-                displaySnapshot.stage === "unavailable"
-                  ? ""
-                  : (displaySnapshot.target ?? picture?.display ?? "")
-              }
-              onChange={(e) => {
-                const display = status?.displays.find(
-                  (d) => d.id === Number(e.target.value),
-                );
-                if (!display) return;
-                const gate = displayGate.current;
-                const ticket = gate.choose(display);
-                if (ticket) requestDisplay(gate, ticket);
-              }}
-            >
-              <option value="" disabled>
-                选择要显示的屏幕
-              </option>
-              {status?.displays.map((d) => (
-                <option key={d.id} value={d.id}>
-                  {d.name} · {d.width}×{d.height} · {d.dpi} DPI
-                </option>
-              ))}
-            </select>
-          </label>
+          <button
+            className="viewer-display-switch"
+            aria-label="切换屏幕"
+            disabled={
+              ended ||
+              !status?.displays.length ||
+              (status.displays.length < 2 &&
+                displaySnapshot.stage !== "unavailable") ||
+              displaySnapshot.stage === "selecting" ||
+              displaySnapshot.stage === "awaiting_frame"
+            }
+            title={
+              selectedDisplay
+                ? `当前屏幕：${selectedDisplay.name} · ${selectedDisplay.width}×${selectedDisplay.height}`
+                : "切换到下一块屏幕"
+            }
+            onClick={() => {
+              const displays = status?.displays ?? [];
+              const current = displaySnapshot.target ?? picture?.display;
+              const index = displays.findIndex((d) => d.id === current);
+              const display = displays[(index + 1) % displays.length];
+              if (!display) return;
+              const gate = displayGate.current;
+              const ticket = gate.choose(display);
+              if (ticket) requestDisplay(gate, ticket);
+            }}
+          >
+            <Desktop20Regular aria-hidden="true" />
+            {displaySnapshot.stage === "selecting" ||
+            displaySnapshot.stage === "awaiting_frame"
+              ? "切换中…"
+              : "切换屏幕"}
+          </button>
           {(status?.platform !== "android" || status.video?.supported) && (
             <label className="viewer-quality-selector">
               <span className="sr-only">画面分辨率</span>
@@ -4759,8 +4765,8 @@ function Viewer({
               : displayBusy
                 ? displaySnapshot.stage === "unavailable"
                   ? displaySnapshot.issue === "timeout"
-                    ? "暂未收到所选屏幕的画面，请重新选择屏幕。"
-                    : "原选中屏幕暂不可用或布局已变化，请选择要显示的屏幕。"
+                    ? "暂未收到所选屏幕的画面，请点击切换屏幕重试。"
+                    : "原选中屏幕暂不可用或布局已变化，请点击切换屏幕。"
                   : "连接已建立，正在恢复所选屏幕…"
                 : fileBusy || fileNote
                   ? activeFile
@@ -4952,13 +4958,27 @@ function Viewer({
                   : ended
                     ? "连接已结束"
                     : displaySnapshot.stage === "unavailable"
-                      ? "请选择要显示的屏幕。"
+                      ? "请点击切换屏幕选择可用画面。"
                       : restoringConnection
                         ? "正在恢复原选中的屏幕…"
                         : displayBusy
                           ? "正在切换屏幕…"
-                          : "正在等待远端画面…"}
+                          : firstFrameSlow
+                            ? "连接已建立，但尚未收到画面。"
+                            : "正在接收远端首帧…"}
               </p>
+              {firstFrameSlow && !ended && !reconnecting && !displayBusy && (
+                <>
+                  <p>
+                    {status?.platform === "android"
+                      ? "请检查手机是否亮屏、屏幕共享是否仍在运行；系统若已结束录屏，请在手机上恢复屏幕共享。"
+                      : "请检查被控端是否有 UAC 提示或已锁屏，处理后将恢复采集。"}
+                  </p>
+                  <button className="secondary" onClick={reconnect}>
+                    重新连接
+                  </button>
+                </>
+              )}
               {reconnecting && (
                 <button className="secondary" onClick={onStop}>
                   取消重连

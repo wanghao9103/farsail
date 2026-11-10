@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 pub mod clipboard;
 mod input_context;
 pub use input_context::{
-    ForegroundWindow, administrator_mode, foreground_window, input_context_ready,
+    ForegroundWindow, administrator_mode, capture_desktop_ready, foreground_window,
+    input_context_ready,
 };
 
 #[derive(Debug, thiserror::Error)]
