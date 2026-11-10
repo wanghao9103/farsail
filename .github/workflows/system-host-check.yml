@@ -1,5 +1,13 @@
 name: System desktop host boundary
 on:
+  push:
+    branches: [codex/uac-system-host]
+    paths:
+      [
+        "crates/windows/**",
+        "scripts/test-system-host.ps1",
+        ".github/workflows/system-host-check.yml",
+      ]
   workflow_dispatch:
 permissions:
   contents: read
