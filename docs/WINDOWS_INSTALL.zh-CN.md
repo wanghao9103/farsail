@@ -6,11 +6,11 @@
 
 FarSail 0.1.11 是支持自动适配与 720p/1080p/2K/4K 档位的 JPEG 查看/鼠标键盘控制预览。远程窗口默认最大化，使用与客户端一致的深色标题栏，全屏时隐藏；工具栏自动隐藏，移到顶部或点击显示入口可展开，并可固定显示。默认完整画面铺满可用区域，比例不同时会拉伸；“更多操作 → 画面显示”可选择保持比例（有意留边），选择会保留，鼠标坐标同步。编码不放大源显示器、不修改远端系统分辨率。需要 Windows 10/11 x64 的普通交互桌面；不需要安装 Rust、Node 或开发工具。此固定 0.1.11 安装包不包含文件传输；HEVC、自适应视频码率和手机端仍不可用。安全桌面、UAC 和无人登录桌面不支持。
 
-当前公开版本为 [0.1.44](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.44)，包含签名自动更新、[文件传输](FILES.zh-CN.md)、紧凑竖向菜单与独立切换屏幕按钮。未固定菜单在鼠标离开后收起，键盘导航和文字输入保留焦点。Windows 遇到系统桌面中断时暂停采集，返回后尝试恢复，不远程批准 UAC 或关闭系统 UAC。三平台打包和 Windows 安装/重启/重装/卸载检查通过；真实 UAC/OPPO 场景仍待验收，详见[验证记录](verification/WI-FIRST-FRAME-046.zh-CN.md)。下文固定 0.1.11 包保留为历史证据。
+当前公开版本为 [0.1.45](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.45)，包含签名更新、[文件传输](FILES.zh-CN.md)、Windows 安全桌面服务、任务管理器入口、切屏恢复及独立的更多操作面板。Windows 被控端需运行完整安装包并正常授权管理员权限，不修改 UAC 策略。三平台打包、服务采集/非信任进程拒绝/更新/卸载和浏览器检查通过；真实 UAC 与任务管理器仍待验收，详见[验证记录](verification/WI-SYSTEM-HOST-047.zh-CN.md)。下文固定 0.1.11 包保留为历史证据。
 
 0.1.23 起在本机设备面板和设置页使用**允许远程连接**，取消独立文件接收开关。Windows 同时允许屏幕与文件请求，首次默认关闭，并保存选择，在普通重启后通过检查再恢复。关闭时结束本机接入的屏幕与文件连接。远程值守仍只自动批准同账号屏幕请求；文件连接需逐次批准，每个文件需本机选择保存位置。当前操作见[文件传输](FILES.zh-CN.md)，旧版 0.1.22 保留独立开关。
 
-Windows 客户端 0.1.23 起在 FarSail 启动时申请管理员权限，无需用户手动选择“以管理员身份运行”。授权由 Windows 处理；取消授权会取消本次启动。同一 Windows 账号确认授权后继续使用原配置；标准账号可能需要输入另一管理员的凭据，此时 FarSail 使用该管理员的配置，不会自动迁移原账号的 DPAPI 凭据。0.1.22 不含此启动变更。提权使输入具备操作管理员应用所需的完整性级别，不保证所有游戏都接受注入，也不增加 UAC、登录界面或安全桌面控制。Windows CI 已验证管理员清单、实际提权进程和 NSIS `/UPDATE /R` 重启；真实 UAC 确认/取消、游戏输入与已安装客户端跨版本更新仍待验收。原理见 [Microsoft 输入完整性规则](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendinput)。
+Windows 客户端 0.1.23 起在 FarSail 启动时申请管理员权限，无需用户手动选择“以管理员身份运行”。授权由 Windows 处理；取消授权会取消本次启动。同一 Windows 账号确认授权后继续使用原配置；标准账号可能需要输入另一管理员的凭据，此时 FarSail 使用该管理员的配置，不会自动迁移原账号的 DPAPI 凭据。0.1.22 不含此启动变更。提权使输入具备操作管理员应用所需的完整性级别，不保证所有游戏都接受注入，该启动变更本身也不增加 UAC、登录界面或安全桌面控制；0.1.45 为此另增系统服务。Windows CI 已验证管理员清单、实际提权进程和 NSIS `/UPDATE /R` 重启；真实 UAC 确认/取消、游戏输入与已安装客户端跨版本更新仍待验收。原理见 [Microsoft 输入完整性规则](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendinput)。
 
 0.1.23 起关闭主窗口后通过托盘继续远程访问和文件传输，无可用托盘时最小化。通过“打开 FarSail”返回，手动安装其他版本前应从托盘选择“退出 FarSail”或从窗口菜单选择“退出”；再次启动 FarSail 会打开已有窗口。0.1.22 不含此行为，见[客户端说明](CLIENT.zh-CN.md)。
 
@@ -30,7 +30,7 @@ if ($actual -ine $expected) { throw 'SHA256 mismatch: do not install' }
 
 双击安装，选择简体中文或英语。安装包**未进行 Authenticode 签名**，Windows 可能显示未知发布者或 SmartScreen 提示；摘要证明下载一致性，不等于受信任签名。不要关闭系统防护。组织策略阻止未签名程序时，应按组织流程处理。
 
-安装采用当前用户模式，默认用户本地应用目录，不安装系统服务、不设置开机共享。包内包含 Microsoft WebView2 Evergreen 引导器；若电脑没有 WebView2，需要联网下载并安装运行时，完成后再启动。已有兼容运行时时复用系统运行时。此包不是离线 WebView2 全量安装包。官方机制见 [Tauri Windows 安装文档](https://v2.tauri.app/distribute/windows-installer/)。
+0.1.45 按计算机安装到受保护的 Program Files，并安装自动启动的 LocalSystem 服务 `FarSailDesktopHost`。被控端需完整安装，仅复制 EXE 不具备该通道。服务本身不打开网络共享，也不持有账号凭据；同一 Windows 账号继续使用既有账号/配置存储。旧用户目录副本不会自动移除，旧版实体迁移仍未验收。下文历史 0.1.11 安装包采用当前用户模式且不含服务。包内包含 Microsoft WebView2 Evergreen 引导器；若电脑没有 WebView2，需要联网下载并安装运行时，完成后再启动。已有兼容运行时时复用系统运行时。此包不是离线 WebView2 全量安装包，见 [Tauri Windows 安装文档](https://v2.tauri.app/distribute/windows-installer/)。
 
 <a id="first-connection-between-two-windows-computers"></a>
 

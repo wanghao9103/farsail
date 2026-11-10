@@ -20,6 +20,20 @@ More actions open in a separate 320 px side panel on desktop. The primary 208 px
 
 ## Verification
 
-Local evidence: the Windows GNU cross-target check and Clippy cover all targets; ten platform-independent Windows-crate tests pass, including protocol bounds/desktop witness and rejection of unknown operations. Twelve display-policy tests include late target arrival after timeout and rejection after a newer choice. Frontend type checking and production build pass. Evidence is retained in `.local/system-host-20261110`.
+Local evidence: the Windows GNU cross-target check and Clippy cover all targets; eleven platform-independent Windows-crate tests pass, including protocol bounds/desktop witness and rejection of unknown operations. Twelve display-policy tests include late target arrival after timeout and rejection after a newer choice. Frontend type checking and production build pass. Evidence is retained in `.local/system-host-20261110`.
 
-Cloud native installation/service capture, untrusted pipe-peer refusal, upgrade/uninstall and complete Edge/WebKit checks are in progress. A normal-desktop service capture probe is not physical UAC acceptance. Actual UAC consent/refusal, Task Manager on the user's Windows machine, locked sessions, RDP, multi-user transitions, old installed-client migration and WAN performance remain unverified. This record is partial until evidence below supersedes these limits.
+At implementation time, cloud installation/service capture, untrusted pipe-peer refusal, upgrade/uninstall and complete Edge/WebKit checks were pending; final publication evidence below covers these CI scopes. A normal-desktop service capture probe is not physical UAC acceptance. Actual UAC consent/refusal, Task Manager on the user's Windows machine, locked sessions, RDP, multi-user transitions, old installed-client migration and WAN performance remain unverified. This record is partial until evidence below supersedes these limits.
+
+## Dedicated native and browser evidence
+
+The complete Edge/WebKit viewer gates passed in workflow 42765958012, including the Task Manager key sequence, late-frame recovery after the ten-second selection timeout and desktop/narrow menu bounds. Screenshots are retained under `.local/system-host-20261110/ui-edge` and use synthetic remote pixels.
+
+The dedicated Windows service check passed on source `d3004479789abf214290a11010e48693a79872b0` in workflow 42771347910. It installs a protected LocalSystem service, starts the interactive-session SYSTEM agent, validates the local peer and retrieves a real DXGI JPEG into memory. Native tests also verify delayed reads, cancellation completion before buffer reuse and a 256 KiB transfer through a 1 KiB pipe buffer. Earlier failed probes remain evidence. Legacy PIPE_NOWAIT listening/empty-read/backpressure semantics caused transport bugs during implementation; the final path uses cancellable overlapped I/O and drains cancellation before freeing buffers or events.
+
+Release 0.1.45 is frozen at `a8244e7ffd522c638f051a136903be6883023a75`. Full package/install/untrusted-peer/upgrade/uninstall and exact-source browser checks run in workflow 42771933357 before publication. Publication also requires the helper digest to match the verified installation report. Physical UAC and Task Manager acceptance remain pending.
+
+## Final published result — 0.1.45
+
+Release workflow 42771933357 completed successfully from `a8244e7ffd522c638f051a136903be6883023a75`: three native package jobs and both complete browser gates passed. The Windows installation report verifies service capture, untrusted peer refusal, service removal and NSIS `/UPDATE /R` restart. The installed helper SHA-256 is `b24aaae844cc6c9e4e2e8233d7530802191fad55dbdde295302baf032bd1148d`.
+
+Independent anonymous downloads passed three updater signatures, 11 checksums and exact reconstruction of all 12 public files. The fixed feed matches the versioned manifest. The first publication attempt failed its final channel readback; only the failed publish job was retried. Asset IDs, digests, sizes and timestamps stayed unchanged. The release is stable and GitHub Latest. Evidence: `.local/client-public-0.1.45/verification.json`, `browser-gate-proof.json` and `immutable-assets-final.json`. Physical UAC/Task Manager, locking, RDP, old installed-client migration and WAN performance remain outside the verified scope.

@@ -4,7 +4,7 @@
 
 ## 用户安装什么
 
-更新通道现已推进至 [0.1.44](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.44)，由[正式工作流](https://github.com/wanghao9103/farsail/actions/runs/42756416906)从 `cb53fc264d53bc59173cead5754cbe5fd18f9505` 构建。本版提供鼠标离开后收起的竖向菜单、独立切换屏幕按钮、首帧等待说明及 Windows 系统桌面切换后的有限恢复；配合[安卓 0.1.16](https://github.com/wanghao9103/farsail/releases/tag/android-v0.1.16) 修复静止屏幕首帧。12 份公开附件、更新签名、安装报告及普通固定更新清单核验通过。打开**共享与设置 → 软件更新 → 检查更新**，结束连接后安装。真实 UAC/OPPO 与已安装客户端跨版本更新仍待验收，详见[证据与边界](verification/WI-FIRST-FRAME-046.zh-CN.md)。
+更新通道现已推进至 [0.1.45](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.45)，由[正式工作流](https://github.com/wanghao9103/farsail/actions/runs/42771933357)从 `a8244e7ffd522c638f051a136903be6883023a75` 构建。新增 Windows 安全桌面服务、任务管理器入口、切屏超时恢复与独立的更多操作面板。Windows 被控端需完整安装并正常授权管理员权限；仅替换 EXE 不会安装服务。三平台打包、服务采集/非信任进程拒绝/更新/卸载和完整 Edge/WebKit 检查通过。12 个不可变附件、三份更新签名、11 项摘要及普通固定更新源均独立核验。打开**共享与设置 → 软件更新 → 检查更新**，先结束连接再安装。真实 UAC、任务管理器、OPPO 和旧版已安装客户端迁移仍待验收，详见[证据与边界](verification/WI-SYSTEM-HOST-047.zh-CN.md)。安卓保持 [0.1.16](https://github.com/wanghao9103/farsail/releases/tag/android-v0.1.16)。
 
 GitHub Actions 构建 Windows x64 NSIS 安装包，以及 Ubuntu x64、ARM64 Debian 包。发布成功后，三种安装包都会放到对应版本的客户端 Release；Actions 附件只是临时构建产物，不是更新通道。旧客户端没有更新器，需要手动安装一次首个支持更新的版本。服务端升级包不会升级桌面应用。
 

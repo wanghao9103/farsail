@@ -79,3 +79,9 @@ NOTICE-027: supplied screenshot shows the main viewer-open success notice persis
 ## Published focus regression verification
 
 Desktop 0.1.44, source `cb53fc264d53bc59173cead5754cbe5fd18f9505`, passed the complete Windows Edge and Linux WebKit gates in release workflow 42756416906. Retained keyboard/form focus must be inside the toolbar; focus elsewhere permits mouse dismissal. Tests move to the current canvas corner and dismiss expanded controls before genuine image clicks. No forced-click workaround is used. This supplements the visual evidence above; physical-device acceptance remains outside scope.
+
+## More actions follow-up — 2026-11-10
+
+The user's follow-up exposed a P2 issue outside the earlier compact-main-menu comparison: More actions squeezed controls and connection text into the 208 px main menu and made it very tall. It now opens a separate 320 px side panel while the main menu remains anchored. Below 920 px viewport width or 440 px height, a 360 px bounded scrolling layout keeps content accessible.
+
+Workflow 42765958012 passed the complete Edge/WebKit suites, including outside-pointer dismissal, keyboard focus retention, panel bounds, Task Manager's ordered remote keys and delayed target recovery. Evidence: `.local/system-host-20261110/ui-edge/.local/ui-verification/viewer-more-desktop.png` and `viewer-more-narrow.png`; screenshots use synthetic pixels. The newer screenshot fixture disables finite animations to avoid recording a partial fade. No remaining P0/P1/P2 layout finding within this follow-up scope. Native UAC control is tracked separately in WI-SYSTEM-HOST-047.
