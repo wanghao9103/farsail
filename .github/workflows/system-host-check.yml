@@ -30,6 +30,18 @@ jobs:
       - name: Validate native pipe backpressure and input policy
         shell: pwsh
         run: cargo test --locked --release -p farsail-windows --lib
+      - name: Validate actual Task Manager window
+        shell: pwsh
+        run: |
+          if (Get-Process Taskmgr -ErrorAction SilentlyContinue) { throw 'Unexpected existing Task Manager' }
+          $env:FARSAIL_TEST_TASK_MANAGER='1'
+          try {
+            cargo test --locked --release -p farsail-windows --lib task_manager::tests::real_task_manager_window -- --ignored --nocapture
+            if ($LASTEXITCODE -ne 0) { throw 'Real Task Manager window test failed' }
+            Get-Process Taskmgr | Select-Object Id,SessionId,MainWindowHandle,Path | Format-List
+          } finally {
+            Get-Process Taskmgr -ErrorAction SilentlyContinue | Stop-Process -Force
+          }
       - name: Validate session agent and capture
         shell: pwsh
         run: ./scripts/test-system-host.ps1

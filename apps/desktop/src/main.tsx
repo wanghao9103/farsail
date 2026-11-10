@@ -3430,6 +3430,8 @@ function Viewer({
   const fileInFlight = useRef(false);
   const swallowPasteUp = useRef(false);
   const [fileNote, setFileNote] = useState("");
+  const [taskManagerBusy, setTaskManagerBusy] = useState(false);
+  const taskManagerInFlight = useRef(false);
   const [reconnecting, setReconnecting] = useState(false);
   const [reconnectFailed, setReconnectFailed] = useState(false);
   const [captureManualRetry, setCaptureManualRetry] = useState(false);
@@ -4715,20 +4717,33 @@ function Viewer({
                     {control && status?.platform !== "android" && (
                       <button
                         type="button"
-                        onClick={() => {
+                        disabled={taskManagerBusy || ended || inputBlocked}
+                        onClick={async () => {
+                          if (
+                            taskManagerInFlight.current ||
+                            !viewerLease.current.active
+                          )
+                            return;
+                          const lease = viewerLease.current;
+                          taskManagerInFlight.current = true;
+                          setTaskManagerBusy(true);
                           releaseInputs();
-                          for (const [vk, down] of [
-                            [0xa2, true],
-                            [0xa0, true],
-                            [0x1b, true],
-                            [0x1b, false],
-                            [0xa0, false],
-                            [0xa2, false],
-                          ] as const)
-                            send({ kind: "key", vk, down });
+                          try {
+                            await invoke("remote_task_manager", {
+                              id,
+                              generation: inputGeneration.current,
+                            });
+                          } catch (e) {
+                            if (lease.active) setProblem(errorText(e));
+                          } finally {
+                            taskManagerInFlight.current = false;
+                            if (lease.active) setTaskManagerBusy(false);
+                          }
                         }}
                       >
-                        打开任务管理器
+                        {taskManagerBusy
+                          ? "正在打开任务管理器…"
+                          : "打开任务管理器"}
                       </button>
                     )}
                     {control && status?.platform !== "android" && (

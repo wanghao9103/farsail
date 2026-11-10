@@ -22,6 +22,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::{Mutex, Semaphore, watch};
+type TaskManagerReply = (u64, tokio::sync::oneshot::Sender<Result<(), String>>);
 type ClipboardReply = (u64, tokio::sync::oneshot::Sender<Result<(), String>>);
 
 #[derive(Default, Clone)]
@@ -328,6 +329,11 @@ struct Live {
     send_permits: Semaphore,
     auto_resume_sending: AtomicBool,
     file_supported: AtomicBool,
+    task_manager_supported: AtomicBool,
+    task_manager_busy: AtomicBool,
+    task_manager_reply: StdMutex<Option<TaskManagerReply>>,
+    task_manager_serial: AtomicU64,
+    task_manager_gate: Mutex<()>,
     peer_android: AtomicBool,
     clipboard_serial: AtomicU64,
     clipboard_gate: Mutex<()>,
@@ -611,6 +617,11 @@ impl RemoteRuntime {
             send_permits: Semaphore::new(32),
             auto_resume_sending: AtomicBool::new(false),
             file_supported: AtomicBool::new(false),
+            task_manager_supported: AtomicBool::new(false),
+            task_manager_busy: AtomicBool::new(false),
+            task_manager_reply: StdMutex::new(None),
+            task_manager_serial: AtomicU64::new(0),
+            task_manager_gate: Mutex::new(()),
             peer_android: AtomicBool::new(false),
             clipboard_serial: AtomicU64::new(0),
             clipboard_gate: Mutex::new(()),
@@ -644,6 +655,7 @@ impl RemoteRuntime {
                 owner.run_viewer(live.clone(), tx).await;
             }
             live.alive.store(false, Ordering::SeqCst);
+            live.task_manager_reply.lock().unwrap().take();
             owner.files.stop(live.session.id());
             if let Err(e) = live.input.lock().unwrap().release_all() {
                 *live.error.lock().unwrap() = Some(format!("input cleanup incomplete: {e}"));
@@ -707,6 +719,14 @@ impl RemoteRuntime {
         }
         let (tx, rx) = watch::channel::<Option<Vec<u8>>>(None);
         let initial_profile = *live.video_profile.lock().unwrap();
+        #[cfg(windows)]
+        let _ = live
+            .session
+            .send(Frame {
+                channel: Channel::Media,
+                bytes: b"FSTC1".to_vec(),
+            })
+            .await;
         let _ = live
             .session
             .send(Frame {
@@ -1231,6 +1251,36 @@ impl RemoteRuntime {
                                     state.update(Some(&e));
                                     notice = Some(state.packet());
                                 }
+                            } else if payload.len() == 12 && payload.starts_with(b"FSTM") {
+                                let request =
+                                    u64::from_be_bytes(payload[4..12].try_into().unwrap());
+                                if !live.task_manager_busy.swap(true, Ordering::SeqCst) {
+                                    let live = live.clone();
+                                    tokio::spawn(async move {
+                                        let worker = live.clone();
+                                        let result = tokio::task::spawn_blocking(move || {
+                                            if !worker.active() || !worker.session.is_open_now() {
+                                                return Err("远程连接已结束".into());
+                                            }
+                                            farsail_windows::task_manager::open()
+                                        })
+                                        .await
+                                        .unwrap_or_else(|_| Err("任务管理器启动任务失败".into()));
+                                        let mut bytes = b"FSTR".to_vec();
+                                        bytes.extend_from_slice(&request.to_be_bytes());
+                                        bytes.extend(serde_json::to_vec(&result).unwrap());
+                                        if live.active() && live.session.is_open_now() {
+                                            let _ = live
+                                                .session
+                                                .send(Frame {
+                                                    channel: Channel::Control,
+                                                    bytes,
+                                                })
+                                                .await;
+                                        }
+                                        live.task_manager_busy.store(false, Ordering::SeqCst);
+                                    });
+                                }
                             } else if let Ok(input) = serde_json::from_slice::<Input>(&payload) {
                                 if live.input_state.lock().unwrap().blocked {
                                     continue;
@@ -1357,9 +1407,31 @@ impl RemoteRuntime {
                 live.file_supported.store(true, Ordering::SeqCst);
                 continue;
             }
+            if frame.channel == Channel::Media && frame.bytes == b"FSTC1" {
+                live.task_manager_supported.store(true, Ordering::SeqCst);
+                continue;
+            }
             if frame.channel == Channel::Control
                 && live.session.permission() == RemotePermission::Control
             {
+                if frame.bytes.len() > 12
+                    && frame.bytes.len() <= 1024
+                    && frame.bytes.starts_with(b"FSTR")
+                {
+                    let request = u64::from_be_bytes(frame.bytes[4..12].try_into().unwrap());
+                    if let Ok(result) =
+                        serde_json::from_slice::<Result<(), String>>(&frame.bytes[12..])
+                    {
+                        let mut pending = live.task_manager_reply.lock().unwrap();
+                        if pending.as_ref().is_some_and(|(id, _)| *id == request) {
+                            if let Some((_, sender)) = pending.take() {
+                                let _ = sender.send(result);
+                            }
+                        }
+                    }
+                    continue;
+                }
+
                 live.input_state.lock().unwrap().accept(&frame.bytes);
                 live.mouse_state.lock().unwrap().accept(&frame.bytes);
                 let recovery = live.input_state.lock().unwrap().recovery_hint(&frame.bytes);
@@ -1862,6 +1934,44 @@ impl RemoteRuntime {
             .map_err(|e| e.to_string())?;
         Ok(generation)
     }
+    pub async fn open_task_manager(&self, id: &str, generation: u64) -> Result<(), String> {
+        let live = self
+            .sessions
+            .lock()
+            .await
+            .get(id)
+            .cloned()
+            .ok_or("remote session not active")?;
+        if live.host || live.session.permission() != RemotePermission::Control {
+            return Err("control permission required".into());
+        }
+        if !live.task_manager_supported.load(Ordering::SeqCst) {
+            return Err("请先更新被控端，当前版本不支持直接打开任务管理器".into());
+        }
+        let _gate = live
+            .task_manager_gate
+            .try_lock()
+            .map_err(|_| "任务管理器正在打开，请稍候")?;
+        let request = live.task_manager_serial.fetch_add(1, Ordering::SeqCst) + 1;
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        *live.task_manager_reply.lock().unwrap() = Some((request, sender));
+        let result = async {
+            self.input(
+                id,
+                Some(json!({"kind":"task_manager", "request":request})),
+                Some(generation),
+            )
+            .await?;
+            tokio::time::timeout(Duration::from_secs(12), receiver)
+                .await
+                .map_err(|_| "被控端打开任务管理器超时".to_string())?
+                .map_err(|_| "远程连接已结束".to_string())?
+        }
+        .await;
+        live.task_manager_reply.lock().unwrap().take();
+        result
+    }
+
     pub async fn input(
         &self,
         id: &str,
@@ -1892,7 +2002,14 @@ impl RemoteRuntime {
                 .then(|| v.get("generation").and_then(Value::as_u64))
                 .flatten()
         });
-        let payload = if let Some(generation) = auto_resume {
+        let task_manager = value.as_ref().and_then(Value::as_object).and_then(|v| {
+            (v.len() == 2 && v.get("kind").and_then(Value::as_str) == Some("task_manager"))
+                .then(|| v.get("request").and_then(Value::as_u64))
+                .flatten()
+        });
+        let payload = if let Some(request) = task_manager {
+            recovery_packet(b"FSTM", request)
+        } else if let Some(generation) = auto_resume {
             recovery_packet(b"FSR4", generation)
         } else if recover_mouse {
             b"FSR3".to_vec()

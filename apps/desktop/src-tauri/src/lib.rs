@@ -193,6 +193,16 @@ async fn remote_input(
     remote.input(&id, input, generation).await
 }
 #[tauri::command]
+async fn remote_task_manager(
+    window: tauri::WebviewWindow,
+    remote: tauri::State<'_, Arc<RemoteRuntime>>,
+    id: String,
+    generation: u64,
+) -> Result<(), String> {
+    viewer::scoped(&window, &id)?;
+    remote.open_task_manager(&id, generation).await
+}
+#[tauri::command]
 async fn media_profile(
     window: tauri::WebviewWindow,
     remote: tauri::State<'_, Arc<RemoteRuntime>>,
@@ -529,6 +539,7 @@ pub fn run() {
         media_profile,
         media_viewport,
         remote_input,
+        remote_task_manager,
         ipc_viewer_state,
         ipc_smoke_report,
         ipc_media_smoke,
@@ -575,6 +586,7 @@ pub fn run() {
         media_profile,
         media_viewport,
         remote_input,
+        remote_task_manager,
         app_exit
     ]);
     #[allow(unused_mut)]

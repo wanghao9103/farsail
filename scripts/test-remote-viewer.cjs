@@ -534,27 +534,26 @@ const fs = require("node:fs");
   await page
     .getByRole("button", { name: "打开任务管理器", exact: true })
     .click();
-  await page.waitForFunction(
-    () =>
-      window.fixture.calls.filter(
-        (c) => c.cmd === "remote_input" && c.args.input?.kind === "key",
-      ).length === 6,
+  await page.waitForFunction(() =>
+    window.fixture.calls.some((c) => c.cmd === "remote_task_manager"),
   );
-  assert.deepEqual(
-    await page.evaluate(() =>
-      window.fixture.calls
-        .filter((c) => c.cmd === "remote_input" && c.args.input?.kind === "key")
-        .map((c) => [c.args.input.vk, c.args.input.down]),
+  assert.equal(
+    await page.evaluate(
+      () =>
+        window.fixture.calls.filter((c) => c.cmd === "remote_task_manager")
+          .length,
     ),
-    [
-      [0xa2, true],
-      [0xa0, true],
-      [0x1b, true],
-      [0x1b, false],
-      [0xa0, false],
-      [0xa2, false],
-    ],
-    "Task Manager uses ordered remote keys without relying on a local shortcut",
+    1,
+  );
+  assert.equal(
+    await page.evaluate(
+      () =>
+        window.fixture.calls.filter(
+          (c) => c.cmd === "remote_input" && c.args.input?.kind === "key",
+        ).length,
+    ),
+    0,
+    "Task Manager requests a host action rather than synthetic hotkeys",
   );
   await leaveToolbar();
   // One slow decoder retains its last image and does not stall another viewer.
