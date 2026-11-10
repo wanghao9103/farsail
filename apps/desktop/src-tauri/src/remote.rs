@@ -1427,10 +1427,10 @@ impl RemoteRuntime {
                         serde_json::from_slice::<Result<(), String>>(&frame.bytes[12..])
                     {
                         let mut pending = live.task_manager_reply.lock().unwrap();
-                        if pending.as_ref().is_some_and(|(id, _)| *id == request) {
-                            if let Some((_, sender)) = pending.take() {
-                                let _ = sender.send(result);
-                            }
+                        if pending.as_ref().is_some_and(|(id, _)| *id == request)
+                            && let Some((_, sender)) = pending.take()
+                        {
+                            let _ = sender.send(result);
                         }
                     }
                     continue;
