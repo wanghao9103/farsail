@@ -1255,10 +1255,14 @@ impl RemoteRuntime {
                                 let request =
                                     u64::from_be_bytes(payload[4..12].try_into().unwrap());
                                 if !live.task_manager_busy.swap(true, Ordering::SeqCst) {
+                                    let released = sink.release_all().map_err(|e| {
+                                        format!("打开任务管理器前无法释放远端按键：{e}")
+                                    });
                                     let live = live.clone();
                                     tokio::spawn(async move {
                                         let worker = live.clone();
                                         let result = tokio::task::spawn_blocking(move || {
+                                            released?;
                                             if !worker.active() || !worker.session.is_open_now() {
                                                 return Err("远程连接已结束".into());
                                             }

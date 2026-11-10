@@ -577,6 +577,20 @@ const fs = require("node:fs");
   await page
     .getByRole("button", { name: "打开任务管理器", exact: true })
     .waitFor();
+  await page.evaluate(() => {
+    window.fixture.taskManagerError =
+      "请先更新被控端，当前版本不支持直接打开任务管理器";
+  });
+  await page
+    .getByRole("button", { name: "打开任务管理器", exact: true })
+    .click();
+  await page
+    .getByRole("alertdialog", { name: "操作未完成", exact: true })
+    .waitFor();
+  await page.getByRole("button", { name: "知道了", exact: true }).click();
+  await page.evaluate(() => {
+    window.fixture.taskManagerError = null;
+  });
 
   await leaveToolbar();
   // One slow decoder retains its last image and does not stall another viewer.
