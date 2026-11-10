@@ -4,6 +4,7 @@ $ErrorActionPreference='Stop'
 Set-StrictMode -Version Latest
 if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted') { throw 'Hosted runner only' }
 Set-Location (Split-Path $PSScriptRoot -Parent)
+New-Item -ItemType Directory -Force (Join-Path $PWD '.local') | Out-Null
 if (Get-Service FarSailDesktopHost -ErrorAction SilentlyContinue) { throw 'Existing service' }
 $directory=Join-Path $env:ProgramFiles 'FarSailSystemProbe'
 if (Test-Path $directory) { throw 'Existing probe directory' }
