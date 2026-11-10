@@ -470,6 +470,18 @@ fn serve(mut file: File, sid: u32, expected: PathBuf) {
         let response = match result {
             Ok(r) => r,
             Err(Error::CaptureReset(_)) => Response::Reset,
+            Err(Error::Geometry) => Response::Geometry,
+            Err(Error::UnsupportedInput) => Response::UnsupportedInput,
+            Err(Error::InputDenied) => Response::InputDenied,
+            Err(Error::Injection {
+                inserted,
+                expected,
+                code,
+            }) => Response::Injection {
+                inserted,
+                expected,
+                code,
+            },
             Err(error) => {
                 report_error(&error);
                 Response::Error

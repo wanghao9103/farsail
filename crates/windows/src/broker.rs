@@ -2,7 +2,7 @@
 use crate::{
     Display, Error, Input, JpegFrame, Result, native,
     system_host::Client,
-    system_protocol::{Request, Response},
+    system_protocol::{Request, Response, input_result},
 };
 pub fn displays() -> Result<Vec<Display>> {
     if let Ok(mut client) = Client::connect() {
@@ -117,26 +117,18 @@ impl InputSink {
             if layout == 0 || layout != self.desktop_layout {
                 return Err(Error::Geometry);
             }
-            return match c.request(&Request::Input {
+            return input_result(c.request(&Request::Input {
                 input,
                 display: display.cloned(),
                 layout,
                 desktop: self.desktop.clone(),
-            })? {
-                Response::Ok => Ok(()),
-                Response::Reset => Err(Error::Geometry),
-                _ => Err(Error::InputDenied),
-            };
+            })?);
         }
         self.local.apply(input, display, layout)
     }
     pub fn release_all(&mut self) -> Result<()> {
         if let Some(c) = &mut self.system {
-            return match c.request(&Request::Release {})? {
-                Response::Ok => Ok(()),
-                Response::Reset => Err(Error::Geometry),
-                _ => Err(Error::InputDenied),
-            };
+            return input_result(c.request(&Request::Release {})?);
         }
         self.local.release_all()
     }
