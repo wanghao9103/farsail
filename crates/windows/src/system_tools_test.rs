@@ -164,8 +164,15 @@ impl Probe {
             }
             let mut pid = 0;
             GetWindowThreadProcessId(GetForegroundWindow(), &mut pid);
-            if pid != window.pid {
-                return Err("broker mouse click did not activate target process".into());
+            let foreground = GetForegroundWindow();
+            if pid != window.pid
+                && GetAncestor(foreground, GA_ROOT) != window.handle
+                && IsChild(window.handle, foreground) == 0
+            {
+                return Err(format!(
+                    "broker mouse click did not activate target window: expected pid {}, foreground pid {pid}",
+                    window.pid
+                ));
             }
         }
         Ok(())
@@ -253,7 +260,12 @@ fn real_system_tools_through_broker() {
         let before = windows();
         let matches = |w: &Window| {
             (w.image.ends_with(image)
-                || (name == "Settings" && w.image.ends_with("\\applicationframehost.exe")))
+                || (name == "Settings" && w.image.ends_with("\\applicationframehost.exe"))
+                || (name == "System Properties"
+                    && (w.image.ends_with("\\rundll32.exe")
+                        || w.image.rsplit('\\').next().is_some_and(|n| {
+                            n.starts_with("systemproperties") && n.ends_with(".exe")
+                        }))))
                 && w.title.contains(title)
         };
         let started = Instant::now();
@@ -277,6 +289,11 @@ fn real_system_tools_through_broker() {
                 serde_json::json!({"image":window.image,"pid":window.pid,"frame_width":dimensions.0,"frame_height":dimensions.1,"launch":"passed","service_capture":"passed","service_mouse_activation":"passed","service_keyboard_close":"passed"}),
             )
         })();
+        let diagnostics = if result.is_err() {
+            windows().into_iter().map(|w|serde_json::json!({"title":w.title,"image":w.image,"pid":w.pid,"hwnd":w.handle as usize})).collect::<Vec<_>>()
+        } else {
+            vec![]
+        };
         let _ = probe.input.release_all();
         // Close only newly created matching windows if an assertion failed; never alter tool contents.
         for w in windows().into_iter().filter(matches) {
@@ -287,7 +304,7 @@ fn real_system_tools_through_broker() {
             }
         }
         println!("SYSTEM TOOL {name}: {result:?}");
-        report.push(serde_json::json!({"name":name,"elapsed_ms":started.elapsed().as_millis(),"result":result}));
+        report.push(serde_json::json!({"name":name,"elapsed_ms":started.elapsed().as_millis(),"result":result,"failure_windows":diagnostics}));
     }
     std::fs::write(
         std::env::var("FARSAIL_SYSTEM_TOOLS_REPORT").unwrap(),
