@@ -166,6 +166,14 @@ fn transfer(file: &mut File, bytes: &mut [u8], write: bool, deadline: Instant) -
             file.read(&mut bytes[done..])
         };
         match r {
+            // A nonblocking byte pipe may successfully write zero bytes when
+            // its kernel buffer is full. That is backpressure, not EOF.
+            Ok(0) if write => {
+                if Instant::now() >= deadline {
+                    return Err(failure());
+                }
+                thread::sleep(Duration::from_millis(2));
+            }
             Ok(0) => return Err(failure()),
             Ok(n) => done += n,
             Err(e) if matches!(e.raw_os_error(), Some(232 | 536 | 231)) => {
@@ -871,5 +879,64 @@ pub fn report_error(error: &Error) {
             null(),
         );
         DeregisterEventSource(source);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn nonblocking_pipe_transfers_large_payload_after_zero_progress_backpressure() {
+        let name = wide(format!(
+            r"\\.\pipe\FarSail.TransferTest.{}.{}",
+            unsafe { GetCurrentProcessId() },
+            unsafe { GetCurrentThreadId() }
+        ));
+        let handle = unsafe {
+            CreateNamedPipeW(
+                name.as_ptr(),
+                PIPE_ACCESS_OUTBOUND,
+                PIPE_TYPE_BYTE | PIPE_NOWAIT | PIPE_REJECT_REMOTE_CLIENTS,
+                1,
+                1024,
+                1024,
+                0,
+                null(),
+            )
+        };
+        assert_ne!(handle, INVALID_HANDLE_VALUE);
+        let mut server = unsafe { File::from_raw_handle(handle) };
+        let reader = thread::spawn(move || {
+            let h = unsafe {
+                CreateFileW(
+                    name.as_ptr(),
+                    GENERIC_READ,
+                    0,
+                    null(),
+                    OPEN_EXISTING,
+                    FILE_ATTRIBUTE_NORMAL,
+                    null_mut(),
+                )
+            };
+            assert_ne!(h, INVALID_HANDLE_VALUE);
+            let mut file = unsafe { File::from_raw_handle(h) };
+            thread::sleep(Duration::from_millis(150));
+            let mut data = vec![0; 256 * 1024];
+            file.read_exact(&mut data).unwrap();
+            assert!(data.iter().all(|b| *b == 173));
+        });
+        let until = Instant::now() + Duration::from_secs(3);
+        loop {
+            if unsafe { ConnectNamedPipe(server.as_raw_handle(), null_mut()) } != 0
+                || unsafe { GetLastError() } == ERROR_PIPE_CONNECTED
+            {
+                break;
+            }
+            assert!(Instant::now() < until);
+            thread::sleep(Duration::from_millis(2));
+        }
+        let mut data = vec![173; 256 * 1024];
+        transfer(&mut server, &mut data, true, until).unwrap();
+        reader.join().unwrap();
     }
 }
