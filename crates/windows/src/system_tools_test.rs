@@ -110,13 +110,64 @@ impl Probe {
     }
     fn launch(&mut self, command: &str) -> Result<(), String> {
         self.keys(&[(0x5b, true), (0x52, true), (0x52, false), (0x5b, false)])?;
-        wait_window(
+        let run = wait_window(
             |w| w.title == "Run" && w.image.ends_with("\\explorer.exe"),
             5,
         )?;
+        unsafe extern "system" fn find_edit(hwnd: HWND, data: LPARAM) -> i32 {
+            unsafe {
+                let mut name = [0u16; 64];
+                let len = GetClassNameW(hwnd, name.as_mut_ptr(), name.len() as i32);
+                if String::from_utf16_lossy(&name[..len.max(0) as usize]) == "Edit" {
+                    *(data as *mut HWND) = hwnd;
+                    return 0;
+                }
+                1
+            }
+        }
+        let mut edit: HWND = std::ptr::null_mut();
+        unsafe {
+            EnumChildWindows(run.handle, Some(find_edit), &mut edit as *mut _ as LPARAM);
+        }
+        if edit.is_null() {
+            return Err("Run command edit control unavailable".into());
+        }
+        self.keys(&[(0xa2, true), (0x41, true), (0x41, false), (0xa2, false)])?;
         self.apply(Input::Text {
             text: command.into(),
         })?;
+        let until = Instant::now() + Duration::from_secs(2);
+        let mut stable = None;
+        loop {
+            let mut buffer = [0u16; 512];
+            let mut copied = 0usize;
+            let ok = unsafe {
+                SendMessageTimeoutW(
+                    edit,
+                    WM_GETTEXT,
+                    buffer.len(),
+                    buffer.as_mut_ptr() as LPARAM,
+                    SMTO_ABORTIFHUNG | SMTO_BLOCK,
+                    500,
+                    &mut copied,
+                )
+            };
+            let text = String::from_utf16_lossy(&buffer[..copied.min(buffer.len())]);
+            if ok != 0 && text.eq_ignore_ascii_case(command) {
+                let since = stable.get_or_insert_with(Instant::now);
+                if since.elapsed() >= Duration::from_millis(200) {
+                    break;
+                }
+            } else {
+                stable = None;
+            }
+            if Instant::now() >= until {
+                return Err(format!(
+                    "Run command did not match requested tool: {text:?}"
+                ));
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
         self.keys(&[(0x0d, true), (0x0d, false)])
     }
     fn click_title(&mut self, window: &Window) -> Result<(), String> {
@@ -194,25 +245,36 @@ fn real_system_tools_through_broker() {
     // This disposable runner image starts a Performance property sheet before checkout.
     // Dismiss only that exact system fixture without applying any settings, so opening
     // Advanced System Properties below must create a fresh tool window.
-    let mut fixture_reset = Vec::new();
-    for w in windows().into_iter().filter(|w| {
-        w.image
-            .ends_with("\\system32\\systempropertiesperformance.exe")
-            && w.title == "System Properties"
-    }) {
-        fixture_reset.push(w.pid);
-        unsafe {
-            PostMessageW(w.handle, WM_CLOSE, 0, 0);
-        }
+    fn reset_performance_fixture() -> Vec<u32> {
+        let mut reset = Vec::new();
         let until = Instant::now() + Duration::from_secs(5);
-        while unsafe { IsWindow(w.handle) != 0 && IsWindowVisible(w.handle) != 0 } {
+        loop {
+            let fixtures: Vec<_> = windows()
+                .into_iter()
+                .filter(|w| {
+                    w.image
+                        .ends_with("\\system32\\systempropertiesperformance.exe")
+                })
+                .collect();
+            if fixtures.is_empty() {
+                return reset;
+            }
             assert!(
                 Instant::now() < until,
-                "runner's initial Performance property sheet did not close"
+                "hosted-image Performance property sheet did not close"
             );
+            for w in fixtures {
+                if !reset.contains(&w.pid) {
+                    reset.push(w.pid);
+                }
+                unsafe {
+                    PostMessageW(w.handle, WM_CLOSE, 0, 0);
+                }
+            }
             thread::sleep(Duration::from_millis(100));
         }
     }
+    let mut fixture_reset = reset_performance_fixture();
     println!("Disposed hosted-image initial Performance property sheet pids: {fixture_reset:?}");
     let display = crate::displays().unwrap().remove(0);
     let capture = Capture::new_with_profile(display.id, 0).unwrap();
@@ -291,14 +353,14 @@ fn real_system_tools_through_broker() {
         (
             "Command Prompt",
             "cmd.exe /k title FarSail System Tool CMD",
-            "\\conhost.exe",
+            "\\cmd.exe",
             "FarSail System Tool CMD",
         ),
         (
             "PowerShell",
-            r#"powershell.exe -NoProfile -NoExit -Command "$Host.UI.RawUI.WindowTitle='FarSail System Tool PowerShell'""#,
-            "\\conhost.exe",
-            "FarSail System Tool PowerShell",
+            "powershell.exe -NoProfile -NoExit",
+            "\\powershell.exe",
+            "Windows PowerShell",
         ),
         (
             "Settings",
@@ -309,9 +371,18 @@ fn real_system_tools_through_broker() {
     ];
     let mut report = Vec::new();
     for (name, command, image, title) in cases {
+        if name == "System Properties" {
+            fixture_reset.extend(reset_performance_fixture());
+        }
+        assert!(
+            command.chars().count() <= 64,
+            "test command must obey the real text-input protocol limit"
+        );
         let before = windows();
         let matches = |w: &Window| {
             (w.image.ends_with(image)
+                || ((name == "Command Prompt" || name == "PowerShell")
+                    && w.image.ends_with("\\conhost.exe"))
                 || (name == "Settings" && w.image.ends_with("\\applicationframehost.exe"))
                 || (name == "System Properties"
                     && (w.image.ends_with("\\rundll32.exe")
