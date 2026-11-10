@@ -431,6 +431,25 @@ fn serve(mut file: File, sid: u32, expected: PathBuf) {
     drop(capture);
     drop(desk);
 }
+#[derive(Debug, PartialEq, Eq)]
+enum PipeConnection {
+    Listening,
+    Connected,
+    Disconnected,
+}
+fn poll_connection(file: &File) -> PipeConnection {
+    // In PIPE_NOWAIT mode TRUE only transitions a disconnected instance to
+    // listening. Microsoft documents ERROR_PIPE_CONNECTED as the actual peer
+    // connection witness; a successful return alone must never dispatch it.
+    if unsafe { ConnectNamedPipe(file.as_raw_handle(), null_mut()) } != 0 {
+        return PipeConnection::Listening;
+    }
+    match unsafe { GetLastError() } {
+        ERROR_PIPE_CONNECTED => PipeConnection::Connected,
+        ERROR_PIPE_LISTENING => PipeConnection::Listening,
+        _ => PipeConnection::Disconnected,
+    }
+}
 fn agent(parent: u32) -> Result<()> {
     if !system(unsafe { GetCurrentProcess() }) {
         return Err(Error::InputDenied);
@@ -499,14 +518,18 @@ fn agent(parent: u32) -> Result<()> {
             pending = Some(unsafe { File::from_raw_handle(h) });
         }
         let f = pending.as_ref().unwrap();
-        let connected = unsafe { ConnectNamedPipe(f.as_raw_handle(), null_mut()) } != 0
-            || unsafe { GetLastError() } == ERROR_PIPE_CONNECTED;
-        if connected {
-            let file = pending.take().unwrap();
-            let expected = expected.clone();
-            threads.push(thread::spawn(move || serve(file, sid, expected)));
-        } else {
-            thread::sleep(Duration::from_millis(10));
+        match poll_connection(f) {
+            PipeConnection::Connected => {
+                let file = pending.take().unwrap();
+                let expected = expected.clone();
+                threads.push(thread::spawn(move || serve(file, sid, expected)));
+            }
+            PipeConnection::Disconnected => {
+                drop(pending.take());
+            }
+            PipeConnection::Listening => {
+                thread::sleep(Duration::from_millis(2));
+            }
         }
     }
     STOP.store(true, Ordering::SeqCst);
@@ -906,6 +929,11 @@ mod tests {
         };
         assert_ne!(handle, INVALID_HANDLE_VALUE);
         let mut server = unsafe { File::from_raw_handle(handle) };
+        assert_eq!(
+            poll_connection(&server),
+            PipeConnection::Listening,
+            "a newly listening pipe has no authenticated client yet"
+        );
         let reader = thread::spawn(move || {
             let until = Instant::now() + Duration::from_secs(3);
             let h = loop {
@@ -934,9 +962,7 @@ mod tests {
         });
         let until = Instant::now() + Duration::from_secs(3);
         loop {
-            if unsafe { ConnectNamedPipe(server.as_raw_handle(), null_mut()) } != 0
-                || unsafe { GetLastError() } == ERROR_PIPE_CONNECTED
-            {
+            if poll_connection(&server) == PipeConnection::Connected {
                 break;
             }
             assert!(Instant::now() < until);
