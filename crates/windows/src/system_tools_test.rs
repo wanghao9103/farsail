@@ -129,7 +129,7 @@ impl Probe {
                 self.display.x,
                 self.display.x + self.display.width as i32 - 1,
             );
-            let y = (rect.top + 12).clamp(
+            let y = (rect.top + 24).clamp(
                 self.display.y,
                 self.display.y + self.display.height as i32 - 1,
             );
@@ -303,6 +303,28 @@ fn real_system_tools_through_broker() {
             }
             probe.launch(command)?;
             let window = wait_window(matches, 10)?;
+            // UWP's frame can exist before the application has completed activation.
+            // Wait for the same target window to become interactive before testing input.
+            let until = Instant::now() + Duration::from_secs(10);
+            loop {
+                let ready = unsafe {
+                    let foreground = GetForegroundWindow();
+                    let mut pid = 0;
+                    GetWindowThreadProcessId(foreground, &mut pid);
+                    pid == window.pid
+                        || GetAncestor(foreground, GA_ROOT) == window.handle
+                        || IsChild(window.handle, foreground) != 0
+                };
+                if ready {
+                    break;
+                }
+                if Instant::now() >= until {
+                    return Err(
+                        "tool window appeared but did not finish foreground activation".into(),
+                    );
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
             let dimensions = probe.refresh()?;
             probe.click_title(&window)?;
             probe.keys(&[(0xa4, true), (0x73, true), (0x73, false), (0xa4, false)])?;
