@@ -277,6 +277,30 @@ fn real_system_tools_through_broker() {
             "System Properties",
         ),
         (
+            "Task Scheduler",
+            "taskschd.msc",
+            "\\mmc.exe",
+            "Task Scheduler",
+        ),
+        (
+            "System Configuration",
+            "msconfig.exe",
+            "\\msconfig.exe",
+            "System Configuration",
+        ),
+        (
+            "Command Prompt",
+            "cmd.exe /k title FarSail System Tool CMD",
+            "\\conhost.exe",
+            "FarSail System Tool CMD",
+        ),
+        (
+            "PowerShell",
+            r#"powershell.exe -NoProfile -NoExit -Command "$Host.UI.RawUI.WindowTitle='FarSail System Tool PowerShell'""#,
+            "\\conhost.exe",
+            "FarSail System Tool PowerShell",
+        ),
+        (
             "Settings",
             "ms-settings:",
             "\\systemsettings.exe",
