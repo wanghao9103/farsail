@@ -34,6 +34,7 @@ use windows_sys::Win32::{
 };
 const NAME: &str = "FarSailDesktopHost";
 static STOP: AtomicBool = AtomicBool::new(false);
+static LAST_CONTACT: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
 fn wide(s: impl AsRef<std::ffi::OsStr>) -> Vec<u16> {
     s.as_ref().encode_wide().chain(Some(0)).collect()
 }
@@ -221,31 +222,50 @@ impl Client {
         let expected = exe.with_file_name("farsail-system-host.exe");
         let sid = session(unsafe { GetCurrentProcessId() })?;
         let name = pipe_name(sid);
-        let h = unsafe {
-            CreateFileW(
-                name.as_ptr(),
-                GENERIC_READ | GENERIC_WRITE,
-                0,
-                null(),
-                OPEN_EXISTING,
-                FILE_ATTRIBUTE_NORMAL,
-                null_mut(),
-            )
+        let until = Instant::now() + Duration::from_millis(150);
+        let h = loop {
+            let h = unsafe {
+                CreateFileW(
+                    name.as_ptr(),
+                    GENERIC_READ | GENERIC_WRITE,
+                    0,
+                    null(),
+                    OPEN_EXISTING,
+                    FILE_ATTRIBUTE_NORMAL,
+                    null_mut(),
+                )
+            };
+            if h != INVALID_HANDLE_VALUE {
+                break h;
+            }
+            if unsafe { GetLastError() } != ERROR_PIPE_BUSY || Instant::now() >= until {
+                return Err(failure());
+            }
+            thread::sleep(Duration::from_millis(5));
         };
-        if h == INVALID_HANDLE_VALUE {
-            return Err(failure());
-        }
         let file = unsafe { File::from_raw_handle(h) };
         nowait(&file)?;
         let p = peer(&file, true, &expected, sid)?;
+        *LAST_CONTACT.lock().unwrap() = Some(Instant::now());
         Ok(Self { file, _peer: p })
     }
     pub(crate) fn request(&mut self, r: &Request) -> Result<Response> {
         send(&mut self.file, r)?;
-        recv(&mut self.file, Duration::from_secs(3), MAX_PACKET)
+        let response = recv(&mut self.file, Duration::from_secs(3), MAX_PACKET)?;
+        *LAST_CONTACT.lock().unwrap() = Some(Instant::now());
+        Ok(response)
     }
 }
 pub fn available() -> bool {
+    // Existing authenticated capture/input traffic is a stronger liveness
+    // witness than repeatedly opening a listener while it is accepting peers.
+    if LAST_CONTACT
+        .lock()
+        .unwrap()
+        .is_some_and(|at| at.elapsed() < Duration::from_secs(1))
+    {
+        return true;
+    }
     Client::connect().is_ok()
 }
 struct Desktop(HDESK);
@@ -817,5 +837,30 @@ fn probe() -> Result<()> {
             return Err(failure());
         }
         thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// Numeric/platform diagnostics only; never log frames, keys or IPC payloads.
+pub fn report_error(error: &Error) {
+    use windows_sys::Win32::System::EventLog::*;
+    let source = unsafe { RegisterEventSourceW(null(), wide("FarSailDesktopHost").as_ptr()) };
+    if source.is_null() {
+        return;
+    }
+    let message = wide(error.to_string());
+    let strings = [message.as_ptr()];
+    unsafe {
+        ReportEventW(
+            source,
+            EVENTLOG_ERROR_TYPE,
+            0,
+            1,
+            null_mut(),
+            1,
+            0,
+            strings.as_ptr(),
+            null(),
+        );
+        DeregisterEventSource(source);
     }
 }

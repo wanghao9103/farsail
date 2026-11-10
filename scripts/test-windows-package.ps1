@@ -161,7 +161,30 @@ try {
     $hostExe = Join-Path $installDir 'farsail-system-host.exe'
     if ((Get-FileHash $hostExe).Hash.ToLowerInvariant() -ne $meta.system_host_sha256) { throw 'Installed system host differs' }
     $probe = Start-Process $hostExe -ArgumentList '--probe' -PassThru -Wait
-    if ($probe.ExitCode -ne 0) { throw 'Authenticated system-host capture probe failed' }
+    if ($probe.ExitCode -ne 0) {
+        Get-CimInstance Win32_Service -Filter "Name='FarSailDesktopHost'" | Format-List *
+        Get-WinEvent -FilterHashtable @{LogName='Application'; ProviderName='FarSailDesktopHost'} -MaxEvents 8 -ErrorAction SilentlyContinue | Format-List TimeCreated,Message
+        throw 'Authenticated system-host capture probe failed'
+    }
+    # PowerShell is not an allowed broker client, even in an elevated shell.
+    $pipe = [IO.Pipes.NamedPipeClientStream]::new('.', ('FarSail.Desktop.v1.' + (Get-Process -Id $PID).SessionId), [IO.Pipes.PipeDirection]::InOut, [IO.Pipes.PipeOptions]::Asynchronous)
+    try {
+        $pipe.Connect(2000)
+        $denied=$false
+        try {
+            $request=[Text.Encoding]::UTF8.GetBytes('{"op":"Displays"}')
+            $pipe.Write([BitConverter]::GetBytes([uint32]$request.Length),0,4)
+            $pipe.Write($request,0,$request.Length)
+            $buffer=[byte[]]::new(4)
+            $read=$pipe.ReadAsync($buffer,0,4)
+            if (!$read.Wait(2000)) { throw 'Untrusted broker peer was not promptly rejected' }
+            $denied=$read.Result -eq 0
+        } catch [IO.IOException] { $denied=$true }
+          catch [AggregateException] {
+            if ($_.Exception.InnerException -is [IO.IOException]) { $denied=$true } else { throw }
+          }
+        if (!$denied) { throw 'Untrusted executable received broker data' }
+    } finally { $pipe.Dispose() }
     $entry = Get-ItemProperty 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\FarSail' -ErrorAction Stop
     if ($entry.DisplayVersion -ne $meta.version) { throw 'Installed version differs' }
     # No remote debugging port or production test command. Accessibility drives ordinary UI.

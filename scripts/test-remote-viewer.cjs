@@ -426,7 +426,12 @@ const fs = require("node:fs");
       panel.x + panel.width <= 1200 && panel.y + panel.height <= 800,
       "side panel stays within the viewport",
     );
-    await dropdown.mouse.move(950, 600);
+    fs.mkdirSync(".local/ui-verification", { recursive: true });
+    await dropdown.screenshot({
+      path: ".local/ui-verification/viewer-more-desktop.png",
+    });
+    const bounds = dropdown.viewportSize();
+    await dropdown.mouse.move(bounds.width - 4, bounds.height - 4);
     await dropdown
       .locator(".viewer-toolbar")
       .waitFor({ state: "hidden", timeout: 2500 });
@@ -446,7 +451,7 @@ const fs = require("node:fs");
     );
     await dropdown.locator(".remote-screen").focus();
     await dropdown.locator(".viewer-toolbar").hover();
-    await dropdown.mouse.move(950, 600);
+    await dropdown.mouse.move(bounds.width - 4, bounds.height - 4);
     await dropdown
       .locator(".viewer-toolbar")
       .waitFor({ state: "hidden", timeout: 2500 });
@@ -519,6 +524,37 @@ const fs = require("node:fs");
     await page.locator(".viewer-toolbar").hover();
   };
   await load();
+  await revealToolbar();
+  await page.getByText("更多操作", { exact: true }).click();
+  await page.evaluate(() => {
+    window.fixture.calls = [];
+  });
+  await page
+    .getByRole("button", { name: "打开任务管理器", exact: true })
+    .click();
+  await page.waitForFunction(
+    () =>
+      window.fixture.calls.filter(
+        (c) => c.cmd === "remote_input" && c.args.input?.kind === "key",
+      ).length === 6,
+  );
+  assert.deepEqual(
+    await page.evaluate(() =>
+      window.fixture.calls
+        .filter((c) => c.cmd === "remote_input" && c.args.input?.kind === "key")
+        .map((c) => [c.args.input.vk, c.args.input.down]),
+    ),
+    [
+      [0xa2, true],
+      [0xa0, true],
+      [0x1b, true],
+      [0x1b, false],
+      [0xa0, false],
+      [0xa2, false],
+    ],
+    "Task Manager uses ordered remote keys without relying on a local shortcut",
+  );
+  await leaveToolbar();
   // One slow decoder retains its last image and does not stall another viewer.
   const previousImage = await page.getByAltText("远端桌面").getAttribute("src");
   await page.evaluate(() => {
@@ -2125,6 +2161,39 @@ const fs = require("node:fs");
       assert.equal(await page.getByAltText("远端桌面").count(), 1);
     }
   }
+  // A delayed target must remain receivable after the ten-second notice.
+  await load();
+  await page.evaluate(() => {
+    Object.assign(window.fixture, {
+      noFrames: true,
+      reconnectSuccess: true,
+      retryable: true,
+      closed: true,
+    });
+  });
+  await page
+    .getByRole("button", { name: "重试当前屏幕", exact: true })
+    .waitFor({ timeout: 18000 });
+  const timedOutSelections = await page.evaluate(
+    () => window.fixture.calls.filter((c) => c.cmd === "media_select").length,
+  );
+  await page.evaluate(() => {
+    window.fixture.noFrames = false;
+  });
+  await page.getByAltText("远端桌面").waitFor({ timeout: 4000 });
+  assert.equal(
+    await page
+      .getByRole("button", { name: "重试当前屏幕", exact: true })
+      .count(),
+    0,
+  );
+  assert.equal(
+    await page.evaluate(
+      () => window.fixture.calls.filter((c) => c.cmd === "media_select").length,
+    ),
+    timedOutSelections,
+    "late target recovers without issuing another screen selection",
+  );
   await load();
   await page.evaluate(() => {
     window.fixture.retryable = true;
