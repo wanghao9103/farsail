@@ -410,7 +410,10 @@ fn serve(mut file: File, sid: u32, expected: PathBuf) {
         let response = match result {
             Ok(r) => r,
             Err(Error::CaptureReset(_)) => Response::Reset,
-            Err(_) => Response::Error,
+            Err(error) => {
+                report_error(&error);
+                Response::Error
+            }
         };
         if send(&mut file, &response).is_err() {
             break;
@@ -632,10 +635,16 @@ unsafe extern "system" fn service_main(_: u32, _: *mut *mut u16) {
                 keep
             });
             for sid in active {
-                if let std::collections::hash_map::Entry::Vacant(e) = agents.entry(sid)
-                    && let Ok(p) = spawn_agent(&exe, sid)
-                {
-                    e.insert(p);
+                if let std::collections::hash_map::Entry::Vacant(e) = agents.entry(sid) {
+                    match spawn_agent(&exe, sid) {
+                        Ok(p) => {
+                            e.insert(p);
+                        }
+                        Err(error) => {
+                            report_error(&error);
+                            thread::sleep(Duration::from_secs(1));
+                        }
+                    }
                 }
             }
             thread::sleep(Duration::from_millis(250));
