@@ -2174,12 +2174,9 @@ td {
   margin: 0;
   line-height: 1.6;
 }
-@media (min-width: 760px) and (min-height: 440px) {
+@media (min-width: 920px) and (min-height: 440px) {
   .viewer-window .viewer-toolbar {
     overflow: visible;
-  }
-  .viewer-window.tools-visible .viewer-toolbar:has(.viewer-more[open]) {
-    transform: translate(calc(-50% - 164px), 0);
   }
   .viewer-window .viewer-more {
     position: static;
@@ -2202,7 +2199,7 @@ td {
     box-shadow: 0 6px 22px #0005;
   }
 }
-@media (max-width: 759px), (max-height: 439px) {
+@media (max-width: 919px), (max-height: 439px) {
   .viewer-window .viewer-toolbar:has(.viewer-more[open]) {
     width: 360px;
   }
