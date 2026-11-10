@@ -464,19 +464,20 @@ const fs = require("node:fs");
       name: "切换远端窗口（Alt+Tab）",
       exact: true,
     });
-  const revealToolbar = async () => {
-    // A visibility check can race the auto-hide timer. Start from the hidden
-    // state, then keep the pointer over the toolbar while interacting with it.
-    // The screen centre can be inside the new vertical dropdown; its far
-    // bottom-right corner stays outside both collapsed and expanded menus.
-    const screen = await page.locator(".remote-screen").boundingBox();
-    assert(screen);
+  const leaveToolbar = async () => {
+    // The centre and fixed coordinates can be inside a vertical dropdown.
+    // The remote canvas corner stays outside it across responsive sizes.
+    const canvas = await page.locator(".remote-screen").boundingBox();
+    assert(canvas);
     await page.mouse.move(
-      screen.x + screen.width - 8,
-      screen.y + screen.height - 8,
+      canvas.x + canvas.width - 8,
+      canvas.y + canvas.height - 8,
     );
     await page.locator(".remote-screen").focus();
     await page.locator(".viewer-toolbar").waitFor({ state: "hidden" });
+  };
+  const revealToolbar = async () => {
+    await leaveToolbar();
     await page.getByRole("button", { name: "显示工具栏", exact: true }).click();
     await page.locator(".viewer-toolbar").hover();
   };
@@ -1098,9 +1099,7 @@ const fs = require("node:fs");
   const verifyFillPixels = async (source = null, turns = 0) => {
     // This assertion measures a static frame. Avoid revoking its blob URL while img.decode() is pending.
     await page.evaluate(() => (window.fixture.heartbeat = false));
-    await page.mouse.move(400, 300);
-    await page.locator(".remote-screen").focus();
-    await page.locator(".viewer-toolbar").waitFor({ state: "hidden" });
+    await leaveToolbar();
     await page.getByAltText("远端桌面").evaluate((img) => img.decode());
     let area = await page.locator(".remote-screen").boundingBox();
     if (source) {
@@ -1244,9 +1243,7 @@ const fs = require("node:fs");
   );
   await page.getByRole("button", { name: "保持比例", exact: true }).click();
   await page.getByText("更多操作", { exact: true }).click();
-  await page.mouse.move(400, 300);
-  await page.locator(".remote-screen").focus();
-  await page.locator(".viewer-toolbar").waitFor({ state: "hidden" });
+  await leaveToolbar();
   const buttonCount = await page.evaluate(
     () =>
       window.fixture.calls.filter(
@@ -2154,9 +2151,7 @@ const fs = require("node:fs");
     ),
   );
   await page.getByRole("group", { name: "手机导航", exact: true }).waitFor();
-  await page.mouse.move(400, 300);
-  await page.locator(".remote-screen").focus();
-  await page.locator(".viewer-toolbar").waitFor({ state: "hidden" });
+  await leaveToolbar();
   assert(
     await page.getByRole("button", { name: "主屏幕", exact: true }).isVisible(),
     "phone home must stay visible with the toolbar hidden",
@@ -2605,9 +2600,7 @@ const fs = require("node:fs");
   await revealToolbar();
   await page.getByRole("button", { name: "全屏切换", exact: true }).click();
   await page.setViewportSize({ width: 640, height: 900 });
-  await page.mouse.move(400, 300);
-  await page.locator(".remote-screen").focus();
-  await page.locator(".viewer-toolbar").waitFor({ state: "hidden" });
+  await leaveToolbar();
   await page.screenshot({
     path: ".local/ui-verification/viewer-phone-navigation.png",
   });
