@@ -30,3 +30,7 @@ Full local Linux desktop tests could not run without GTK/GIO development librari
 ## Compact title bar follow-up
 
 Before publishing, the user requested a closer match to the reference title bar. Desktop title height changes from 36 px to 28 px; the toolbar reveal handle changes from 50 × 22 px to 36 × 16 px and remains directly below the title bar. Tab and window controls shrink together. Fullscreen keeps its existing zero title-height rule. A Chromium synthetic check confirms dimensions and keyboard expansion; the complete suite is being re-run against frozen styles. The earlier desktop candidate was cancelled before publication; its source and cancellation evidence are retained. Android continues from its already tagged source because this follow-up changes desktop CSS only.
+
+## Vertical controls and mouse-exit dismissal
+
+The final requested interaction replaces the horizontal controls row with a narrow vertical dropdown. Desktop settings disclose the resolution selector; supported actions retain their existing authorization and transport paths. Mouse exit closes expanded sections after 650 ms, while keyboard navigation and focused form controls remain accessible. Opening permits 1600 ms to reach the menu. The previous title-bar-only candidate was cancelled before publication. In-app browser inspection and the focused comparison are recorded in the root design QA report; a standard Chromium/WebKit regression also exercises mouse dismissal and retained keyboard focus.

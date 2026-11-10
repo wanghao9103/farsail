@@ -2053,3 +2053,94 @@ td {
     padding-inline: 6px;
   }
 }
+
+/* Dropdown remote controls follow the compact title bar without covering a row of the screen. */
+.viewer-window .viewer-toolbar {
+  width: 208px;
+  max-width: calc(100% - 24px);
+  max-height: calc(100dvh - var(--viewer-title-height) - 24px);
+  min-height: 0;
+  padding: 6px;
+  gap: 2px;
+  flex-direction: column;
+  align-items: stretch;
+  flex-wrap: nowrap;
+  overflow-y: auto;
+  border-radius: 6px;
+  background: #1b1d21fa;
+}
+.viewer-window .viewer-toolbar-actions {
+  display: contents;
+}
+.viewer-window .viewer-toolbar-actions > button,
+.viewer-window .viewer-toolbar > button,
+.viewer-window .viewer-more > summary,
+.viewer-window .viewer-settings > summary {
+  width: 100%;
+  min-height: 38px;
+  height: 38px;
+  flex: none;
+  justify-content: flex-start;
+  padding: 0 12px;
+  gap: 10px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  font-size: 13px;
+  font-weight: 400;
+}
+.viewer-settings > summary,
+.viewer-more > summary {
+  display: flex;
+  align-items: center;
+  list-style: none;
+  cursor: pointer;
+}
+.viewer-settings > summary::-webkit-details-marker,
+.viewer-more > summary::-webkit-details-marker {
+  display: none;
+}
+.viewer-settings > summary > svg:last-child,
+.viewer-more > summary > svg:last-child {
+  margin-left: auto;
+  width: 14px;
+}
+.viewer-settings[open] > summary > svg:last-child,
+.viewer-more[open] > summary > svg:last-child {
+  transform: rotate(90deg);
+}
+.viewer-window .viewer-submenu,
+.viewer-window .viewer-popover {
+  position: static;
+  width: 100%;
+  max-width: 100%;
+  max-height: none;
+  padding: 10px;
+  margin: 2px 0 4px;
+  box-shadow: none;
+  border: 0;
+  border-radius: 4px;
+  background: #252930;
+  overflow-wrap: anywhere;
+}
+.viewer-window .viewer-submenu .viewer-quality-selector {
+  display: block;
+}
+.viewer-window .viewer-submenu select {
+  width: 100%;
+  max-width: 100%;
+}
+.viewer-window .viewer-popover .inline-form {
+  flex-direction: column;
+  align-items: stretch;
+}
+.viewer-window .viewer-popover .inline-form input {
+  min-width: 0;
+  width: 100%;
+}
+.viewer-window .viewer-popover button {
+  white-space: normal;
+}
+.viewer-window .viewer-toolbar .viewer-collapse {
+  color: var(--muted);
+}

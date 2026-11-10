@@ -1,5 +1,29 @@
 **English** | [简体中文](design-qa.zh-CN.md)
 
+# Remote controls dropdown design QA
+
+final result: passed
+
+Scope: the reference image supplied on 2026-11-10 defines the compact title bar, narrow dark vertical controls menu, icon/text rows, disclosure arrows and mouse-exit dismissal. Remote desktop/game pixels and competitor-only functions are outside scope. This is an existing production app change, not a new site.
+
+## Evidence and fixes
+
+The original horizontal toolbar was a P2 mismatch and is replaced by a 208 px vertical menu. The open-details state previously prevented dismissal, and mouse-focused buttons were confused with keyboard focus; both are P2 interaction issues fixed by closing disclosures on mouse exit while preserving genuine keyboard/form focus. Normal exit waits 650 ms so crossing into descendants does not flicker; opening allows 1600 ms to reach the menu.
+
+The in-app browser rendered the actual component against synthetic IPC. It confirmed the menu, keyboard disclosure, and mouse exit returning to the reveal handle. Full capture: `.local/release-20261110/dropdown-cua.jpg`. Combined source/implementation comparison with focused menu crops: `.local/release-20261110/dropdown-comparison.png`. The reference is the supplied clipboard image ending in `90212815-3042-4ed9-b487-62ef4f326bae.png`. Remote content is deliberately excluded from the comparison.
+
+## Required fidelity surfaces
+
+- Typography: existing app system font and readable 13 px menu labels; intentional product-system choice rather than copying another application's font rendering.
+- Layout rhythm: 208 px width, 38 px rows, icons aligned with labels, trailing disclosure arrows, compact 28 px title and 36 × 16 px reveal handle. Expanded sections stay within the menu; narrow screens can scroll it.
+- Colors/tokens: dark neutral surface, subtle border, muted unavailable actions and existing danger color; no new palette.
+- Image quality: no new raster assets; existing Fluent icons render cleanly. Synthetic remote pixels are a test fixture outside the requested control-surface redesign.
+- Copy/content: only implemented FarSail actions appear. Competitor-only categories are not represented as nonfunctional controls. Switch screen remains a direct button as requested earlier.
+
+No outstanding P0/P1/P2 findings within this scope. Remaining P3 differences are intentional product labels, system-font rendering and accordion expansion rather than competitor-specific submenus. Cloud full-suite evidence and native-device acceptance are recorded separately; this visual pass does not establish physical Windows UAC or OPPO behavior.
+
+---
+
 # Viewer workspace comparison — 2026-11-05
 
 final result: passed

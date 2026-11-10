@@ -3487,6 +3487,7 @@ function Viewer({
   const [toolbarPinned, setToolbarPinned] = useState(false);
   const toolbarHovered = useRef(false);
   const toolbarFocused = useRef(false);
+  const toolbarKeyboard = useRef(false);
   const toolbar = useRef<HTMLElement>(null);
   const focusToolbarOnReveal = useRef(false);
   const toolbarTimer = useRef<number | undefined>(undefined);
@@ -3569,24 +3570,24 @@ function Viewer({
         setProblem(errorText(err));
       });
   };
-  const showToolbar =
-    toolbarVisible ||
-    toolsOpen ||
-    toolbarPinned ||
-    reconnecting ||
-    displayBusy ||
-    fileBusy;
-  const scheduleHide = () => {
+  const showToolbar = toolbarVisible || toolbarPinned;
+  const scheduleHide = (delay = 1600) => {
     window.clearTimeout(toolbarTimer.current);
-    if (
-      !toolbarPinned &&
-      !toolsOpen &&
-      !toolbarHovered.current &&
-      !toolbarFocused.current
-    )
+    if (!toolbarPinned && !toolbarHovered.current && !toolbarFocused.current)
       toolbarTimer.current = window.setTimeout(() => {
-        if (!toolbarFocused.current) setToolbarVisible(false);
-      }, 2200);
+        if (toolbarHovered.current || toolbarFocused.current) return;
+        const focused = document.activeElement;
+        if (
+          toolbar.current?.contains(focused) &&
+          focused instanceof HTMLElement
+        )
+          focused.blur();
+        toolbar.current?.querySelectorAll("details[open]").forEach((node) => {
+          (node as HTMLDetailsElement).open = false;
+        });
+        setToolsOpen(false);
+        setToolbarVisible(false);
+      }, delay);
   };
   useEffect(() => {
     if (toolbarVisible) {
@@ -4428,7 +4429,8 @@ function Viewer({
           aria-label="显示工具栏"
           title="显示工具栏"
           onClick={(e) => {
-            focusToolbarOnReveal.current = e.detail === 0;
+            toolbarKeyboard.current = e.detail === 0;
+            focusToolbarOnReveal.current = toolbarKeyboard.current;
             setToolbarVisible(true);
           }}
         >
@@ -4439,8 +4441,21 @@ function Viewer({
         <header
           ref={toolbar}
           className="viewer-toolbar"
-          onFocusCapture={() => {
+          onKeyDownCapture={() => {
+            toolbarKeyboard.current = true;
             toolbarFocused.current = true;
+            window.clearTimeout(toolbarTimer.current);
+          }}
+          onPointerDownCapture={() => {
+            toolbarKeyboard.current = false;
+            toolbarFocused.current = false;
+          }}
+          onFocusCapture={(e) => {
+            toolbarFocused.current =
+              toolbarKeyboard.current ||
+              (e.target instanceof HTMLInputElement &&
+                e.target.type === "text") ||
+              e.target instanceof HTMLSelectElement;
             window.clearTimeout(toolbarTimer.current);
             setToolbarVisible(true);
           }}
@@ -4459,7 +4474,14 @@ function Viewer({
           }}
           onMouseLeave={() => {
             toolbarHovered.current = false;
-            scheduleHide();
+            const focused = document.activeElement;
+            toolbarFocused.current =
+              toolbarKeyboard.current ||
+              (toolbar.current?.contains(focused) === true &&
+                ((focused instanceof HTMLInputElement &&
+                  focused.type === "text") ||
+                  focused instanceof HTMLSelectElement));
+            scheduleHide(650);
           }}
         >
           <div className="viewer-status">
@@ -4515,51 +4537,61 @@ function Viewer({
               ? "切换中…"
               : "切换屏幕"}
           </button>
-          {(status?.platform !== "android" || status.video?.supported) && (
-            <label className="viewer-quality-selector">
-              <span className="sr-only">画面分辨率</span>
-              <select
-                aria-label="画面分辨率"
-                disabled={ended || !status?.video?.supported}
-                value={
-                  status?.video?.supported
-                    ? autoQuality
-                      ? -2
-                      : (profileWanted ?? status.video.profile)
-                    : -1
-                }
-                title={
-                  !status?.video?.supported
-                    ? "被控端需更新后才能切换"
-                    : undefined
-                }
-                onChange={(e) => {
-                  const profile = Number(e.target.value);
-                  setAutoQuality(profile === -2);
-                  if (profile !== -2) requestProfile(profile);
-                }}
-              >
-                <option value="-1" disabled>
-                  {picture ? "对方需更新" : "等待画面"}
-                </option>
-                <option value="-2">自动适配</option>
-                <option value="0">720p · 省流</option>
-                <option value="1">1080p · 高清</option>
-                <option
-                  value="2"
-                  disabled={(status?.video?.max_profile ?? 1) < 2}
-                >
-                  2K · 超清
-                </option>
-                <option
-                  value="3"
-                  disabled={(status?.video?.max_profile ?? 1) < 3}
-                >
-                  4K · 超清
-                </option>
-              </select>
-            </label>
-          )}
+          <details className="viewer-settings">
+            <summary aria-label="桌面设置">
+              <Settings20Regular aria-hidden="true" />
+              <span>桌面设置</span>
+              <ChevronRight16Regular aria-hidden="true" />
+            </summary>
+            <div className="viewer-submenu">
+              {(status?.platform !== "android" || status.video?.supported) && (
+                <label className="viewer-quality-selector">
+                  <span className="sr-only">画面分辨率</span>
+                  <select
+                    aria-label="画面分辨率"
+                    disabled={ended || !status?.video?.supported}
+                    value={
+                      status?.video?.supported
+                        ? autoQuality
+                          ? -2
+                          : (profileWanted ?? status.video.profile)
+                        : -1
+                    }
+                    title={
+                      !status?.video?.supported
+                        ? "被控端需更新后才能切换"
+                        : undefined
+                    }
+                    onChange={(e) => {
+                      const profile = Number(e.target.value);
+                      setAutoQuality(profile === -2);
+                      if (profile !== -2) requestProfile(profile);
+                      if (!toolbarKeyboard.current) e.currentTarget.blur();
+                    }}
+                  >
+                    <option value="-1" disabled>
+                      {picture ? "对方需更新" : "等待画面"}
+                    </option>
+                    <option value="-2">自动适配</option>
+                    <option value="0">720p · 省流</option>
+                    <option value="1">1080p · 高清</option>
+                    <option
+                      value="2"
+                      disabled={(status?.video?.max_profile ?? 1) < 2}
+                    >
+                      2K · 超清
+                    </option>
+                    <option
+                      value="3"
+                      disabled={(status?.video?.max_profile ?? 1) < 3}
+                    >
+                      4K · 超清
+                    </option>
+                  </select>
+                </label>
+              )}
+            </div>
+          </details>
 
           <div className="viewer-toolbar-actions">
             {control && status?.platform !== "android" && (
@@ -4591,7 +4623,11 @@ function Viewer({
               className="viewer-more"
               onToggle={(e) => setToolsOpen(e.currentTarget.open)}
             >
-              <summary>更多操作</summary>
+              <summary>
+                <Settings20Regular aria-hidden="true" />
+                <span>更多操作</span>
+                <ChevronRight16Regular aria-hidden="true" />
+              </summary>
               <div className="viewer-popover">
                 <button type="button" onClick={() => windowAction("cascade")}>
                   堆叠全部远程窗口
@@ -4720,29 +4756,32 @@ function Viewer({
               onClick={() => windowAction("fullscreen")}
             >
               <FullScreenMaximize20Regular aria-hidden="true" />
+              <span>全屏切换</span>
             </button>
             <button className="danger-text" onClick={onStop}>
+              <Dismiss16Regular aria-hidden="true" />
               {reconnecting ? "取消重连" : "结束连接"}
             </button>
             <button
               className="viewer-collapse"
               aria-label="收起工具栏"
               title={toolbarPinned ? "先取消保持工具栏显示" : "收起工具栏"}
-              disabled={
-                toolbarPinned ||
-                toolsOpen ||
-                reconnecting ||
-                displayBusy ||
-                fileBusy
-              }
+              disabled={toolbarPinned}
               onClick={() => {
                 toolbarFocused.current = false;
                 toolbarHovered.current = false;
+                toolbar.current
+                  ?.querySelectorAll("details[open]")
+                  .forEach((node) => {
+                    (node as HTMLDetailsElement).open = false;
+                  });
+                setToolsOpen(false);
                 setToolbarVisible(false);
                 screen.current?.focus({ preventScroll: true });
               }}
             >
               <ChevronUp16Regular aria-hidden="true" />
+              <span>收起菜单</span>
             </button>
           </div>
         </header>

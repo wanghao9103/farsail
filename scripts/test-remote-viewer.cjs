@@ -396,6 +396,55 @@ const fs = require("node:fs");
     );
     return;
   }
+  async function testDropdownDismissal() {
+    const dropdown = await browser.newPage({
+      viewport: { width: 1200, height: 800 },
+    });
+    await dropdown.addInitScript(installFixture);
+    await dropdown.goto(
+      process.env.UI_URL || "http://127.0.0.1:1420/?viewer=test",
+    );
+    await dropdown.getByAltText("远端桌面").waitFor();
+    await dropdown.locator(".remote-screen").focus();
+    await dropdown.locator(".viewer-toolbar").waitFor({ state: "hidden" });
+    await dropdown
+      .getByRole("button", { name: "显示工具栏", exact: true })
+      .click();
+    await dropdown.getByText("更多操作", { exact: true }).click();
+    await dropdown.getByLabel("远端文字", { exact: true }).waitFor();
+    const menu = await dropdown.locator(".viewer-toolbar").boundingBox();
+    assert(
+      menu.width <= 220 && menu.height > menu.width,
+      "remote controls form a narrow vertical menu",
+    );
+    await dropdown.mouse.move(950, 600);
+    await dropdown
+      .locator(".viewer-toolbar")
+      .waitFor({ state: "hidden", timeout: 2500 });
+    assert.equal(
+      await dropdown.locator(".viewer-toolbar details[open]").count(),
+      0,
+      "mouse exit closes expanded sections too",
+    );
+    await dropdown
+      .getByRole("button", { name: "显示工具栏", exact: true })
+      .press("Enter");
+    await dropdown.getByLabel("桌面设置", { exact: true }).waitFor();
+    await dropdown.waitForTimeout(1900);
+    assert(
+      await dropdown.locator(".viewer-toolbar").isVisible(),
+      "keyboard focus keeps the menu available",
+    );
+    await dropdown.close();
+  }
+  if (process.env.UI_DROPDOWN_ONLY === "1") {
+    await testDropdownDismissal();
+    await browser.close();
+    console.log(
+      "PASS vertical dropdown; leaving closes expanded sections; keyboard focus retains menu. Synthetic IPC only.",
+    );
+    return;
+  }
   await page.addInitScript(installFixture);
   if (process.env.UI_ONLY_VIEWPORT === "1") {
     await testAdaptiveViewports();
@@ -405,6 +454,7 @@ const fs = require("node:fs");
     );
     return;
   }
+  await testDropdownDismissal();
   const load = async () => {
     await page.goto(process.env.UI_URL || "http://127.0.0.1:1420/?viewer=test");
     await page.getByAltText("远端桌面").waitFor();
@@ -794,9 +844,9 @@ const fs = require("node:fs");
     .getByRole("button", { name: "显示工具栏", exact: true })
     .press("Enter");
   await page.waitForFunction(
-    () => document.activeElement?.getAttribute("aria-label") === "画面分辨率",
+    () => document.activeElement?.getAttribute("aria-label") === "桌面设置",
   );
-  await page.getByLabel("画面分辨率", { exact: true }).press("Tab");
+  await page.getByLabel("桌面设置", { exact: true }).press("Tab");
   await page.waitForTimeout(2500);
   assert(await page.locator(".viewer-toolbar").isVisible());
   assert(
@@ -971,18 +1021,24 @@ const fs = require("node:fs");
       .waitFor({ state: "hidden" });
   }
   await revealToolbar();
+  if ((await page.locator(".viewer-settings").getAttribute("open")) === null)
+    await page.getByLabel("桌面设置", { exact: true }).click();
   await page.getByLabel("画面分辨率").selectOption("3");
   await page.waitForFunction(() => window.fixture.video.profile === 3);
   await page
     .getByText("正在切换画面分辨率…", { exact: true })
     .waitFor({ state: "hidden" });
   await revealToolbar();
+  if ((await page.locator(".viewer-settings").getAttribute("open")) === null)
+    await page.getByLabel("桌面设置", { exact: true }).click();
   await page.getByLabel("画面分辨率").selectOption("2");
   await page.waitForFunction(() => window.fixture.video.profile === 2);
   await page
     .getByText("正在切换画面分辨率…", { exact: true })
     .waitFor({ state: "hidden" });
   await revealToolbar();
+  if ((await page.locator(".viewer-settings").getAttribute("open")) === null)
+    await page.getByLabel("桌面设置", { exact: true }).click();
   await page.getByLabel("画面分辨率").selectOption("0");
   await page.waitForFunction(() =>
     window.fixture.calls.some(
@@ -994,6 +1050,8 @@ const fs = require("node:fs");
     .waitFor({ state: "hidden" });
   assert.equal(await page.getByLabel("画面分辨率").inputValue(), "0");
   await revealToolbar();
+  if ((await page.locator(".viewer-settings").getAttribute("open")) === null)
+    await page.getByLabel("桌面设置", { exact: true }).click();
   await page.getByLabel("画面分辨率").selectOption("1");
   await page
     .getByText("正在切换画面分辨率…", { exact: true })
