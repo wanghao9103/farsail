@@ -287,6 +287,10 @@ fn real_system_tools_through_broker() {
     probe
         .refresh()
         .expect("authenticated SYSTEM capture and desktop witness");
+    assert!(
+        probe.input.uses_system_broker(),
+        "input must use the authenticated SYSTEM broker, not local administrator fallback"
+    );
     let cases = [
         (
             "Task Manager",
@@ -431,7 +435,7 @@ fn real_system_tools_through_broker() {
                 thread::sleep(Duration::from_millis(100));
             }
             Ok(
-                serde_json::json!({"image":window.image,"pid":window.pid,"frame_width":dimensions.0,"frame_height":dimensions.1,"launch":"passed","service_capture":"passed","service_mouse_activation":"passed","service_keyboard_close":"passed"}),
+                serde_json::json!({"image":window.image,"pid":window.pid,"frame_width":dimensions.0,"frame_height":dimensions.1,"launch":"passed","input_broker_authenticated":true,"service_capture":"passed","service_mouse_activation":"passed","service_keyboard_close":"passed"}),
             )
         })();
         let diagnostics = if result.is_err() {

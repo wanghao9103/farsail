@@ -101,6 +101,11 @@ pub struct InputSink {
     desktop_layout: u64,
 }
 impl InputSink {
+    #[cfg(test)]
+    pub(crate) fn uses_system_broker(&mut self) -> bool {
+        self.init();
+        self.system.is_some()
+    }
     pub fn bind_desktop(&mut self, desktop: &[u16], layout: u64) {
         self.desktop = desktop.to_vec();
         self.desktop_layout = layout;
