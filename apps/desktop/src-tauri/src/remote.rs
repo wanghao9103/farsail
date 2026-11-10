@@ -1259,11 +1259,15 @@ impl RemoteRuntime {
                                         format!("打开任务管理器前无法释放远端按键：{e}")
                                     });
                                     let live = live.clone();
+                                    let client = self.client.clone();
                                     tokio::spawn(async move {
                                         let worker = live.clone();
                                         let result = tokio::task::spawn_blocking(move || {
                                             released?;
-                                            if !worker.active() || !worker.session.is_open_now() {
+                                            if !worker.active()
+                                                || !client.hosting_enabled()
+                                                || !worker.session.is_open_now()
+                                            {
                                                 return Err("远程连接已结束".into());
                                             }
                                             farsail_windows::task_manager::open()
