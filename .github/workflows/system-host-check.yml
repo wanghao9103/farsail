@@ -1,0 +1,24 @@
+name: System desktop host boundary
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  package:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.93.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-preview
+          cache-on-failure: true
+      - name: Build system host
+        shell: pwsh
+        run: cargo build --locked --release -p farsail-windows --bin farsail-system-host
+      - name: Validate session agent and capture
+        shell: pwsh
+        run: ./scripts/test-system-host.ps1
