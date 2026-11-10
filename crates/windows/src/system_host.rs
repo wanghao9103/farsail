@@ -1023,7 +1023,7 @@ mod tests {
                 let h = unsafe {
                     CreateFileW(
                         name.as_ptr(),
-                        GENERIC_READ,
+                        GENERIC_READ | FILE_WRITE_ATTRIBUTES,
                         0,
                         null(),
                         OPEN_EXISTING,
