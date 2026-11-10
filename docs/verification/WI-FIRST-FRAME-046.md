@@ -38,3 +38,11 @@ The final requested interaction replaces the horizontal controls row with a narr
 ## Build registry recovery
 
 Earlier cloud jobs failed with HTTP 504 while downloading yallist 3.1.1 from the npmmirror URL embedded in the lockfile. The 142 resolved mirror URLs now use the official npm registry; versions, integrity fields and all other parsed lockfile data are unchanged. An isolated manifest-only npm ci completed in 18 seconds, and the official yallist tarball matches the original SHA-512 integrity. Historical failed jobs remain evidence; the final source must complete cloud checks separately.
+
+## Final published verification — 0.1.44
+
+Desktop 0.1.44 is stable and GitHub Latest, built from `cb53fc264d53bc59173cead5754cbe5fd18f9505` in workflow 42756416906. All three native package jobs and both complete browser gates (Windows Edge and Linux WebKit) passed on that source. The focus regression now requires focus to remain inside the toolbar before retaining it; stale keyboard mode after focus leaves no longer prevents mouse dismissal. Test fixtures leave the toolbar before clicking remote pixels, without forced clicks. Publication waits for both browser gates.
+
+Independent anonymous-download verification passed for all 12 immutable assets, 11 checksums, three updater signatures and exact reconstruction of all 12 publication files. The canonical update feed matches the versioned manifest. A failed publication-only attempt was retained and only that job retried; asset identities and digests stayed unchanged. The earlier 0.1.43 candidate remains an immutable prerelease. Android 0.1.16 is stable from `fa9a5a69570194da2fc0d9da9fc939818476810a`, workflow 42748184815; its four assets, APK certificate, alignment and canonical feed passed independent checks.
+
+Evidence: `.local/client-public-0.1.44/delivery-verification.json` and `.local/android-public-0.1.16/final-verification.json`. These cloud/package checks supplement the historical local limits above. Physical Windows UAC approval/refusal, OPPO/ColorOS first-frame latency, installed-client updates and WAN performance remain untested. UAC still requires local consent.

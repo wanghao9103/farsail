@@ -4,7 +4,7 @@
 
 ## 用户安装什么
 
-更新通道现已推进至 [0.1.30](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.30)，由[正式工作流](https://github.com/wanghao9103/farsail/actions/runs/39719518066)从 `cce49b2a1c1afeedf2d13eea6db6c96529e54258` 构建。同源的三平台原生/安装检查，以及桌面、更新、文件和远控全部界面套件通过。12 份公开附件与重建结果一致，签名和摘要核验通过，普通固定更新清单与版本清单逐字一致。本版改善认证键盘操作、刷新与批准状态、文件页引导和远控焦点，并精简重复文案。打开**共享与设置 → 软件更新 → 检查更新**，结束连接后安装。真实已安装客户端跨版本更新、物理双机及交互式 UAC 仍待验收。
+更新通道现已推进至 [0.1.44](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.44)，由[正式工作流](https://github.com/wanghao9103/farsail/actions/runs/42756416906)从 `cb53fc264d53bc59173cead5754cbe5fd18f9505` 构建。本版提供鼠标离开后收起的竖向菜单、独立切换屏幕按钮、首帧等待说明及 Windows 系统桌面切换后的有限恢复；配合[安卓 0.1.16](https://github.com/wanghao9103/farsail/releases/tag/android-v0.1.16) 修复静止屏幕首帧。12 份公开附件、更新签名、安装报告及普通固定更新清单核验通过。打开**共享与设置 → 软件更新 → 检查更新**，结束连接后安装。真实 UAC/OPPO 与已安装客户端跨版本更新仍待验收，详见[证据与边界](verification/WI-FIRST-FRAME-046.zh-CN.md)。
 
 GitHub Actions 构建 Windows x64 NSIS 安装包，以及 Ubuntu x64、ARM64 Debian 包。发布成功后，三种安装包都会放到对应版本的客户端 Release；Actions 附件只是临时构建产物，不是更新通道。旧客户端没有更新器，需要手动安装一次首个支持更新的版本。服务端升级包不会升级桌面应用。
 
