@@ -435,6 +435,17 @@ const fs = require("node:fs");
       await dropdown.locator(".viewer-toolbar").isVisible(),
       "keyboard focus keeps the menu available",
     );
+    await dropdown.locator(".remote-screen").focus();
+    await dropdown.locator(".viewer-toolbar").hover();
+    await dropdown.mouse.move(950, 600);
+    await dropdown
+      .locator(".viewer-toolbar")
+      .waitFor({ state: "hidden", timeout: 2500 });
+    assert.equal(
+      await dropdown.locator(".viewer-toolbar details[open]").count(),
+      0,
+      "old keyboard modality cannot retain a menu whose focus has left",
+    );
     await dropdown.close();
   }
   if (process.env.UI_DROPDOWN_ONLY === "1") {

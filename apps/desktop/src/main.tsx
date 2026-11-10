@@ -4476,11 +4476,11 @@ function Viewer({
             toolbarHovered.current = false;
             const focused = document.activeElement;
             toolbarFocused.current =
-              toolbarKeyboard.current ||
-              (toolbar.current?.contains(focused) === true &&
-                ((focused instanceof HTMLInputElement &&
+              toolbar.current?.contains(focused) === true &&
+              (toolbarKeyboard.current ||
+                (focused instanceof HTMLInputElement &&
                   focused.type === "text") ||
-                  focused instanceof HTMLSelectElement));
+                focused instanceof HTMLSelectElement);
             scheduleHide(650);
           }}
         >
