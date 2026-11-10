@@ -880,15 +880,14 @@ impl RemoteRuntime {
                             );
                             break;
                         }
-                        worker_live
-                            .input
-                            .lock()
-                            .unwrap()
-                            .bind_desktop(capture.as_ref().unwrap().desktop_context());
                         frame.meta.layout = activate_capture(
                             &current,
                             &layout,
                             capture.as_ref().unwrap().display(),
+                        );
+                        worker_live.input.lock().unwrap().bind_desktop(
+                            capture.as_ref().unwrap().desktop_context(),
+                            frame.meta.layout,
                         );
                         capture_has_frame = true;
                         recovery.frame(std::time::Instant::now());

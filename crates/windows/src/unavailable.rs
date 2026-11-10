@@ -35,7 +35,7 @@ pub struct InputSink {
     _private: (),
 }
 impl InputSink {
-    pub fn bind_desktop(&mut self, _desktop: &[u16]) {}
+    pub fn bind_desktop(&mut self, _desktop: &[u16], _layout: u64) {}
     pub fn apply(&mut self, _input: Input, _display: Option<&Display>, _layout: u64) -> Result<()> {
         Err(unsupported())
     }

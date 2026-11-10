@@ -98,10 +98,12 @@ pub struct InputSink {
     local: native::InputSink,
     initialized: bool,
     desktop: Vec<u16>,
+    desktop_layout: u64,
 }
 impl InputSink {
-    pub fn bind_desktop(&mut self, desktop: &[u16]) {
+    pub fn bind_desktop(&mut self, desktop: &[u16], layout: u64) {
         self.desktop = desktop.to_vec();
+        self.desktop_layout = layout;
     }
     fn init(&mut self) {
         if !self.initialized {
@@ -112,6 +114,9 @@ impl InputSink {
     pub fn apply(&mut self, input: Input, display: Option<&Display>, layout: u64) -> Result<()> {
         self.init();
         if let Some(c) = &mut self.system {
+            if layout == 0 || layout != self.desktop_layout {
+                return Err(Error::Geometry);
+            }
             return match c.request(&Request::Input {
                 input,
                 display: display.cloned(),

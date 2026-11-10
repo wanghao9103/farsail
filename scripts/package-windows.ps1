@@ -19,15 +19,16 @@ Run { npm.cmd ci }
 Run { npm.cmd run typecheck }
 Run { cargo fmt --all -- --check }
 Run { cargo build --locked --release -p farsail-windows --bin farsail-system-host }
-# Native updater fixes the NSIS target explicitly. Preserve the established installed EXE digest check.
-if ($env:TAURI_SIGNING_PRIVATE_KEY) {
-    Run { npm.cmd run --workspace @farsail/desktop tauri build -- --bundles nsis --no-binary-patching -- --locked }
-} else {
-    # CI preview builds never receive a production signing key.
-    $previewConfig = Join-Path $PWD '.local/windows-package/preview-config.json'
-    '{"bundle":{"createUpdaterArtifacts":false}}' | Set-Content $previewConfig -Encoding utf8
-    Run { npm.cmd run --workspace @farsail/desktop tauri build -- --bundles nsis --no-binary-patching --config $previewConfig -- --locked }
-}
+# Only package builds embed the release helper. Ordinary cargo test/debug builds
+# must not depend on an unrelated release output existing first.
+$serviceResources = @{}
+$serviceResources[(Join-Path $PWD 'target/release/farsail-system-host.exe')] = 'farsail-system-host.exe'
+$bundleOverride = @{ bundle = @{ resources = $serviceResources } }
+if (!$env:TAURI_SIGNING_PRIVATE_KEY) { $bundleOverride.bundle.createUpdaterArtifacts = $false }
+$serviceConfig = Join-Path $PWD '.local/windows-package/service-bundle.json'
+$bundleOverride | ConvertTo-Json -Depth 5 | Set-Content $serviceConfig -Encoding utf8
+# Native updater fixes the NSIS target explicitly. Preserve installed EXE digests.
+Run { npm.cmd run --workspace @farsail/desktop tauri build -- --bundles nsis --no-binary-patching --config $serviceConfig -- --locked }
 $config = Get-Content apps/desktop/src-tauri/tauri.conf.json -Raw | ConvertFrom-Json
 $name = "FarSail_$($config.version)_x64-setup.exe"
 $installer = Join-Path $PWD "target/release/bundle/nsis/$name"
