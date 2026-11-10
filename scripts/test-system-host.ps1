@@ -19,7 +19,7 @@ try {
 } catch {
     Get-CimInstance Win32_Service -Filter "Name='FarSailDesktopHost'" | Format-List Name,State,StartName,PathName,ProcessId,ExitCode
     Get-CimInstance Win32_Process -Filter "Name='farsail-system-host.exe'" | Format-List ProcessId,ParentProcessId,SessionId,CommandLine
-    Get-WinEvent -FilterHashtable @{LogName='Application'; ProviderName='FarSailDesktopHost'} -MaxEvents 20 -ErrorAction SilentlyContinue | Format-List TimeCreated,Message
+    Get-WinEvent -LogName Application -MaxEvents 200 -ErrorAction SilentlyContinue | Where-Object ProviderName -eq 'FarSailDesktopHost' | Format-List TimeCreated,Message,@{Name='RawData';Expression={$_.Properties.Value -join '; '}}
     throw
 } finally {
     $p=Start-Process $exe -ArgumentList '--uninstall' -PassThru -Wait

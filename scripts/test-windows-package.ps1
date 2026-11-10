@@ -163,7 +163,7 @@ try {
     $probe = Start-Process $hostExe -ArgumentList '--probe' -PassThru -Wait
     if ($probe.ExitCode -ne 0) {
         Get-CimInstance Win32_Service -Filter "Name='FarSailDesktopHost'" | Format-List *
-        Get-WinEvent -FilterHashtable @{LogName='Application'; ProviderName='FarSailDesktopHost'} -MaxEvents 8 -ErrorAction SilentlyContinue | Format-List TimeCreated,Message
+        Get-WinEvent -LogName Application -MaxEvents 200 -ErrorAction SilentlyContinue | Where-Object ProviderName -eq 'FarSailDesktopHost' | Format-List TimeCreated,Message,@{Name='RawData';Expression={$_.Properties.Value -join '; '}}
         throw 'Authenticated system-host capture probe failed'
     }
     # PowerShell is not an allowed broker client, even in an elevated shell.
