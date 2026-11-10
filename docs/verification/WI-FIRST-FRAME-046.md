@@ -26,3 +26,7 @@ Evidence directory: `.local/capture-first-frame-20261110/`.
 ## Limits
 
 Full local Linux desktop tests could not run without GTK/GIO development libraries. Full Windows desktop cross-checking could not finish without the MinGW C compiler. Cloud results must be checked separately before claiming those checks passed. Physical OPPO/ColorOS, Windows UAC approval/refusal, locking with held inputs, two-device WAN latency and installation on personal devices are not covered by local synthetic checks. A cached bootstrap image is the last capture, not a new measurement of current pixels or final presentation latency.
+
+## Compact title bar follow-up
+
+Before publishing, the user requested a closer match to the reference title bar. Desktop title height changes from 36 px to 28 px; the toolbar reveal handle changes from 50 × 22 px to 36 × 16 px and remains directly below the title bar. Tab and window controls shrink together. Fullscreen keeps its existing zero title-height rule. A Chromium synthetic check confirms dimensions and keyboard expansion; the complete suite is being re-run against frozen styles. The earlier desktop candidate was cancelled before publication; its source and cancellation evidence are retained. Android continues from its already tagged source because this follow-up changes desktop CSS only.

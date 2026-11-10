@@ -1620,7 +1620,11 @@ td {
 }
 
 /* Compact session workspace: tabs stay visible; controls float over the canvas. */
+.viewer-window:not(.viewer-fullscreen) {
+  --viewer-title-height: 28px;
+}
 .viewer-titlebar {
+  height: var(--viewer-title-height);
   background: #1b1d21;
   border-bottom-color: #34363c;
 }
@@ -1647,7 +1651,8 @@ td {
   place-items: center;
   flex: 0 0 22px;
   width: 22px;
-  height: 35px;
+  height: 27px;
+  min-height: 0;
   padding: 0;
   border: 0;
   border-radius: 0;
@@ -1670,7 +1675,8 @@ td {
 }
 .viewer-tab-menu-trigger {
   width: 30px;
-  height: 35px;
+  height: 27px;
+  min-height: 0;
   display: grid;
   place-items: center;
   color: #b7c1c9;
@@ -1818,8 +1824,8 @@ td {
   color: #a0e5d6;
 }
 .viewer-tab {
-  flex: 1 1 218px;
-  max-width: 218px;
+  flex: 1 1 208px;
+  max-width: 208px;
   min-width: 100px;
   margin-top: 0;
   border-radius: 0;
@@ -1836,7 +1842,8 @@ td {
   display: flex;
   align-items: center;
   gap: 8px;
-  height: 35px;
+  height: 27px;
+  min-height: 0;
   padding: 0 10px;
 }
 .viewer-tab-icon {
@@ -1854,8 +1861,9 @@ td {
 }
 .viewer-add {
   flex: none;
-  width: 36px;
-  height: 35px;
+  width: 30px;
+  height: 27px;
+  min-height: 0;
   display: grid;
   place-items: center;
   border: 0;
@@ -1884,6 +1892,20 @@ td {
 }
 .viewer-titlebar .window-controls {
   flex: none;
+}
+.viewer-titlebar .window-controls button {
+  width: 40px;
+  height: 27px;
+  min-height: 0;
+  padding: 0;
+}
+.viewer-titlebar .viewer-tab-close {
+  height: 27px;
+  min-height: 0;
+}
+.viewer-titlebar .window-controls svg {
+  width: 14px;
+  height: 14px;
 }
 .viewer-window .viewer-toolbar {
   inset: calc(var(--viewer-title-height) + 10px) auto auto 50%;
@@ -1963,17 +1985,18 @@ td {
   max-width: 130px;
 }
 .viewer-reveal {
-  width: 50px;
-  height: 22px;
+  width: 36px;
+  height: 16px;
+  min-height: 0;
   display: grid;
   place-items: center;
   padding: 0;
-  border-radius: 0 0 12px 12px;
+  border-radius: 0 0 8px 8px;
   background: #22272ee8;
 }
 .viewer-reveal svg {
-  width: 16px;
-  height: 16px;
+  width: 12px;
+  height: 12px;
 }
 .viewer-window .viewer-popover {
   right: 0;
