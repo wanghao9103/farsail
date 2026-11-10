@@ -467,11 +467,13 @@ const fs = require("node:fs");
   const revealToolbar = async () => {
     // A visibility check can race the auto-hide timer. Start from the hidden
     // state, then keep the pointer over the toolbar while interacting with it.
+    // The screen centre can be inside the new vertical dropdown; its far
+    // bottom-right corner stays outside both collapsed and expanded menus.
     const screen = await page.locator(".remote-screen").boundingBox();
     assert(screen);
     await page.mouse.move(
-      screen.x + screen.width / 2,
-      screen.y + screen.height / 2,
+      screen.x + screen.width - 8,
+      screen.y + screen.height - 8,
     );
     await page.locator(".remote-screen").focus();
     await page.locator(".viewer-toolbar").waitFor({ state: "hidden" });
