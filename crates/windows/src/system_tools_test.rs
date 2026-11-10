@@ -152,6 +152,16 @@ impl Probe {
                 })?;
             }
             thread::sleep(Duration::from_millis(200));
+            let mut cursor: POINT = std::mem::zeroed();
+            if GetCursorPos(&mut cursor) == 0
+                || (cursor.x - x).abs() > 2
+                || (cursor.y - y).abs() > 2
+            {
+                return Err("broker mouse did not reach the target title bar".into());
+            }
+            if GetAncestor(WindowFromPoint(cursor), GA_ROOT) != window.handle {
+                return Err("target title bar is covered by another window".into());
+            }
             let mut pid = 0;
             GetWindowThreadProcessId(GetForegroundWindow(), &mut pid);
             if pid != window.pid {
@@ -257,7 +267,7 @@ fn real_system_tools_through_broker() {
             probe.click_title(&window)?;
             probe.keys(&[(0xa4, true), (0x73, true), (0x73, false), (0xa4, false)])?;
             let until = Instant::now() + Duration::from_secs(5);
-            while unsafe { IsWindow(window.handle) } != 0 {
+            while unsafe { IsWindow(window.handle) != 0 && IsWindowVisible(window.handle) != 0 } {
                 if Instant::now() >= until {
                     return Err("remote Alt+F4 did not close target window".into());
                 }
