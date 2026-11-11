@@ -258,9 +258,9 @@ fn ended_message(reason: &str) -> &'static str {
     match reason {
         "media_timeout" => "画面传输连续超时，正在等待重新授权连接",
         "network_timeout" => "网络连接中断，正在等待重新授权连接",
-        "lease_expired" => "授权租约到期，已停止画面和输入；请检查协调服务连接",
+        "lease_expired" => "授权续期超时，已停止画面和输入，正在重新申请连接",
         "authorization_failed" => "授权检查失败或已被撤销，会话已安全结束",
-        "renewal_failed" => "授权续期失败，会话已安全结束；请检查双方到协调服务的连接",
+        "renewal_failed" => "授权续期中断，已停止画面和输入，正在重新申请连接",
         "input_failed" => "被控端无法执行输入；请检查窗口权限、UAC 或桌面切换",
         "input_sequence" => "输入消息缺失或顺序异常，会话已安全结束",
         "desktop_unavailable" => "被控端仍处于系统安全桌面或锁屏，请在本地处理后重新连接",
@@ -270,7 +270,12 @@ fn ended_message(reason: &str) -> &'static str {
     }
 }
 fn retryable_end(reason: &str) -> bool {
-    matches!(reason, "network_timeout" | "media_timeout")
+    // Recovery requests a fresh coordinator decision; expired grants stay closed.
+    // Explicit authorization failures and user stops remain terminal.
+    matches!(
+        reason,
+        "network_timeout" | "media_timeout" | "lease_expired" | "renewal_failed"
+    )
 }
 
 /// Independent QUIC streams can arrive out of order. Retain at most 32 small
@@ -2481,11 +2486,30 @@ mod tests {
             "stopped",
             "input_failed",
             "authorization_failed",
-            "lease_expired",
-            "renewal_failed",
             "session_ended",
         ] {
             assert!(!retryable_end(reason));
+        }
+    }
+
+    #[test]
+    fn interrupted_lease_can_request_fresh_authorization_but_revocation_cannot() {
+        for reason in [
+            "lease_expired",
+            "renewal_failed",
+            "network_timeout",
+            "media_timeout",
+        ] {
+            assert!(retryable_end(reason), "{reason}");
+        }
+        for reason in [
+            "authorization_failed",
+            "stopped",
+            "session_ended",
+            "capture_failed",
+            "input_failed",
+        ] {
+            assert!(!retryable_end(reason), "{reason}");
         }
     }
 

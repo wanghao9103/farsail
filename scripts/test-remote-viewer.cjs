@@ -509,6 +509,63 @@ const fs = require("node:fs");
     await page.goto(process.env.UI_URL || "http://127.0.0.1:1420/?viewer=test");
     await page.getByAltText("远端桌面").waitFor();
   };
+  async function testLeaseRecovery() {
+    for (const reason of ["lease_expired", "renewal_failed"]) {
+      await load();
+      await page.evaluate((reason) => {
+        window.fixture.endReason = reason;
+        window.fixture.retryable = true;
+        window.fixture.reconnectSuccess = true;
+        window.fixture.closed = true;
+      }, reason);
+      await page.waitForFunction(() =>
+        window.fixture.calls.some((c) => c.cmd === "viewer_reconnect"),
+      );
+      assert.equal(
+        await page.evaluate(
+          () =>
+            window.fixture.calls.find((c) => c.cmd === "viewer_reconnect").args
+              .manual,
+        ),
+        false,
+        `${reason} must request fresh authorization automatically`,
+      );
+      await page.getByAltText("远端桌面").waitFor();
+    }
+    for (const reason of ["authorization_failed", "input_failed", "stopped"]) {
+      await load();
+      await page.evaluate((reason) => {
+        window.fixture.closed = true;
+        window.fixture.endReason = reason;
+      }, reason);
+      await page.getByText("连接已结束", { exact: true }).waitFor();
+      assert.equal(
+        await page
+          .getByRole("button", { name: "重试连接", exact: true })
+          .count(),
+        0,
+        reason,
+      );
+      assert.equal(
+        await page.evaluate(
+          () =>
+            window.fixture.calls.filter((c) => c.cmd === "viewer_reconnect")
+              .length,
+        ),
+        0,
+        reason,
+      );
+    }
+  }
+  if (process.env.UI_ONLY_LEASE_RECOVERY === "1") {
+    await testLeaseRecovery();
+    assert.deepEqual(errors, []);
+    await browser.close();
+    console.log(
+      "PASS lease expiry and renewal interruption recover automatically; revocation and stop stay terminal. Synthetic IPC only.",
+    );
+    return;
+  }
   const switchWindow = () =>
     page.getByRole("button", {
       name: "切换远端窗口（Alt+Tab）",
@@ -2039,34 +2096,7 @@ const fs = require("node:fs");
     1,
     "a new capture failure after successful manual recovery needs another explicit click",
   );
-  for (const reason of [
-    "authorization_failed",
-    "lease_expired",
-    "renewal_failed",
-    "input_failed",
-    "stopped",
-  ]) {
-    await load();
-    await page.evaluate((reason) => {
-      window.fixture.closed = true;
-      window.fixture.endReason = reason;
-    }, reason);
-    await page.getByText("连接已结束", { exact: true }).waitFor();
-    assert.equal(
-      await page.getByRole("button", { name: "重试连接", exact: true }).count(),
-      0,
-      reason,
-    );
-    assert.equal(
-      await page.evaluate(
-        () =>
-          window.fixture.calls.filter((c) => c.cmd === "viewer_reconnect")
-            .length,
-      ),
-      0,
-      reason,
-    );
-  }
+  await testLeaseRecovery();
   await load();
   await page.evaluate(() => (window.fixture.video.max_profile = 1));
   await page.waitForFunction(
