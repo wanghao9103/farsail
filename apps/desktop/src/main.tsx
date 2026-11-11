@@ -5079,7 +5079,7 @@ function Viewer({
                 <>
                   <p>
                     {status?.platform === "android"
-                      ? "暂未收到手机画面，可在此重新连接。若手机使用系统录屏且授权已被系统结束，远程重连无法重新授予录屏权限；无人值守需预先启用辅助功能截图。"
+                      ? "暂未收到手机画面，可在此重新连接。Android 10 使用系统录屏；若录屏授权已被系统结束，远程重连无法重新授予。辅助功能截图仅支持 Android 11 及以上。"
                       : "请检查被控端是否有 UAC 提示或已锁屏，处理后若仍无画面，请重试连接。"}
                   </p>
                   <button className="secondary" onClick={reconnect}>
