@@ -363,16 +363,25 @@ internal class FakeCoordinator(private val rejectSharing: Boolean = false) : jav
     val heartbeats = java.util.concurrent.atomic.AtomicInteger(0)
     val rejectHeartbeats = AtomicBoolean(false)
     val heartbeatFailure = java.util.concurrent.atomic.AtomicInteger(0)
+    val dropHeartbeatResponses = AtomicBoolean(false)
+    val holdHeartbeatResponses = AtomicBoolean(false)
+    val heartbeatHeld = java.util.concurrent.CountDownLatch(1)
+    val releaseHeartbeats = java.util.concurrent.CountDownLatch(1)
+    val slowMe = AtomicBoolean(false)
+    val meSeen = java.util.concurrent.CountDownLatch(1)
+    val releaseMe = java.util.concurrent.CountDownLatch(1)
+    val successfulHeartbeatTimes = java.util.concurrent.ConcurrentLinkedQueue<Long>()
     val requestReady = AtomicBoolean(false)
     val inputReady = AtomicBoolean(false)
     val approved = AtomicBoolean(false)
     val foreignApproved = AtomicBoolean(false)
     val endpoint = java.util.concurrent.atomic.AtomicReference<JSONObject?>()
     private val source = InstrumentationRegistry.getArguments().getString("sourceKey", "")
+    private val workers = java.util.concurrent.Executors.newCachedThreadPool { task -> Thread(task, "fake-coordinator-request").apply { isDaemon = true } }
     private val thread = Thread {
         while (!socket.isClosed) {
             val client = try { socket.accept() } catch (_: Exception) { break }
-            client.use {
+            try { workers.execute { client.use {
                 try {
                     val input = it.getInputStream()
                     fun line(): String {
@@ -389,14 +398,19 @@ internal class FakeCoordinator(private val rejectSharing: Boolean = false) : jav
                     val response = when (path.substringBefore('?')) {
                         "/probe/input-ready" -> JSONObject().put("ready", inputReady.get()).toString()
                         "/v1/auth/login", "/v1/auth/refresh" -> """{"access_token":"synthetic-access","refresh_token":"synthetic-refresh","session_id":"10000000-0000-4000-8000-000000000001","access_expires_in":900}"""
-                        "/v1/me" -> """{"id":"20000000-0000-4000-8000-000000000001","email":"android-smoke@example.invalid","email_verified":true,"role":"user"}"""
+                        "/v1/me" -> {
+                            if (slowMe.get()) { meSeen.countDown(); releaseMe.await() }
+                            """{"id":"20000000-0000-4000-8000-000000000001","email":"android-smoke@example.invalid","email_verified":true,"role":"user"}"""
+                        }
                         "/v1/devices/challenge" -> """{"challenge_id":"30000000-0000-4000-8000-000000000001","message":"synthetic-binding-challenge"}"""
                         "/v1/devices/bind" -> { androidBound.set(body.optString("platform") == "android" && body.optString("signature").length == 128); """{"id":"40000000-0000-4000-8000-000000000001","device_token":"synthetic-device"}""" }
                         "/v1/devices/heartbeat" -> {
                             heartbeats.incrementAndGet()
+                            if (dropHeartbeatResponses.get()) { it.close(); throw java.io.IOException("synthetic disconnected socket") }
+                            if (holdHeartbeatResponses.get()) { heartbeatHeld.countDown(); releaseHeartbeats.await() }
                             if (heartbeatFailure.get() != 0) { status = heartbeatFailure.get(); """{"error":"temporary"}""" }
                             else if (rejectHeartbeats.get()) { status = 403; """{"error":"forbidden"}""" }
-                            else """{"generation":1,"expires_in":60}"""
+                            else { successfulHeartbeatTimes.add(android.os.SystemClock.elapsedRealtime()); """{"generation":1,"expires_in":60}""" }
                         }
                         "/v1/devices" -> "[]"
                         "/v1/devices/capability" -> if (rejectSharing && body.optBoolean("can_host")) { status = 409; """{"error":"conflict"}""" } else { hosting.set(body.optBoolean("can_host")); "{}" }
@@ -411,8 +425,11 @@ internal class FakeCoordinator(private val rejectSharing: Boolean = false) : jav
                     }.toByteArray()
                     it.getOutputStream().write("HTTP/1.1 $status Result\r\nContent-Type: application/json\r\nContent-Length: ${response.size}\r\nConnection: close\r\n\r\n".toByteArray() + response)
                 } catch (_: Exception) { }
-            }
+            } } } catch (_: java.util.concurrent.RejectedExecutionException) { client.close() }
         }
     }.apply { isDaemon = true; start() }
-    override fun close() { socket.close(); thread.join(2000) }
+    override fun close() {
+        socket.close(); releaseMe.countDown(); releaseHeartbeats.countDown()
+        workers.shutdownNow(); thread.join(2000)
+    }
 }

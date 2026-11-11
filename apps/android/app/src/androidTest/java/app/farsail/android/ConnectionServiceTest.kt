@@ -108,6 +108,87 @@ class ConnectionServiceTest {
         app.io.submit { }.get(15, java.util.concurrent.TimeUnit.SECONDS)
         assertFalse(ConnectionService.running)
     }
+    private fun scenarioReport(name: String, fields: JSONObject) {
+        fields.put("scenario", name).put("sdk", android.os.Build.VERSION.SDK_INT)
+        inst.sendStatus(0, android.os.Bundle().apply { putString("scenarioEvidence", fields.toString()) })
+    }
+    @Test fun threeMinuteScreenOffAndBusinessBlockKeepHeartbeatsFresh() = withFixture { coordinator ->
+        device.pressHome(); await { app.observer == null }; device.sleep()
+        await { !context.getSystemService(PowerManager::class.java).isInteractive }
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val task = app.io.submit { entered.countDown(); release.await() }
+        check(entered.await(10, java.util.concurrent.TimeUnit.SECONDS))
+        val before = coordinator.successfulHeartbeatTimes.size
+        val started = SystemClock.elapsedRealtime()
+        var maxAge = 0L
+        try {
+            repeat(6) {
+                Thread.sleep(30000)
+                val age = SystemClock.elapsedRealtime() - ConnectionService.lastHeartbeat
+                maxAge = maxOf(maxAge, age)
+                assertTrue("connection service survives idle", ConnectionService.running)
+                assertTrue("blocked business queue cannot consume online TTL", age < 25000)
+                scenarioReport("screen-off-business-block-progress", JSONObject().put("elapsedMs", SystemClock.elapsedRealtime()-started).put("heartbeatAgeMs", age))
+            }
+            assertFalse(context.getSystemService(PowerManager::class.java).isInteractive)
+            assertTrue("three minute idle requires continued successful heartbeats", coordinator.successfulHeartbeatTimes.size >= before + 10)
+            val times = coordinator.successfulHeartbeatTimes.toList()
+            val maxGap = times.zipWithNext { a, b -> b-a }.maxOrNull() ?: 0L
+            assertTrue("no successful-heartbeat gap may consume online lease", maxGap < 25000)
+            scenarioReport("screen-off-business-block", JSONObject().put("durationMs", SystemClock.elapsedRealtime()-started)
+                .put("successesBefore", before).put("successesAfter", times.size).put("maxSampledHeartbeatAgeMs", maxAge).put("maxSuccessfulGapMs", maxGap))
+        } finally { release.countDown(); task.get(10, java.util.concurrent.TimeUnit.SECONDS) }
+    }
+    @Test fun repeatedSocketDisconnectsRecoverWithoutRestartingService() = withFixture { coordinator ->
+        val pid = android.os.Process.myPid()
+        repeat(3) { cycle ->
+            val previous = ConnectionService.lastHeartbeat
+            val attempted = coordinator.heartbeats.get()
+            coordinator.dropHeartbeatResponses.set(true)
+            try {
+                await { coordinator.heartbeats.get() > attempted && !ConnectionService.detail.startsWith("设备在线") }
+                assertTrue(ConnectionService.running)
+                assertEquals("disconnected response is not a successful heartbeat", previous, ConnectionService.lastHeartbeat)
+            } finally { coordinator.dropHeartbeatResponses.set(false) }
+            await { ConnectionService.lastHeartbeat > previous && ConnectionService.detail.startsWith("设备在线") }
+            assertEquals(pid, android.os.Process.myPid())
+            scenarioReport("socket-disconnect-recovery", JSONObject().put("cycle", cycle+1).put("sameProcess", true).put("running", ConnectionService.running))
+        }
+    }
+    @Test fun actualSlowAccountHttpDoesNotBlockStandbyHeartbeats() = withFixture { coordinator ->
+        await { SystemClock.elapsedRealtime()-ConnectionService.lastHeartbeat >= 5000 }
+        coordinator.slowMe.set(true)
+        val business = app.io.submit { app.invoke("resume") }
+        try {
+            assertTrue(coordinator.meSeen.await(10, java.util.concurrent.TimeUnit.SECONDS))
+            val previous = ConnectionService.lastHeartbeat
+            await { ConnectionService.lastHeartbeat > previous }
+            assertFalse("account HTTP must still be awaiting its reply", business.isDone)
+            assertTrue(ConnectionService.running)
+            scenarioReport("slow-account-http", JSONObject().put("heartbeatArrivedBeforeBusinessReply", true).put("heartbeatAgeMs", SystemClock.elapsedRealtime()-ConnectionService.lastHeartbeat))
+        } finally {
+            coordinator.slowMe.set(false); coordinator.releaseMe.countDown()
+            business.get(20, java.util.concurrent.TimeUnit.SECONDS)
+        }
+    }
+    @Test fun lateHeartbeatResponseAfterOptOutCannotRestartStandby() = withFixture { coordinator ->
+        coordinator.holdHeartbeatResponses.set(true)
+        try {
+            assertTrue(coordinator.heartbeatHeld.await(25, java.util.concurrent.TimeUnit.SECONDS))
+            inst.runOnMainSync { ConnectionService.preference(context, false) }
+            await { !ConnectionService.running }
+            val previous = ConnectionService.lastHeartbeat
+            coordinator.holdHeartbeatResponses.set(false); coordinator.releaseHeartbeats.countDown()
+            Thread.sleep(2000)
+            val requests = coordinator.heartbeats.get()
+            Thread.sleep(17000)
+            assertFalse(ConnectionService.running)
+            assertEquals("late response cannot publish success after opt out", previous, ConnectionService.lastHeartbeat)
+            assertEquals("opt out prevents subsequent heartbeat requests", requests, coordinator.heartbeats.get())
+            scenarioReport("late-response-after-opt-out", JSONObject().put("running", false).put("newRequestsAfterStop", 0).put("lateSuccessIgnored", true))
+        } finally { coordinator.holdHeartbeatResponses.set(false); coordinator.releaseHeartbeats.countDown() }
+    }
     @Test fun screenOffKeepsHeartbeatsBeyondOnlineTtlWithoutCapture() = withFixture { coordinator ->
         val state = app.invoke("state") as JSONObject
         assertFalse(CaptureService.running); assertFalse(state.optBoolean("sharing")); assertFalse(state.optBoolean("remoteWatch"))
