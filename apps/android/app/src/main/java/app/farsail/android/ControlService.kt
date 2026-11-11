@@ -14,9 +14,35 @@ class ControlService : AccessibilityService() {
     companion object {
         @Volatile var instance: ControlService? = null
             private set
-        fun cancel() { instance?.clearGesture() }
+        fun cancel() { instance?.let { it.clearGesture(); it.releaseRemoteWake() } }
     }
     private val handler = Handler(Looper.getMainLooper())
+    private var remoteWake: PowerManager.WakeLock? = null
+    private var wakeOwner = ""
+    private var wakeEpoch = -1L
+    private var wakeLayout = -1L
+    private val releaseWake = Runnable { releaseRemoteWake() }
+    @Suppress("DEPRECATION")
+    internal fun wakeLegacyScreen(command: JSONObject) {
+        if (Build.VERSION.SDK_INT !in 27..29) return
+        val owner = command.getString("session")
+        val epoch = command.getLong("epoch")
+        val layout = command.getLong("layout")
+        if (!WakeActivity.currentLease(this, owner, epoch, layout)) return
+        val power = getSystemService(PowerManager::class.java)
+        if (power.isInteractive) return
+        releaseRemoteWake()
+        val lock = power.newWakeLock(PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP, "FarSail:ControlWake")
+        lock.acquire(1500)
+        remoteWake = lock; wakeOwner = owner; wakeEpoch = epoch; wakeLayout = layout
+        handler.postDelayed(releaseWake, 1500)
+        android.util.Log.i("FarSailWake", "Authorized screen wake requested from control service")
+    }
+    private fun releaseRemoteWake() {
+        handler.removeCallbacks(releaseWake)
+        remoteWake?.let { runCatching { if (it.isHeld) it.release() } }; remoteWake = null
+        wakeOwner = ""; wakeEpoch = -1L; wakeLayout = -1L
+    }
     private var pointer: MutableList<Pair<Float, Float>>? = null
     private var pointerAt = 0L
     private var pointerOwner = ""
@@ -42,6 +68,7 @@ class ControlService : AccessibilityService() {
                         if (valid(command)) apply(command) else clearGesture()
                     }
                     if (pointerOwner.isNotEmpty() && !NativeBridge.inputValid(pointerOwner, pointerEpoch, pointerLayout)) clearGesture()
+                    if (remoteWake != null && !WakeActivity.currentLease(this@ControlService, wakeOwner, wakeEpoch, wakeLayout)) releaseRemoteWake()
                 } catch (_: Exception) { clearGesture() }
             }
             handler.postDelayed(this, 16)
@@ -184,7 +211,7 @@ class ControlService : AccessibilityService() {
     }
     private fun disconnected() {
         if (instance !== this) return
-        instance = null; RemotePreferences.suspendControl(); clearGesture(); handler.removeCallbacks(poll)
+        instance = null; RemotePreferences.suspendControl(); clearGesture(); releaseRemoteWake(); handler.removeCallbacks(poll)
         CaptureService.accessibilityRevoked(this)
         (application as FarSailApp).restoreControl()
     }
