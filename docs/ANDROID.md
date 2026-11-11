@@ -8,7 +8,7 @@ The native Android app can control a computer or another Android phone, and can 
 
 ## Install and connect
 
-The current public version is [0.1.16](https://github.com/wanghao9103/farsail/releases/tag/android-v0.1.16). Home contains device discovery and connections; sharing this phone is a Settings item. It includes the Android 10 approved-control wake path and static-screen first-frame fix. Update computer clients to 0.1.45 for the complete viewer changes. A system-revoked recording permission still requires confirmation on the phone; physical OPPO/ColorOS acceptance is pending.
+The current public version is [0.1.17](https://github.com/wanghao9103/farsail/releases/tag/android-v0.1.17). Home contains device discovery and connections; sharing this phone is a Settings item. It adds independent device heartbeats to prevent slow business requests from causing intermittent offline states, and retains the Android 10 approved-control wake path and static-screen first-frame fix. Update computer clients to 0.1.45 for the complete viewer changes. A system-revoked recording permission still requires confirmation on the phone; physical OPPO/ColorOS acceptance is pending.
 
 Upgrade the coordinator from this source before using the phone app: earlier coordinators recognize Android device identities but restrict live screen hosting to Windows and reject Android sharing with HTTP 409. This change permits Windows and Android hosts while retaining generation, live-device and approval checks; no new database migration is needed. This work does not deploy the production server automatically.
 

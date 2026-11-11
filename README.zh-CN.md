@@ -8,9 +8,9 @@
 
 # FarSail · 遥舟
 
-FarSail 是正在开发中的开源远程桌面项目，Windows 与 Ubuntu 客户端采用 Rust、Tauri 2 和 React，支持加密的 P2P 连接及自建中继。自 0.1.21 起提供双向单文件传输与 Ubuntu ARM64 客户端，0.1.22 新增更新弹窗并优化界面，当前公开版本为 [0.1.45](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.45)。旧版需要升级才能获得新增能力；原生[安卓 App](docs/ANDROID.zh-CN.md)已发布 [0.1.16](https://github.com/wanghao9103/farsail/releases/tag/android-v0.1.16)，支持控制电脑/手机、后台共享、独立账号/设置页面和签名更新。
+FarSail 是正在开发中的开源远程桌面项目，Windows 与 Ubuntu 客户端采用 Rust、Tauri 2 和 React，支持加密的 P2P 连接及自建中继。自 0.1.21 起提供双向单文件传输与 Ubuntu ARM64 客户端，0.1.22 新增更新弹窗并优化界面，当前公开版本为 [0.1.45](https://github.com/wanghao9103/farsail/releases/tag/client-v0.1.45)。旧版需要升级才能获得新增能力；原生[安卓 App](docs/ANDROID.zh-CN.md)已发布 [0.1.17](https://github.com/wanghao9103/farsail/releases/tag/android-v0.1.17)，支持控制电脑/手机、后台共享、独立账号/设置页面和签名更新。
 
-桌面 0.1.45 新增 Windows 安全桌面服务、任务管理器入口、切屏超时恢复与独立的更多操作面板。被控端需运行完整 Windows 安装包启用服务。服务采集、安装/更新/卸载及浏览器回归已通过；真实 UAC 仍待验收。安卓 0.1.16 保留静止屏幕首帧修复，详见[验证与边界](docs/verification/WI-SYSTEM-HOST-047.zh-CN.md)。
+桌面 0.1.45 新增 Windows 安全桌面服务、任务管理器入口、切屏超时恢复与独立的更多操作面板。被控端需运行完整 Windows 安装包启用服务。服务采集、安装/更新/卸载及浏览器回归已通过；真实 UAC 仍待验收。安卓 0.1.17 新增独立设备心跳，避免慢业务请求导致间歇离线，并保留静止屏幕首帧修复，详见[验证与边界](docs/verification/WI-SYSTEM-HOST-047.zh-CN.md)。
 
 0.1.23 将屏幕与文件接收开关统一为**允许远程连接**：Windows 同时开启两项能力，Ubuntu 仅开启文件能力。独立文件连接仍需批准，并由本机选择保存位置；0.1.28 起，远控会话内的文件粘贴共用本次授权。同时支持关闭主窗口后保留托盘运行；Windows 启动时通过系统 UAC 提示申请管理员权限。详情见 [Windows 启动](docs/WINDOWS_INSTALL.zh-CN.md)与[文件传输](docs/FILES.zh-CN.md)。
 
