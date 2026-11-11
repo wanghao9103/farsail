@@ -362,6 +362,7 @@ internal class FakeCoordinator(private val rejectSharing: Boolean = false) : jav
     val hosting = AtomicBoolean(false)
     val heartbeats = java.util.concurrent.atomic.AtomicInteger(0)
     val rejectHeartbeats = AtomicBoolean(false)
+    val heartbeatFailure = java.util.concurrent.atomic.AtomicInteger(0)
     val requestReady = AtomicBoolean(false)
     val inputReady = AtomicBoolean(false)
     val approved = AtomicBoolean(false)
@@ -393,7 +394,8 @@ internal class FakeCoordinator(private val rejectSharing: Boolean = false) : jav
                         "/v1/devices/bind" -> { androidBound.set(body.optString("platform") == "android" && body.optString("signature").length == 128); """{"id":"40000000-0000-4000-8000-000000000001","device_token":"synthetic-device"}""" }
                         "/v1/devices/heartbeat" -> {
                             heartbeats.incrementAndGet()
-                            if (rejectHeartbeats.get()) { status = 403; """{"error":"forbidden"}""" }
+                            if (heartbeatFailure.get() != 0) { status = heartbeatFailure.get(); """{"error":"temporary"}""" }
+                            else if (rejectHeartbeats.get()) { status = 403; """{"error":"forbidden"}""" }
                             else """{"generation":1,"expires_in":60}"""
                         }
                         "/v1/devices" -> "[]"

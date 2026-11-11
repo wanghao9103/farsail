@@ -295,8 +295,14 @@ impl DeviceSnapshot {
                 .is_some_and(|d| d.device_token == self.token)
     }
 }
+#[derive(Default)]
+struct PresenceCache {
+    revision: u64,
+    identity: Option<(String, DeviceSnapshot)>,
+}
 pub struct NativeClient {
     http: Http,
+    presence: std::sync::Mutex<PresenceCache>,
     store: Arc<dyn SecureStore>,
     state: Mutex<State>,
     transport: Mutex<Option<Transport>>,
@@ -347,6 +353,7 @@ impl NativeClient {
                 .timeout(Duration::from_secs(15))
                 .redirect(reqwest::redirect::Policy::none())
                 .build()?,
+            presence: std::sync::Mutex::new(PresenceCache::default()),
             store,
             state: Mutex::new(state),
             transport: Mutex::new(None),
@@ -872,6 +879,7 @@ impl NativeClient {
         if s.base != base {
             self.forget_sharing_preferences()?;
         }
+        self.invalidate_presence();
         self.store.write("server", base.as_bytes())?;
         s.base = base;
         Ok(json!({"server":s.base}))
@@ -979,6 +987,7 @@ impl NativeClient {
         }
     }
     fn clear_auth(&self, s: &mut State) -> Result<()> {
+        self.invalidate_presence();
         self.disable_files_local();
         let remembered = self.remember_device(s);
         s.device_restore_error = None;
@@ -1056,6 +1065,7 @@ impl NativeClient {
         let result = self.raw(s, method, path, body, Some(&token), None).await;
         if matches!(&result, Err(Error::Http(401, _))) {
             let preference = self.forget_sharing_preferences();
+            self.invalidate_presence();
             s.device = None;
             s.generation = None;
             self.store.delete("device-token")?;
@@ -1068,6 +1078,7 @@ impl NativeClient {
             return self.list_devices().await;
         }
         if op == "logout" {
+            self.invalidate_presence();
             let preferences = self.forget_sharing_preferences();
             self.signing_out.store(true, Ordering::SeqCst);
             self.cancel_tx.send_modify(|v| *v = v.wrapping_add(1));
@@ -1194,6 +1205,7 @@ impl NativeClient {
                             .is_some_and(|l| d.session_id != l.session_id)
                 }) {
                     self.forget_sharing_preferences()?;
+                    self.invalidate_presence();
                     s.device = None;
                     s.generation = None;
                     self.store.delete("device-token")?;
@@ -1246,6 +1258,7 @@ impl NativeClient {
                     )
                     .await?;
                 if s.device.as_ref().is_some_and(|d| d.id == id) {
+                    self.invalidate_presence();
                     s.device = None;
                     s.generation = None;
                     self.store.delete("device-token")?;
@@ -1471,7 +1484,55 @@ impl NativeClient {
         }
         Ok(())
     }
+    fn invalidate_presence(&self) {
+        let mut cache = self.presence.lock().unwrap();
+        cache.revision = cache.revision.wrapping_add(1);
+        cache.identity = None;
+    }
+    /// Renew only the already-established device generation. Never wait for the
+    /// account/UI state mutex, rotate credentials or enable hosting on this lane.
+    pub async fn standby_heartbeat(&self, scope: &str) -> Result<Value> {
+        let (revision, identity) = {
+            let cache = self.presence.lock().unwrap();
+            let (saved_scope, identity) = cache
+                .identity
+                .as_ref()
+                .ok_or_else(|| Error::Invalid("standby identity changed".into()))?;
+            if saved_scope != scope || self.signing_out.load(Ordering::SeqCst) {
+                return Err(Error::Invalid("standby identity changed".into()));
+            }
+            (cache.revision, identity.clone())
+        };
+        let mut cancelled = self.cancel_tx.subscribe();
+        let result = tokio::select! {
+            biased;
+            _ = cancelled.changed() => return Err(Error::Invalid("standby identity changed".into())),
+            result = self.transport_request_as(&identity, Method::POST,
+                "/v1/devices/heartbeat", None, Some(json!({"generation":identity.generation}))) => result,
+        };
+        let mut cache = self.presence.lock().unwrap();
+        if cache.revision != revision
+            || self.signing_out.load(Ordering::SeqCst)
+            || cache.identity.as_ref().is_none_or(|(_, saved)| {
+                saved.base != identity.base
+                    || saved.token != identity.token
+                    || saved.generation != identity.generation
+            })
+        {
+            return Err(Error::Invalid("standby identity changed".into()));
+        }
+        if matches!(result, Err(Error::Http(401 | 403, _))) {
+            cache.revision = cache.revision.wrapping_add(1);
+            cache.identity = None;
+        }
+        let value = result?;
+        if value["generation"].as_i64() != Some(identity.generation) {
+            return Err(Error::Invalid("unexpected heartbeat generation".into()));
+        }
+        Ok(value)
+    }
     async fn send_heartbeat(&self, s: &mut State) -> Result<Value> {
+        let revision = self.presence.lock().unwrap().revision;
         let generation = s.generation;
         let v = self
             .device(
@@ -1483,6 +1544,16 @@ impl NativeClient {
             .await?;
         s.generation = v["generation"].as_i64();
         if let Ok(current) = DeviceSnapshot::from_state(s) {
+            {
+                let mut cache = self.presence.lock().unwrap();
+                if cache.revision == revision
+                    && !self.signing_out.load(Ordering::SeqCst)
+                    && s.login.is_some()
+                {
+                    let scope = format!("{}|{}", s.base, s.device.as_ref().unwrap().id);
+                    cache.identity = Some((scope, current.clone()));
+                }
+            }
             for (_, identity) in self.transport_identities.lock().await.values_mut() {
                 if identity.base == current.base && identity.token == current.token {
                     identity.generation = current.generation;
@@ -1533,6 +1604,7 @@ impl NativeClient {
         self.forget_sharing_preferences()?;
         self.store
             .write("device-token", &serde_json::to_vec(&credential).unwrap())?;
+        self.invalidate_presence();
         s.device = Some(credential);
         s.generation = None;
         self.remember_device(s)?;
@@ -2285,6 +2357,218 @@ mod tests {
             state.expiry = Instant::now() + Duration::from_secs(3600);
         }
         (client, server, seen, release)
+    }
+    async fn prime_standby(client: &NativeClient) -> String {
+        let mut state = client.state.lock().await;
+        client.send_heartbeat(&mut state).await.unwrap();
+        format!("{}|{}", state.base, state.device.as_ref().unwrap().id)
+    }
+    #[tokio::test]
+    async fn standby_heartbeat_bypasses_a_slow_account_request() {
+        let (client, server, seen, release) = lease_fixture(30).await;
+        let scope = prime_standby(&client).await;
+        let slow = tokio::spawn({
+            let client = client.clone();
+            async move {
+                client
+                    .call(
+                        "remote_status",
+                        json!({"id":"00000000-0000-0000-0000-000000000081"}),
+                    )
+                    .await
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(2), seen.notified())
+            .await
+            .unwrap();
+        let result =
+            tokio::time::timeout(Duration::from_secs(1), client.standby_heartbeat(&scope)).await;
+        release.notify_one();
+        slow.await.unwrap().unwrap();
+        assert_eq!(
+            result
+                .expect("account request blocked standby heartbeat")
+                .unwrap()["generation"],
+            2
+        );
+        server.abort();
+    }
+    #[tokio::test]
+    async fn standby_heartbeat_requires_current_scope_and_never_bootstraps_credentials() {
+        let (client, server, _, _) = lease_fixture(30).await;
+        assert!(client.standby_heartbeat("wrong|device").await.is_err());
+        let scope = prime_standby(&client).await;
+        assert!(
+            client
+                .standby_heartbeat("https://another.invalid|device")
+                .await
+                .is_err()
+        );
+        assert!(client.standby_heartbeat(&scope).await.is_ok());
+        client.invalidate_presence();
+        assert!(client.standby_heartbeat(&scope).await.is_err());
+        // Even the same textual scope belongs to a new local identity revision.
+        let next = prime_standby(&client).await;
+        assert!(client.standby_heartbeat(&next).await.is_ok());
+        {
+            let mut state = client.state.lock().await;
+            client.clear_auth(&mut state).unwrap();
+        }
+        assert!(client.standby_heartbeat(&next).await.is_err());
+        server.abort();
+    }
+    async fn delayed_standby_fixture(
+        status: axum::http::StatusCode,
+    ) -> (
+        Arc<NativeClient>,
+        tokio::task::JoinHandle<()>,
+        Arc<tokio::sync::Notify>,
+        Arc<tokio::sync::Notify>,
+        String,
+    ) {
+        use axum::{Json, Router, routing::post};
+        let seen = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let app = Router::new().route(
+            "/v1/devices/heartbeat",
+            post({
+                let seen = seen.clone();
+                let release = release.clone();
+                move || {
+                    let seen = seen.clone();
+                    let release = release.clone();
+                    async move {
+                        seen.notify_one();
+                        release.notified().await;
+                        (status, Json(json!({"generation":1,"expires_in":60})))
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = Arc::new(NativeClient::new(Arc::new(MemoryStore::default())).unwrap());
+        let scope = format!("{base}|device");
+        client.presence.lock().unwrap().identity = Some((
+            scope.clone(),
+            DeviceSnapshot {
+                base,
+                token: "device-proof".into(),
+                generation: 1,
+            },
+        ));
+        (client, server, seen, release, scope)
+    }
+    #[tokio::test]
+    async fn late_standby_response_cannot_restore_a_replaced_identity() {
+        let (client, server, seen, release, scope) =
+            delayed_standby_fixture(axum::http::StatusCode::OK).await;
+        let pending = tokio::spawn({
+            let client = client.clone();
+            async move { client.standby_heartbeat(&scope).await }
+        });
+        seen.notified().await;
+        client.invalidate_presence();
+        // Replace with a new identity while the old HTTP response is delayed.
+        let replacement = (
+            "https://new.invalid|new-device".into(),
+            DeviceSnapshot {
+                base: "https://new.invalid".into(),
+                token: "new-proof".into(),
+                generation: 7,
+            },
+        );
+        client.presence.lock().unwrap().identity = Some(replacement);
+        release.notify_one();
+        assert!(pending.await.unwrap().is_err());
+        let cache = client.presence.lock().unwrap();
+        assert_eq!(cache.identity.as_ref().unwrap().1.generation, 7);
+        drop(cache);
+        server.abort();
+    }
+    #[tokio::test]
+    async fn delayed_normal_heartbeat_cannot_repopulate_invalidated_standby_proof() {
+        let (client, server, seen, release, _) =
+            delayed_standby_fixture(axum::http::StatusCode::OK).await;
+        {
+            let mut state = client.state.lock().await;
+            state.base = client
+                .presence
+                .lock()
+                .unwrap()
+                .identity
+                .as_ref()
+                .unwrap()
+                .1
+                .base
+                .clone();
+            state.device = Some(DeviceCredential {
+                id: "device".into(),
+                device_token: "device-proof".into(),
+                owner_id: "owner".into(),
+                session_id: "login".into(),
+            });
+            state.generation = Some(1);
+            state.login = Some(Login {
+                access_token: "access".into(),
+                refresh_token: "refresh".into(),
+                session_id: "login".into(),
+                access_expires_in: 3600,
+            });
+        }
+        let pending = tokio::spawn({
+            let client = client.clone();
+            async move { client.call("heartbeat", json!({})).await }
+        });
+        seen.notified().await;
+        client.invalidate_presence();
+        release.notify_one();
+        pending.await.unwrap().unwrap();
+        assert!(client.presence.lock().unwrap().identity.is_none());
+        server.abort();
+    }
+    #[tokio::test]
+    async fn standby_revocation_clears_proof_but_server_failure_can_retry() {
+        for code in [401, 403, 500] {
+            let (client, server, seen, release, scope) =
+                delayed_standby_fixture(axum::http::StatusCode::from_u16(code).unwrap()).await;
+            let pending = tokio::spawn({
+                let client = client.clone();
+                let scope = scope.clone();
+                async move { client.standby_heartbeat(&scope).await }
+            });
+            seen.notified().await;
+            release.notify_one();
+            assert!(matches!(pending.await.unwrap(),Err(Error::Http(n,_)) if n==code));
+            assert_eq!(
+                client.presence.lock().unwrap().identity.is_some(),
+                code == 500
+            );
+            server.abort();
+        }
+    }
+    #[tokio::test]
+    async fn standby_signout_cancels_a_pending_heartbeat_without_account_lock() {
+        let (client, server, seen, _release, scope) =
+            delayed_standby_fixture(axum::http::StatusCode::OK).await;
+        let pending = tokio::spawn({
+            let client = client.clone();
+            async move { client.standby_heartbeat(&scope).await }
+        });
+        seen.notified().await;
+        client.signing_out.store(true, Ordering::SeqCst);
+        client.invalidate_presence();
+        client.cancel_tx.send_modify(|v| *v = v.wrapping_add(1));
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), pending)
+                .await
+                .unwrap()
+                .unwrap()
+                .is_err()
+        );
+        assert!(client.presence.lock().unwrap().identity.is_none());
+        server.abort();
     }
     #[tokio::test]
     async fn parallel_viewer_lease_checks_do_not_wait_for_a_slow_account_request() {

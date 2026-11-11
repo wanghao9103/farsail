@@ -54,6 +54,8 @@ class ConnectionService : Service() {
     }
     private val app get() = application as FarSailApp
     private val handler = Handler(Looper.getMainLooper())
+    private val heartbeatWorker = java.util.concurrent.Executors.newSingleThreadExecutor()
+    private var maintenanceQueued = false
     @Volatile private var stopped = false
     private var inflight = false
     @Volatile private var generation = 0L
@@ -112,17 +114,17 @@ class ConnectionService : Service() {
                 inflight = true
                 operation = "queued"
                 val epoch = generation; val expected = identity
-                app.io.execute {
+                heartbeatWorker.execute {
                     var current = true
                     var success = false
                     try {
                         operation = "identity"
-                        current = !stopped && generation == epoch && enabled(this@ConnectionService) && scope(app.invoke("state") as JSONObject) == expected
-                        if (current) { operation = "presence"; app.invoke("presence"); success = true; operation = "refresh"; app.refresh() }
+                        current = !stopped && generation == epoch && enabled(this@ConnectionService)
+                        if (current) { operation = "heartbeat"; app.invoke("standby_heartbeat", JSONObject().put("scope", expected)); success = true }
                     } catch (e: Exception) {
                         val code = Regex("HTTP ([0-9]{3})").find(e.message.orEmpty())?.groupValues?.get(1) ?: e.javaClass.simpleName
                         android.util.Log.w("FarSailConnection", "Presence failed: $code")
-                        if (Regex("HTTP (401|403)([^0-9]|$)").containsMatchIn(e.message.orEmpty())) current = false
+                        if (Regex("HTTP (401|403)([^0-9]|$)").containsMatchIn(e.message.orEmpty()) || e.message.orEmpty().contains("standby identity changed")) current = false
                     }
                     handler.post {
                         if (stopped || generation != epoch) return@post
@@ -130,6 +132,19 @@ class ConnectionService : Service() {
                         operation = "idle"
                         if (!current) { stopSelf(); return@post }
                         if (success) {
+                            // Endpoint maintenance and UI refresh may wait for business
+                            // requests. They must never hold up the next heartbeat.
+                            if (!maintenanceQueued) {
+                                maintenanceQueued = true
+                                app.io.execute {
+                                    try {
+                                        if (!stopped && generation == epoch && enabled(this@ConnectionService) && scope(app.invoke("state") as JSONObject) == expected) {
+                                            app.invoke("presence"); app.refresh()
+                                        }
+                                    } catch (_: Exception) { /* Heartbeat reports its own failures. */ }
+                                    finally { handler.post { maintenanceQueued = false } }
+                                }
+                            }
                             lastHeartbeat = SystemClock.elapsedRealtime()
                             detail = if (CaptureService.running && CaptureService.phase == "sharing") "设备在线，屏幕正在共享。" else "设备在线；屏幕未共享，请在手机上恢复屏幕共享。"
                             android.util.Log.i("FarSailConnection", "Heartbeat accepted; capture=${CaptureService.running}")
@@ -156,6 +171,7 @@ class ConnectionService : Service() {
         stopped = true; generation++; running = false; activeScope = null
         detail = if (enabled(this)) "后台在线服务已停止，重新打开 App 可重试。" else "后台保持在线已关闭。"
         handler.removeCallbacks(tick)
+        heartbeatWorker.shutdown()
         if (::cpu.isInitialized && cpu.isHeld) cpu.release()
         stopForeground(STOP_FOREGROUND_REMOVE)
         app.observer?.invoke()

@@ -885,6 +885,12 @@ impl Host {
     }
     async fn call(self: &Arc<Self>, op: &str, args: Value) -> Result<Value, String> {
         let client = &self.client;
+        if op == "standby_heartbeat" {
+            return client
+                .standby_heartbeat(args["scope"].as_str().ok_or("standby scope required")?)
+                .await
+                .map_err(|e| e.to_string());
+        }
         if matches!(op, "logout" | "server" | "login" | "bind") {
             self.viewer.cancel();
         }

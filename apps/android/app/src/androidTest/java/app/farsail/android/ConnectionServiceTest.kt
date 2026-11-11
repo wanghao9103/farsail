@@ -63,6 +63,51 @@ class ConnectionServiceTest {
             coordinator.close(); device.wakeUp(); shell("wm dismiss-keyguard"); device.pressHome()
         }
     }
+    @Test fun blockedBusinessQueueCannotDelayHeartbeatPastOnlineLease() = withFixture { coordinator ->
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val task = app.io.submit { entered.countDown(); release.await() }
+        check(entered.await(10, java.util.concurrent.TimeUnit.SECONDS))
+        val before = coordinator.heartbeats.get()
+        try {
+            // Keep screen on and use loopback HTTP to isolate business starvation.
+            Thread.sleep(35000); Thread.sleep(30000)
+            assertTrue(ConnectionService.running)
+            assertTrue(context.getSystemService(PowerManager::class.java).isInteractive)
+            assertTrue("heartbeats must bypass the blocked application queue", coordinator.heartbeats.get() >= before + 4)
+            val age = SystemClock.elapsedRealtime() - ConnectionService.lastHeartbeat
+            assertTrue("online lease must remain fresh", age < 25000)
+            java.io.File(context.filesDir, "heartbeat-queue-fixed.json").writeText(JSONObject()
+                .put("heartbeatsBefore", before).put("heartbeatsDuringBlock", coordinator.heartbeats.get())
+                .put("heartbeatAgeMs", age).put("businessBlockedMs", 65000).toString())
+        } finally { release.countDown(); task.get(10, java.util.concurrent.TimeUnit.SECONDS) }
+    }
+    @Test fun temporaryServerFailureKeepsStandbyAndRecovers() = withFixture { coordinator ->
+        val last = ConnectionService.lastHeartbeat
+        val count = coordinator.heartbeats.get()
+        coordinator.heartbeatFailure.set(503)
+        try {
+            await { coordinator.heartbeats.get() > count && !ConnectionService.detail.startsWith("设备在线") }
+            assertTrue("transient server failure must not revoke local standby", ConnectionService.running)
+            assertEquals("failed request cannot advance heartbeat time", last, ConnectionService.lastHeartbeat)
+        } finally { coordinator.heartbeatFailure.set(0) }
+        await { ConnectionService.lastHeartbeat > last && ConnectionService.detail.startsWith("设备在线") }
+    }
+    @Test fun logoutWhileBusinessQueueIsBlockedStopsIndependentHeartbeats() = withFixture { coordinator ->
+        val entered = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        val task = app.io.submit { entered.countDown(); release.await() }
+        check(entered.await(10, java.util.concurrent.TimeUnit.SECONDS))
+        try {
+            app.invoke("logout")
+            await { !ConnectionService.running }
+            val stopped = coordinator.heartbeats.get()
+            Thread.sleep(17000)
+            assertEquals("old independent heartbeat must not survive logout", stopped, coordinator.heartbeats.get())
+        } finally { release.countDown(); task.get(10, java.util.concurrent.TimeUnit.SECONDS) }
+        app.io.submit { }.get(15, java.util.concurrent.TimeUnit.SECONDS)
+        assertFalse(ConnectionService.running)
+    }
     @Test fun screenOffKeepsHeartbeatsBeyondOnlineTtlWithoutCapture() = withFixture { coordinator ->
         val state = app.invoke("state") as JSONObject
         assertFalse(CaptureService.running); assertFalse(state.optBoolean("sharing")); assertFalse(state.optBoolean("remoteWatch"))
