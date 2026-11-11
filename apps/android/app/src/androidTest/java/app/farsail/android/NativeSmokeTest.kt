@@ -184,6 +184,8 @@ class NativeSmokeTest {
         val screenshot = InstrumentationRegistry.getArguments().getString("captureBackend") == "accessibility"
         val wakePeer = InstrumentationRegistry.getArguments().getString("wakePeer") == "true"
         val connectionWake = InstrumentationRegistry.getArguments().getString("connectionWake") == "true"
+        val wakeIdleSeconds = InstrumentationRegistry.getArguments().getString("wakeIdleSeconds", "0").toLong()
+        require(wakeIdleSeconds in 0L..300L && (connectionWake || wakeIdleSeconds == 0L))
         val keyguard = context.getSystemService(android.app.KeyguardManager::class.java)
         if (connectionWake) org.junit.Assume.assumeFalse("Owned password-free emulator only", keyguard.isDeviceSecure)
         if (wakePeer) { check(screenshot); org.junit.Assume.assumeFalse("Never replace an existing credential", keyguard.isDeviceSecure) }
@@ -278,13 +280,20 @@ class NativeSmokeTest {
                     inst.runOnMainSync { ControlService.instance!!.startActivity(Intent(context, WakeActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
                     Thread.sleep(750)
                     assertFalse("An unauthenticated wake Activity must not turn on the screen", context.getSystemService(android.os.PowerManager::class.java).isInteractive)
+                    // Leave the owned emulator asleep without shell/Binder polling.
+                    // Readiness is published only after this idle window.
+                    java.io.File(context.filesDir, "p2p-idling.json").writeText(JSONObject().put("idleSeconds", wakeIdleSeconds).toString())
+                    Thread.sleep(wakeIdleSeconds * 1000)
+                    assertFalse("Idle window must end with the screen still off", context.getSystemService(android.os.PowerManager::class.java).isInteractive)
+                    assertTrue("Projection survives idle before remote connection", CaptureService.running)
+
                 }
                 readyFile.writeText(endpoint.toString())
                 if (connectionWake) {
                     // The peer waits for inputReady before sending ANY control input.
                     await { context.getSystemService(android.os.PowerManager::class.java).isInteractive && !keyguard.isKeyguardLocked }
                     assertTrue("Connection wake preserves projection", CaptureService.running && !CaptureService.accessibilityMode)
-                    java.io.File(context.filesDir, "p2p-wake.json").writeText(JSONObject().put("connectionWokeScreen", true).put("insecureKeyguardDismissed", true).toString())
+                    java.io.File(context.filesDir, "p2p-wake.json").writeText(JSONObject().put("connectionWokeScreen", true).put("insecureKeyguardDismissed", true).put("idleSeconds", wakeIdleSeconds).toString())
                     Thread.sleep(750)
                     assertFalse("Temporary remote wake lock must be released", activeWakeLocks().contains("FarSail:RemoteWake"))
                     context.startActivity(Intent(inst.context, InputFixtureActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))

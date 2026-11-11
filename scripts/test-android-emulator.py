@@ -41,6 +41,9 @@ ready_forward = None
 backend = os.environ.get("ANDROID_CAPTURE_BACKEND", "projection")
 assert backend in ("projection", "accessibility")
 connection_wake = backend == "projection" and os.environ.get("ANDROID_CONNECTION_WAKE") == "1"
+wake_idle_seconds = int(os.environ.get("ANDROID_WAKE_IDLE_SECONDS", "0"))
+assert 0 <= wake_idle_seconds <= 300
+assert wake_idle_seconds == 0 or connection_wake, "Idle wake check needs projection connection wake"
 guest = os.environ.get("ANDROID_PROBE_IN_GUEST") == "1"
 if guest:
     guest_probe = ROOT / os.environ.get("CARGO_TARGET_DIR", "target") / "x86_64-linux-android/release/examples/device_probe"
@@ -48,16 +51,23 @@ if guest:
     adb("push", str(guest_probe), "/data/local/tmp/farsail-device-probe")
     adb("shell", "chmod", "700", "/data/local/tmp/farsail-device-probe")
 with (OUT / "instrumentation.log").open("wb") as log:
-    test = subprocess.Popen([*ADB, "shell", "am", "instrument", "-w", "-e", "class", "app.farsail.android.NativeSmokeTest#keystoreJniProjectionBackgroundAndStop", "-e", "realPeer", "true", "-e", "sourceKey", key, "-e", "captureBackend", backend, "-e", "wakePeer", str(backend == "accessibility").lower(), "-e", "connectionWake", str(connection_wake).lower(),
+    test = subprocess.Popen([*ADB, "shell", "am", "instrument", "-w", "-e", "class", "app.farsail.android.NativeSmokeTest#keystoreJniProjectionBackgroundAndStop", "-e", "realPeer", "true", "-e", "sourceKey", key, "-e", "captureBackend", backend, "-e", "wakePeer", str(backend == "accessibility").lower(), "-e", "connectionWake", str(connection_wake).lower(), "-e", "wakeIdleSeconds", str(wake_idle_seconds),
                              "app.farsail.android.test/androidx.test.runner.AndroidJUnitRunner"], stdout=log, stderr=subprocess.STDOUT)
     try:
-        end = time.monotonic() + 90
+        end = time.monotonic() + 90 + wake_idle_seconds
         endpoint = None
+        idle_waited = False
         while time.monotonic() < end and test.poll() is None:
             result = adb("shell", "run-as", "app.farsail.android", "cat", "files/p2p-ready.json", check=False)
             if result.returncode == 0:
                 endpoint = json.loads(result.stdout)
                 break
+            if wake_idle_seconds and not idle_waited:
+                idling = adb("shell", "run-as", "app.farsail.android", "cat", "files/p2p-idling.json", check=False)
+                if idling.returncode == 0:
+                    idle_waited = True
+                    print(f"Leaving owned emulator asleep for {wake_idle_seconds}s without ADB polling", flush=True)
+                    time.sleep(wake_idle_seconds)
             time.sleep(0.3)
         assert endpoint, "Android test did not publish readiness; inspect instrumentation.log"
         (OUT / "endpoint.json").write_text(json.dumps(endpoint, indent=2))
