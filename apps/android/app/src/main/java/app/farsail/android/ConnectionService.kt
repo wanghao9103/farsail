@@ -13,6 +13,8 @@ class ConnectionService : Service() {
         private const val PERIOD = 15000L
         @Volatile var running = false
             private set
+        @Volatile internal var instance: ConnectionService? = null
+            private set
         @Volatile var lastHeartbeat = 0L
             private set
         @Volatile var detail = "打开 App 后自动保持本机在线。"
@@ -33,7 +35,7 @@ class ConnectionService : Service() {
             if (!enabled) stop(context)
             (context.applicationContext as FarSailApp).observer?.invoke()
         }
-        fun retryOnForeground() { if (!running) attemptedScope = null }
+        fun retryOnForeground() { if (!running) attemptedScope = null else instance?.serverDriven = true }
         fun stop(context: Context) {
             attemptedScope = null
             context.getSharedPreferences("connection", Context.MODE_PRIVATE).edit().remove("scope").commit()
@@ -65,9 +67,53 @@ class ConnectionService : Service() {
     private var lastNotification = ""
     @Volatile private var operation = "idle"
     private var lastTick = 0L
+    @Volatile private var serverDriven = true
+    @Volatile private var pulseReplies = 0L
+    @Volatile private var pulseMaxGapMs = 0L
+    private var lastPulseAt = 0L
+    private lateinit var journal: ConnectionJournal
+    private lateinit var wakeup: ConnectionWakeup
+    private var wakeDone: (() -> Unit)? = null
+    private fun activeWakeScope() = !stopped && running && enabled(this) &&
+        getSharedPreferences("connection", Context.MODE_PRIVATE).getString("scope", null) == identity
+    internal fun wakeHeartbeat(done: () -> Unit) {
+        if (!activeWakeScope()) { wakeup.ensure(false); done(); return }
+        if (!wakeup.delivered()) { done(); return }
+        if (!wakeup.eligible()) { wakeup.ensure(true); done(); return }
+        wakeDone?.invoke(); wakeDone = done
+        if (wakeup.deliveries == 1L || wakeup.deliveries % 10L == 0L) journal.record("wake_alarm_delivered")
+        android.util.Log.i("FarSailConnection", "System wake heartbeat delivered")
+        handler.removeCallbacks(tick)
+        tick.run()
+    }
+    private val powerChanges = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            val event = when (intent.action) {
+                Intent.ACTION_POWER_CONNECTED -> "power_connected"
+                Intent.ACTION_POWER_DISCONNECTED -> "power_disconnected"
+                PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED -> "idle_changed"
+                PowerManager.ACTION_POWER_SAVE_MODE_CHANGED -> "power_save_changed"
+                Intent.ACTION_SCREEN_OFF -> "screen_off"
+                Intent.ACTION_SCREEN_ON -> "screen_on"
+                else -> return
+            }
+            journal.record(event)
+            wakeup.ensure(activeWakeScope())
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
+        journal = ConnectionJournal(this)
+        wakeup = ConnectionWakeup(this)
+        journal.record("service_created")
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_POWER_CONNECTED); addAction(Intent.ACTION_POWER_DISCONNECTED)
+            addAction(PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED); addAction(PowerManager.ACTION_POWER_SAVE_MODE_CHANGED)
+            addAction(Intent.ACTION_SCREEN_OFF); addAction(Intent.ACTION_SCREEN_ON)
+        }
+        if (Build.VERSION.SDK_INT >= 33) registerReceiver(powerChanges, filter, Context.RECEIVER_NOT_EXPORTED)
+        else @Suppress("DEPRECATION") registerReceiver(powerChanges, filter)
         cpu = getSystemService(PowerManager::class.java).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "FarSail:Connection").apply { setReferenceCounted(false) }
         getSystemService(NotificationManager::class.java).createNotificationChannel(
             NotificationChannel("connection", "设备在线", NotificationManager.IMPORTANCE_LOW).apply {
@@ -89,11 +135,13 @@ class ConnectionService : Service() {
         val next = intent?.getStringExtra("scope") ?: getSharedPreferences("connection", Context.MODE_PRIVATE).getString("scope", null)
         if (next.isNullOrEmpty() || !enabled(this)) { stopSelf(); return START_NOT_STICKY }
         identity = next; generation++; inflight = false; lastHeartbeat = 0; startedAt = SystemClock.elapsedRealtime()
+        serverDriven = true; pulseReplies = 0; pulseMaxGapMs = 0; lastPulseAt = 0
         detail = "正在恢复设备在线状态…"
         try {
             if (Build.VERSION.SDK_INT >= 29) startForeground(42, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
             else startForeground(42, notification())
             running = true; activeScope = identity
+            instance = this
             handler.removeCallbacks(tick); handler.post(tick)
         } catch (e: Exception) {
             android.util.Log.w("FarSailConnection", "Foreground start failed: ${e.javaClass.simpleName}")
@@ -104,61 +152,87 @@ class ConnectionService : Service() {
     private val tick = object : Runnable {
         override fun run() {
             if (stopped) return
-            lastTick = SystemClock.elapsedRealtime()
+            val tickAt = SystemClock.elapsedRealtime()
+            if (lastTick != 0L && tickAt - lastTick > PERIOD * 3) journal.record("tick_gap_ms=${tickAt - lastTick}")
+            lastTick = tickAt
             if (!enabled(this@ConnectionService)) { stopSelf(); return }
             if (!app.ready && SystemClock.elapsedRealtime() - startedAt > 45000) { stopSelf(); return }
             // Bounded leases are renewed only while this visible connection task lives.
             // No screen wake lock, screen wake-up or keyguard operation is involved.
             cpu.acquire(PERIOD * 6)
+            wakeup.ensure(activeWakeScope())
             if (!inflight && app.ready) {
                 inflight = true
                 operation = "queued"
                 val epoch = generation; val expected = identity
-                heartbeatWorker.execute {
-                    var current = true
-                    var success = false
-                    try {
-                        operation = "identity"
-                        current = !stopped && generation == epoch && enabled(this@ConnectionService)
-                        if (current) { operation = "heartbeat"; app.invoke("standby_heartbeat", JSONObject().put("scope", expected)); success = true }
-                    } catch (e: Exception) {
-                        val code = Regex("HTTP ([0-9]{3})").find(e.message.orEmpty())?.groupValues?.get(1) ?: e.javaClass.simpleName
-                        android.util.Log.w("FarSailConnection", "Presence failed: $code")
-                        if (Regex("HTTP (401|403)([^0-9]|$)").containsMatchIn(e.message.orEmpty()) || e.message.orEmpty().contains("standby identity changed")) current = false
-                    }
-                    handler.post {
-                        if (stopped || generation != epoch) return@post
-                        inflight = false
-                        operation = "idle"
-                        if (!current) { stopSelf(); return@post }
-                        if (success) {
-                            // Endpoint maintenance and UI refresh may wait for business
-                            // requests. They must never hold up the next heartbeat.
-                            if (!maintenanceQueued) {
-                                maintenanceQueued = true
-                                app.io.execute {
-                                    try {
-                                        if (!stopped && generation == epoch && enabled(this@ConnectionService) && scope(app.invoke("state") as JSONObject) == expected) {
-                                            app.invoke("presence"); app.refresh()
-                                        }
-                                    } catch (_: Exception) { /* Heartbeat reports its own failures. */ }
-                                    finally { handler.post { maintenanceQueued = false } }
-                                }
-                            }
-                            lastHeartbeat = SystemClock.elapsedRealtime()
-                            detail = if (CaptureService.running && CaptureService.phase == "sharing") "设备在线，屏幕正在共享。" else "设备在线；屏幕未共享，请在手机上恢复屏幕共享。"
-                            android.util.Log.i("FarSailConnection", "Heartbeat accepted; capture=${CaptureService.running}")
-                        } else detail = "设备连接暂不可用，正在重试；请检查网络或登录状态。"
-                        if (detail != lastNotification) {
-                            lastNotification = detail
-                            if (Build.VERSION.SDK_INT < 33 || checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) == android.content.pm.PackageManager.PERMISSION_GRANTED)
-                                getSystemService(NotificationManager::class.java).notify(42, notification())
-                            app.observer?.invoke()
-                        }
-                    }
-                }
+                heartbeatWorker.execute { runHeartbeatLane(epoch, expected) }
             }
             handler.postDelayed(this, PERIOD)
+        }
+    }
+    private fun runHeartbeatLane(epoch: Long, expected: String) {
+        while (!stopped && generation == epoch) {
+            var current = enabled(this) && getSharedPreferences("connection", Context.MODE_PRIVATE).getString("scope", null) == expected
+            var success = false
+            var continuing = false
+            val probe = serverDriven
+            try {
+                if (current) {
+                    operation = if (probe) "heartbeat_wait" else "heartbeat"
+                    cpu.acquire(PERIOD * 2)
+                    val before = SystemClock.elapsedRealtime()
+                    val reply = app.invoke(if (probe) "standby_heartbeat_wait" else "standby_heartbeat", JSONObject().put("scope", expected)) as JSONObject
+                    if (stopped || generation != epoch) return
+                    success = true
+                    val now = SystemClock.elapsedRealtime()
+                    continuing = probe && StandbyPulse.supported(reply.optLong("standby_wait_ms"), now - before)
+                    if (probe && !continuing) { serverDriven = false; journal.record("server_pulse_unavailable") }
+                    if (continuing) {
+                        if (lastPulseAt != 0L) pulseMaxGapMs = maxOf(pulseMaxGapMs, now - lastPulseAt)
+                        lastPulseAt = now; pulseReplies++
+                        if (pulseReplies == 1L || pulseReplies % 20L == 0L) journal.record("server_pulse_accepted")
+                    }
+                    // These updates and the next request do not wait for the UI
+                    // looper or a suspend-paused local timer.
+                    lastHeartbeat = now; journal.heartbeat()
+                    android.util.Log.i("FarSailConnection", "Heartbeat accepted; capture=${CaptureService.running} serverPulse=$continuing")
+                }
+            } catch (e: Exception) {
+                val code = Regex("HTTP ([0-9]{3})").find(e.message.orEmpty())?.groupValues?.get(1) ?: e.javaClass.simpleName
+                journal.failure(code)
+                android.util.Log.w("FarSailConnection", "Presence failed: $code")
+                if (Regex("HTTP (401|403)([^0-9]|$)").containsMatchIn(e.message.orEmpty()) || e.message.orEmpty().contains("standby identity changed")) current = false
+            }
+            val next = continuing && current && success
+            val cycleCurrent = current; val cycleSuccess = success
+            handler.post {
+                if (stopped || generation != epoch) return@post
+                if (!next) { inflight = false; operation = "idle" }
+                wakeDone?.invoke(); wakeDone = null
+                if (!cycleCurrent) { stopSelf(); return@post }
+                if (cycleSuccess) {
+                    if (!maintenanceQueued) {
+                        maintenanceQueued = true
+                        app.io.execute {
+                            try {
+                                if (!stopped && generation == epoch && enabled(this) && scope(app.invoke("state") as JSONObject) == expected) {
+                                    app.invoke("presence"); app.refresh()
+                                }
+                            } catch (_: Exception) { }
+                            finally { handler.post { maintenanceQueued = false } }
+                        }
+                    }
+                    detail = if (CaptureService.running && CaptureService.phase == "sharing") "设备在线，屏幕正在共享。" else "设备在线；屏幕未共享，请在手机上恢复屏幕共享。"
+                    if (!serverDriven) detail += "请升级服务器以支持断电休眠在线。"
+                } else detail = "设备连接暂不可用，正在重试；请检查网络或登录状态。"
+                if (detail != lastNotification) {
+                    lastNotification = detail
+                    if (Build.VERSION.SDK_INT < 33 || checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) == android.content.pm.PackageManager.PERMISSION_GRANTED)
+                        getSystemService(NotificationManager::class.java).notify(42, notification())
+                    app.observer?.invoke()
+                }
+            }
+            if (!next) return
         }
     }
     override fun dump(fd: java.io.FileDescriptor, writer: java.io.PrintWriter, args: Array<out String>) {
@@ -166,9 +240,17 @@ class ConnectionService : Service() {
         writer.println("running=$running ready=${app.ready} inflight=$inflight operation=$operation")
         writer.println("heartbeatAgeMs=${if (lastHeartbeat == 0L) -1 else now - lastHeartbeat} tickAgeMs=${if (lastTick == 0L) -1 else now - lastTick}")
         writer.println("batteryExempt=${BackgroundSetup.exempt(this)} cpuLeaseHeld=${::cpu.isInitialized && cpu.isHeld}")
+        if (::journal.isInitialized) journal.dump(writer)
+        if (::wakeup.isInitialized) writer.println(wakeup.diagnostic())
+        writer.println("serverPulse=$serverDriven serverPulseReplies=$pulseReplies serverPulseMaxGapMs=$pulseMaxGapMs")
     }
     override fun onDestroy() {
         stopped = true; generation++; running = false; activeScope = null
+        if (instance === this) instance = null
+        wakeDone?.invoke(); wakeDone = null
+        wakeup.close()
+        journal.record("service_destroyed")
+        unregisterReceiver(powerChanges)
         detail = if (enabled(this)) "后台在线服务已停止，重新打开 App 可重试。" else "后台保持在线已关闭。"
         handler.removeCallbacks(tick)
         heartbeatWorker.shutdown()

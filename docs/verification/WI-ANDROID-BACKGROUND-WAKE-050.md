@@ -1,0 +1,17 @@
+**English** | [简体中文](WI-ANDROID-BACKGROUND-WAKE-050.zh-CN.md)
+
+# Android background screen wake
+
+2026-11-11. Follow-up to the Android candidate refresh in WI-049.
+
+On the USB-connected OPPO R17 (Android 10, ColorOS V7.1), the capture projection and accessibility service remained active while the physical display was asleep. At 22:44, system logs repeatedly rejected `app.farsail.android.WakeActivity` with `allowStart = false`, `firewall intercept = true`, and `reason = default` while the launcher was the top activity. Earlier foreground attempts were allowed. A connected desktop session consequently received no frames. One successful foreground wake did not establish background reliability.
+
+On Android 8.1–10, an approved controller now requests the existing bounded screen wake directly from `ControlService` before attempting the background activity. Both operations check the live session, epoch and layout authorization. A revoked lease cannot launch a window; the service wake lock expires after 1.5 seconds and is released on cancellation or disconnection. Requests are throttled to once per second. Later Android versions retain the existing activity behavior. Credential locks are never dismissed.
+
+Local validation in an ASCII temporary checkout passed 13 JVM tests, debug lint (zero errors, 49 warnings), and instrumentation-test Kotlin compilation. The four dispatch regression tests cover blocked background activity, rejected authorization, revocation between wake and launch, and bounded retry. Running JVM tests in the original non-ASCII Windows path failed to load every test class; the same sources passed in the temporary path. No instrumentation fixtures ran on a physical phone.
+
+The candidate workflow produces `0.1.17-wake1` using the original installed signing certificate. When all native inputs match commit `789dc7a175e262e6aa8aad840a267981176050a8`, it verifies the exact APK SHA-256 from successful run `43033361498` and reuses its two native libraries. Changed native inputs require the full Rust build and checks. Kotlin tests, release lint and instrumentation compilation still run for every candidate.
+
+Physical acceptance passed on the connected Android 10 phone. The user manually approved recording, sent FarSail to the background, pressed the physical power button and reconnected through approved remote control. The user confirmed screen wake and ongoing video, then confirmed two additional successful repetitions. System logs still rejected the background activity while recording authorized service wake requests. Desktop logs independently showed fresh received and delivered frames over direct connections; the final sampled session had 59 received frames and 60 deliveries (delivery can include a redisplay). This establishes the tested phone's wake and first-frame behavior, not five-phone performance acceptance. No ADB wake/unlock commands or synthetic credential-bearing drivers were used.
+
+The installed package is `0.1.17-wake1`, code `18`, from commit `33bc1efecda67e6fc4e0c081c48feee9764071f3`, successful candidate run `43043735977`, artifact `13867130825`. APK SHA-256 is `cb6e5fe4739252de79d31566443762ef33fa5202bcb3dad45f27dabc9cae083d`. The original installed certificate, both unchanged native-library hashes and package metadata were independently verified. An in-place update preserved the original UID and installation time. This candidate is not a public updater release.

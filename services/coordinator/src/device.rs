@@ -75,12 +75,19 @@ pub struct CapabilityInput {
 #[derive(Deserialize)]
 pub struct HeartbeatInput {
     pub generation: Option<i64>,
+    #[serde(default)]
+    pub wait_for_next: bool,
 }
 #[derive(Serialize, Deserialize)]
 pub struct HeartbeatOutput {
     pub generation: i64,
     pub expires_in: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub standby_wait_ms: Option<u64>,
 }
+
+const STANDBY_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
+static STANDBY_WAIT_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(512);
 
 fn bytes_hex<const N: usize>(value: &str) -> Result<[u8; N]> {
     let decoded = hex::decode(value).map_err(|_| Error::Invalid("invalid hex"))?;
@@ -328,6 +335,18 @@ pub async fn heartbeat(
     Json(input): Json<HeartbeatInput>,
 ) -> Result<Json<HeartbeatOutput>> {
     let (id, _) = device_principal(&state, &headers).await?;
+    if input.wait_for_next && input.generation.is_none() {
+        return Err(Error::Invalid("standby requires an established generation"));
+    }
+    let _slot = if input.wait_for_next {
+        Some(
+            STANDBY_WAIT_SLOTS
+                .try_acquire()
+                .map_err(|_| Error::RateLimited)?,
+        )
+    } else {
+        None
+    };
     let row: Option<(i64,)> = if let Some(generation) = input.generation {
         sqlx::query_as("UPDATE devices SET lease_until=now()+($2 * interval '1 second'),last_seen_at=now() WHERE id=$1 AND generation=$3 AND enabled RETURNING generation")
             .bind(id).bind(DEVICE_LEASE_SECONDS).bind(generation).fetch_optional(&state.pool).await?
@@ -336,8 +355,24 @@ pub async fn heartbeat(
             .bind(id).bind(DEVICE_LEASE_SECONDS).fetch_optional(&state.pool).await?
     };
     let (generation,) = row.ok_or(Error::Conflict)?;
+    // Renew only when the authenticated device actually sends a request. The
+    // delayed response provides a network wake event, never an automatic lease
+    // extension. Do not hold a database connection across the wait.
+    let accepted = std::time::Instant::now();
+    if input.wait_for_next {
+        tokio::time::sleep(STANDBY_WAIT).await;
+        device_principal(&state, &headers).await?;
+        let current: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM devices WHERE id=$1 AND generation=$2 AND enabled AND lease_until>now())")
+            .bind(id).bind(generation).fetch_one(&state.pool).await?;
+        if !current {
+            return Err(Error::Conflict);
+        }
+    }
     Ok(Json(HeartbeatOutput {
         generation,
-        expires_in: DEVICE_LEASE_SECONDS,
+        expires_in: DEVICE_LEASE_SECONDS.saturating_sub(accepted.elapsed().as_secs() as i64),
+        standby_wait_ms: input
+            .wait_for_next
+            .then_some(STANDBY_WAIT.as_millis() as u64),
     }))
 }

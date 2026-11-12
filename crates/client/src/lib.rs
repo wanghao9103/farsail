@@ -1492,6 +1492,14 @@ impl NativeClient {
     /// Renew only the already-established device generation. Never wait for the
     /// account/UI state mutex, rotate credentials or enable hosting on this lane.
     pub async fn standby_heartbeat(&self, scope: &str) -> Result<Value> {
+        self.standby_heartbeat_mode(scope, false).await
+    }
+    /// Server-delayed responses wake an idle foreground client through real
+    /// network I/O. The next request still proves its current device identity.
+    pub async fn standby_heartbeat_wait(&self, scope: &str) -> Result<Value> {
+        self.standby_heartbeat_mode(scope, true).await
+    }
+    async fn standby_heartbeat_mode(&self, scope: &str, wait: bool) -> Result<Value> {
         let (revision, identity) = {
             let cache = self.presence.lock().unwrap();
             let (saved_scope, identity) = cache
@@ -1508,7 +1516,7 @@ impl NativeClient {
             biased;
             _ = cancelled.changed() => return Err(Error::Invalid("standby identity changed".into())),
             result = self.transport_request_as(&identity, Method::POST,
-                "/v1/devices/heartbeat", None, Some(json!({"generation":identity.generation}))) => result,
+                "/v1/devices/heartbeat", None, Some(json!({"generation":identity.generation,"wait_for_next":wait}))) => result,
         };
         let mut cache = self.presence.lock().unwrap();
         if cache.revision != revision
@@ -1738,6 +1746,11 @@ impl NativeClient {
             .request(method, format!("{}{path}", identity.base))
             .bearer_auth(grant.unwrap_or(&identity.token))
             .header("X-Farsail-Generation", identity.generation.to_string());
+        if path == "/v1/devices/heartbeat"
+            && body.as_ref().is_some_and(|v| v["wait_for_next"] == true)
+        {
+            request = request.timeout(Duration::from_secs(35));
+        }
         if grant.is_some() {
             request = request.header("X-Farsail-Device-Token", &identity.token);
         }
@@ -1747,6 +1760,14 @@ impl NativeClient {
         let start = Instant::now();
         let mut response = request.send().await?;
         let status = response.status();
+        // Error bodies are not used as proof. Preserve the HTTP classification
+        // even when a gateway returns a large HTML error page.
+        if !status.is_success() {
+            return Err(Error::Http(
+                status.as_u16(),
+                status.canonical_reason().unwrap_or("request failed").into(),
+            ));
+        }
         let mut bytes = Vec::new();
         const MAX: usize = 4096;
         if response.content_length().is_some_and(|n| n > MAX as u64) {
@@ -1757,12 +1778,6 @@ impl NativeClient {
                 return Err(Error::Invalid("transport response too large".into()));
             }
             bytes.extend_from_slice(&chunk);
-        }
-        if !status.is_success() {
-            return Err(Error::Http(
-                status.as_u16(),
-                status.canonical_reason().unwrap_or("request failed").into(),
-            ));
         }
         let mut value: Value = if bytes.is_empty() {
             Value::Null
@@ -2162,6 +2177,15 @@ impl NativeClient {
     }
 }
 
+fn authority_error(error: Error) -> farsail_transport::Error {
+    match error {
+        Error::Network(_) | Error::Http(408 | 429 | 500..=599, _) => {
+            farsail_transport::Error::AuthorityUnavailable
+        }
+        _ => farsail_transport::Error::Denied,
+    }
+}
+
 impl Authority for NativeClient {
     async fn abandon(&self, id: &str) {
         self.invalidate_transport_grant(id).await;
@@ -2189,7 +2213,7 @@ impl Authority for NativeClient {
                 None,
             )
             .await
-            .map_err(|_| farsail_transport::Error::Denied)?;
+            .map_err(authority_error)?;
         let mut claims: Claims =
             serde_json::from_value(v).map_err(|_| farsail_transport::Error::Denied)?;
         // transport_request_as already deducted the HTTP time from expires_in.
@@ -2244,7 +2268,7 @@ impl Authority for NativeClient {
                 None,
             )
             .await
-            .map_err(|_| farsail_transport::Error::Denied)?;
+            .map_err(authority_error)?;
         let token = v["grant_token"]
             .as_str()
             .ok_or(farsail_transport::Error::Denied)?
@@ -2302,6 +2326,65 @@ fn read_json<T: DeserializeOwned>(store: &dyn SecureStore, key: &str) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn authority_outages_are_retryable_but_identity_rejections_are_not() {
+        for status in [408, 429, 500, 502, 503, 504] {
+            assert!(matches!(
+                authority_error(Error::Http(status, "redacted".into())),
+                farsail_transport::Error::AuthorityUnavailable
+            ));
+        }
+        for status in [400, 401, 403, 404, 409] {
+            assert!(matches!(
+                authority_error(Error::Http(status, "redacted".into())),
+                farsail_transport::Error::Denied
+            ));
+        }
+        assert!(matches!(
+            authority_error(Error::Invalid("bad proof".into())),
+            farsail_transport::Error::Denied
+        ));
+    }
+    #[tokio::test]
+    async fn gateway_error_pages_preserve_status_without_relaxing_proof_size_limits() {
+        use axum::{Router, extract::Path, http::StatusCode, routing::get};
+        let app = Router::new().route(
+            "/{status}",
+            get(|Path(status): Path<u16>| async move {
+                (
+                    StatusCode::from_u16(status).unwrap(),
+                    "<html>gateway</html>".repeat(1000),
+                )
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let identity = DeviceSnapshot {
+            base: format!("http://{}", listener.local_addr().unwrap()),
+            token: "synthetic-device".into(),
+            generation: 1,
+        };
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = NativeClient::new(Arc::new(MemoryStore::default())).unwrap();
+        for status in [503, 403, 200] {
+            let error = client
+                .transport_request_as(&identity, Method::GET, &format!("/{status}"), None, None)
+                .await
+                .unwrap_err();
+            if status == 200 {
+                assert!(matches!(error, Error::Invalid(_)));
+            } else {
+                assert!(matches!(error, Error::Http(code, _) if code == status));
+                assert_eq!(
+                    matches!(
+                        authority_error(error),
+                        farsail_transport::Error::AuthorityUnavailable
+                    ),
+                    status == 503
+                );
+            }
+        }
+        server.abort();
+    }
     async fn lease_fixture(
         ttl: i64,
     ) -> (
@@ -2325,13 +2408,21 @@ mod tests {
                 assert_eq!(headers["x-farsail-generation"].to_str().unwrap().parse::<i64>().unwrap(),generation.load(Ordering::SeqCst));
                 Json(json!({"session_id":id,"permission":"view","source_public_key":hex::encode([1;32]),"target_public_key":hex::encode([2;32]),"nonce":"ab".repeat(32),"expires_in":ttl}))
             }}}))
-            .route("/v1/devices/heartbeat",post(move || {let generation=expected_generation.clone();async move {
-                generation.store(2,Ordering::SeqCst);Json(json!({"generation":2,"expires_in":60}))
+            .route("/v1/devices/heartbeat",post({let seen=seen.clone();let release=release.clone();move |headers:HeaderMap,Json(body):Json<Value>| {
+                let generation=expected_generation.clone();let seen=seen.clone();let release=release.clone();async move {
+                    assert_eq!(headers["authorization"],"Bearer device-proof");
+                    if let Some(header)=headers.get("x-farsail-generation") {assert_eq!(body["generation"].as_i64(),Some(header.to_str().unwrap().parse::<i64>().unwrap()));}
+                    generation.store(2,Ordering::SeqCst);
+                    if body["wait_for_next"] == true {
+                        let ready=release.notified();tokio::pin!(ready);let _=ready.as_mut().enable();seen.notify_one();ready.await;
+                        Json(json!({"generation":2,"expires_in":45,"standby_wait_ms":15000}))
+                    } else {Json(json!({"generation":2,"expires_in":60}))}
+                }
             }}))
             .route("/v1/remote/{id}", get({
                 let seen=seen.clone(); let release=release.clone();
                 move || { let seen=seen.clone();let release=release.clone();async move {
-                    seen.notify_one(); release.notified().await; Json(json!({"state":"approved"}))
+                    let ready=release.notified();tokio::pin!(ready);let _=ready.as_mut().enable();seen.notify_one();ready.await;Json(json!({"state":"approved"}))
                 }}
             }));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2415,6 +2506,67 @@ mod tests {
             client.clear_auth(&mut state).unwrap();
         }
         assert!(client.standby_heartbeat(&next).await.is_err());
+        server.abort();
+    }
+    #[tokio::test]
+    async fn standby_wait_bypasses_account_work_and_uses_the_current_device_proof() {
+        let (client, server, seen, release) = lease_fixture(30).await;
+        let scope = prime_standby(&client).await;
+        let slow = tokio::spawn({
+            let client = client.clone();
+            async move {
+                client
+                    .call(
+                        "remote_status",
+                        json!({"id":"00000000-0000-0000-0000-000000000081"}),
+                    )
+                    .await
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(2), seen.notified())
+            .await
+            .unwrap();
+        let wait = tokio::spawn({
+            let client = client.clone();
+            async move { client.standby_heartbeat_wait(&scope).await }
+        });
+        tokio::time::timeout(Duration::from_secs(2), seen.notified())
+            .await
+            .expect("account mutex blocked the wait request");
+        release.notify_waiters();
+        assert_eq!(wait.await.unwrap().unwrap()["standby_wait_ms"], 15000);
+        slow.await.unwrap().unwrap();
+        server.abort();
+    }
+    #[tokio::test]
+    async fn standby_wait_cannot_restore_an_invalidated_scope_after_its_response() {
+        let (client, server, seen, release) = lease_fixture(30).await;
+        let scope = prime_standby(&client).await;
+        assert!(client.standby_heartbeat_wait("other|device").await.is_err());
+        let wait = tokio::spawn({
+            let client = client.clone();
+            async move { client.standby_heartbeat_wait(&scope).await }
+        });
+        seen.notified().await;
+        client.invalidate_presence();
+        release.notify_one();
+        assert!(wait.await.unwrap().is_err());
+        server.abort();
+    }
+    #[tokio::test]
+    async fn standby_wait_has_a_dedicated_response_timeout() {
+        let (client, server, seen, release) = lease_fixture(30).await;
+        let scope = prime_standby(&client).await;
+        let wait = tokio::spawn({
+            let client = client.clone();
+            async move { client.standby_heartbeat_wait(&scope).await }
+        });
+        seen.notified().await;
+        // Ordinary requests time out after 15 seconds; the server-clock lane
+        // needs room for its real 15-second delayed response plus network I/O.
+        tokio::time::sleep(Duration::from_secs(16)).await;
+        release.notify_one();
+        assert_eq!(wait.await.unwrap().unwrap()["generation"], 2);
         server.abort();
     }
     async fn delayed_standby_fixture(

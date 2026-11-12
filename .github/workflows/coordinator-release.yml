@@ -1,8 +1,15 @@
 name: Coordinator update package
 on:
   push:
-    branches: ["codex/multi-viewer-resilience"]
-    tags: ['coordinator-multiview-*']
+    branches: ["codex/multi-viewer-resilience", "codex/android-update-*"]
+    tags: ["coordinator-multiview-*"]
+    paths:
+      - "services/coordinator/**"
+      - "crates/core/**"
+      - "Cargo.*"
+      - "deploy/production/Dockerfile"
+      - "scripts/deploy/**"
+      - ".github/workflows/coordinator-release.yml"
 permissions:
   contents: read
 concurrency:
@@ -19,7 +26,7 @@ jobs:
           POSTGRES_USER: farsail
           POSTGRES_PASSWORD: disposable_ci_password
           POSTGRES_DB: farsail_test
-        ports: ['5432:5432']
+        ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U farsail -d farsail_test"
           --health-interval 2s --health-timeout 2s --health-retries 30
@@ -88,14 +95,17 @@ jobs:
           cd package
           sha256sum -c *.sha256
           cat > notes.md <<'EOF'
-          修复多设备远程连接时可能出现的 HTTP 429：取消账号级远程请求次数限额。
-          保留登录保护、设备身份校验和目标授权。
+          增加安卓休眠在线支持：服务器可按设备请求延迟返回心跳响应，
+          配套 Android 0.1.17-pulse1 利用真实网络响应在休眠后继续续约。
+          普通客户端心跳保持即时返回；无需数据库迁移。
+          设备只在实际请求时续约，响应延迟不会延长在线租约或远程授权。
+          保留此前的多设备请求修复、登录保护、设备身份校验和目标授权。
 
           已安装在线升级入口的服务器执行：
           ```bash
           /home/data/farsail/farsail-update
           ```
           Linux amd64 协调服务专用包；升级会备份数据库并短暂重启协调服务。
-          多开时的传输容错和重连画面修复还需要更新 Windows / Android 客户端。
+          断电休眠在线修复需要配套更新 Android 客户端；旧客户端可继续连接。
           EOF
-          gh release create "$RELEASE_TAG" --target "$SOURCE_REVISION" --prerelease --title 'FarSail 协调服务：多设备远程连接修复' --notes-file notes.md *.tar.gz *.sha256
+          gh release create "$RELEASE_TAG" --target "$SOURCE_REVISION" --prerelease --title 'FarSail 协调服务：安卓休眠在线支持' --notes-file notes.md *.tar.gz *.sha256

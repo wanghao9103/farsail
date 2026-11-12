@@ -282,9 +282,11 @@ class CaptureService : Service() {
         super.onDestroy()
     }
     override fun dump(fd: java.io.FileDescriptor, writer: java.io.PrintWriter, args: Array<out String>) {
+        writer.println("deviceId=${app.state.optString("deviceId")}")
         writer.println("running=$running phase=$phase accessibilityMode=$accessibilityMode screenshotFrames=$screenshotFrames")
         writer.println("width=$screenWidth height=$screenHeight frameAgeMs=${if (lastFrame == 0L) -1 else SystemClock.elapsedRealtime() - lastFrame}")
         writer.println("controlServiceConnected=${ControlSetup.connected(this)} interactive=${getSystemService(PowerManager::class.java).isInteractive}")
+        if (::power.isInitialized) writer.println(power.diagnostic())
         if (Build.VERSION.SDK_INT >= 30) accessibilityFrames?.let {
             writer.println("screenshotCaptureMs=${it.captureMs} screenshotAgeMs=${it.captureAgeMs} screenshotEncodeMs=${it.encodeMs} screenshotIntervalMs=${it.intervalMs}")
         }
