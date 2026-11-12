@@ -1,0 +1,13 @@
+**English** | [简体中文](WI-ANDROID-UNPLUGGED-051.zh-CN.md)
+
+# Android unplugged offline investigation
+
+2026-11-12. The user reports that an unplugged phone eventually disappears from the device list, not merely that a viewer reconnects. The connected Android 10 phone still had the same foreground connection and capture services after approximately 21 hours, battery exemption enabled, accepted heartbeats and no current network restriction. USB was supplying power during inspection, so this is not evidence of uninterrupted unplugged operation.
+
+A 50-second forced deep-Doze sample retained accepted heartbeats about every 15 seconds; sampled heartbeat ages were 13878, 9085 and 4272 ms. The test restored `mForceIdle=false`, deep/light states ACTIVE. Physical charging remained connected. This did not reproduce the reported failure and does not exclude ColorOS policies when physically unplugged.
+
+A separate confirmed defect was found: `SharingPower` acquired CPU and screen locks once for eight hours and never renewed them. The inspected long-running service no longer held either sharing lock. Replace them with non-reference-counted 90-second leases renewed every 30 seconds only while capture runs. Disabling screen retention, sleeping or entering keyguard releases the screen lease; renewal never wakes or unlocks the device. Stopping capture removes renewal callbacks and releases both locks. The connection service already renews its own bounded CPU lease and is not changed to hold an indefinite lock.
+
+Add a bounded local connection journal for power/idle transitions, service creation/destruction, the last checkpointed heartbeat, heartbeat failures/recovery and long tick/heartbeat gaps. Store only times and coarse power/network flags; exclude accounts, tokens, endpoint addresses and Wi-Fi identifiers. Retain at most 24 events across process recreation and checkpoint successful heartbeats at most once per minute. Dump output includes capture power-lease state. The journal diagnoses suspension, process replacement and network/authentication failures after reconnecting USB; it does not bypass manufacturer restrictions.
+
+Local validation passed 16 JVM tests, debug lint and instrumentation-test Kotlin compilation. Three new virtual-clock regression tests exercise 12 hours of capture, release on sleep/opt-out/stop, and bounded expiry when renewal stops. These are not a physical 12-hour battery test. Prepare an original-certificate `0.1.17-power1` candidate, retaining the previously accepted background wake fix. Physically unplugged device-list acceptance remains pending; no claim that the reported offline issue is solved.

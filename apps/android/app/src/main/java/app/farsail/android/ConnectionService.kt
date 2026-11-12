@@ -65,9 +65,30 @@ class ConnectionService : Service() {
     private var lastNotification = ""
     @Volatile private var operation = "idle"
     private var lastTick = 0L
+    private lateinit var journal: ConnectionJournal
+    private val powerChanges = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            val event = when (intent.action) {
+                Intent.ACTION_POWER_CONNECTED -> "power_connected"
+                Intent.ACTION_POWER_DISCONNECTED -> "power_disconnected"
+                PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED -> "idle_changed"
+                PowerManager.ACTION_POWER_SAVE_MODE_CHANGED -> "power_save_changed"
+                else -> return
+            }
+            journal.record(event)
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
+        journal = ConnectionJournal(this)
+        journal.record("service_created")
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_POWER_CONNECTED); addAction(Intent.ACTION_POWER_DISCONNECTED)
+            addAction(PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED); addAction(PowerManager.ACTION_POWER_SAVE_MODE_CHANGED)
+        }
+        if (Build.VERSION.SDK_INT >= 33) registerReceiver(powerChanges, filter, Context.RECEIVER_NOT_EXPORTED)
+        else @Suppress("DEPRECATION") registerReceiver(powerChanges, filter)
         cpu = getSystemService(PowerManager::class.java).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "FarSail:Connection").apply { setReferenceCounted(false) }
         getSystemService(NotificationManager::class.java).createNotificationChannel(
             NotificationChannel("connection", "设备在线", NotificationManager.IMPORTANCE_LOW).apply {
@@ -104,7 +125,9 @@ class ConnectionService : Service() {
     private val tick = object : Runnable {
         override fun run() {
             if (stopped) return
-            lastTick = SystemClock.elapsedRealtime()
+            val tickAt = SystemClock.elapsedRealtime()
+            if (lastTick != 0L && tickAt - lastTick > PERIOD * 3) journal.record("tick_gap_ms=${tickAt - lastTick}")
+            lastTick = tickAt
             if (!enabled(this@ConnectionService)) { stopSelf(); return }
             if (!app.ready && SystemClock.elapsedRealtime() - startedAt > 45000) { stopSelf(); return }
             // Bounded leases are renewed only while this visible connection task lives.
@@ -117,12 +140,14 @@ class ConnectionService : Service() {
                 heartbeatWorker.execute {
                     var current = true
                     var success = false
+                    var failure = ""
                     try {
                         operation = "identity"
                         current = !stopped && generation == epoch && enabled(this@ConnectionService)
                         if (current) { operation = "heartbeat"; app.invoke("standby_heartbeat", JSONObject().put("scope", expected)); success = true }
                     } catch (e: Exception) {
                         val code = Regex("HTTP ([0-9]{3})").find(e.message.orEmpty())?.groupValues?.get(1) ?: e.javaClass.simpleName
+                        failure = code
                         android.util.Log.w("FarSailConnection", "Presence failed: $code")
                         if (Regex("HTTP (401|403)([^0-9]|$)").containsMatchIn(e.message.orEmpty()) || e.message.orEmpty().contains("standby identity changed")) current = false
                     }
@@ -130,6 +155,7 @@ class ConnectionService : Service() {
                         if (stopped || generation != epoch) return@post
                         inflight = false
                         operation = "idle"
+                        if (!success) journal.failure(failure)
                         if (!current) { stopSelf(); return@post }
                         if (success) {
                             // Endpoint maintenance and UI refresh may wait for business
@@ -146,6 +172,7 @@ class ConnectionService : Service() {
                                 }
                             }
                             lastHeartbeat = SystemClock.elapsedRealtime()
+                            journal.heartbeat()
                             detail = if (CaptureService.running && CaptureService.phase == "sharing") "设备在线，屏幕正在共享。" else "设备在线；屏幕未共享，请在手机上恢复屏幕共享。"
                             android.util.Log.i("FarSailConnection", "Heartbeat accepted; capture=${CaptureService.running}")
                         } else detail = "设备连接暂不可用，正在重试；请检查网络或登录状态。"
@@ -166,9 +193,12 @@ class ConnectionService : Service() {
         writer.println("running=$running ready=${app.ready} inflight=$inflight operation=$operation")
         writer.println("heartbeatAgeMs=${if (lastHeartbeat == 0L) -1 else now - lastHeartbeat} tickAgeMs=${if (lastTick == 0L) -1 else now - lastTick}")
         writer.println("batteryExempt=${BackgroundSetup.exempt(this)} cpuLeaseHeld=${::cpu.isInitialized && cpu.isHeld}")
+        if (::journal.isInitialized) journal.dump(writer)
     }
     override fun onDestroy() {
         stopped = true; generation++; running = false; activeScope = null
+        journal.record("service_destroyed")
+        unregisterReceiver(powerChanges)
         detail = if (enabled(this)) "后台在线服务已停止，重新打开 App 可重试。" else "后台保持在线已关闭。"
         handler.removeCallbacks(tick)
         heartbeatWorker.shutdown()

@@ -91,9 +91,9 @@ jobs:
           mobile_version="$(node -p "require('./apps/android/version.json').version")"
           if [[ "$REUSE_NATIVE" == 'true' ]]; then
             cd apps/android
-            ./gradlew --no-daemon :app:assembleRelease :app:lintRelease :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin "-PfarsailVersionName=${mobile_version}-wake1"
+            ./gradlew --no-daemon :app:assembleRelease :app:lintRelease :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin "-PfarsailVersionName=${mobile_version}-power1"
           else
-            scripts/build-android.sh :app:assembleRelease :app:lintRelease :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin "-PfarsailVersionName=${mobile_version}-wake1"
+            scripts/build-android.sh :app:assembleRelease :app:lintRelease :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin "-PfarsailVersionName=${mobile_version}-power1"
           fi
       - uses: actions/upload-artifact@v4
         with:
