@@ -2,6 +2,7 @@ name: Android candidate package
 on:
   push:
     branches: ["codex/android-update-*"]
+    paths-ignore: ["docs/**"]
 permissions:
   contents: read
   actions: read
@@ -91,9 +92,9 @@ jobs:
           mobile_version="$(node -p "require('./apps/android/version.json').version")"
           if [[ "$REUSE_NATIVE" == 'true' ]]; then
             cd apps/android
-            ./gradlew --no-daemon :app:assembleRelease :app:lintRelease :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin "-PfarsailVersionName=${mobile_version}-idle1"
+            ./gradlew --no-daemon :app:assembleRelease :app:lintRelease :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin "-PfarsailVersionName=${mobile_version}-pulse1"
           else
-            scripts/build-android.sh :app:assembleRelease :app:lintRelease :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin "-PfarsailVersionName=${mobile_version}-idle1"
+            scripts/build-android.sh :app:assembleRelease :app:lintRelease :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin "-PfarsailVersionName=${mobile_version}-pulse1"
           fi
       - uses: actions/upload-artifact@v4
         with:

@@ -16,7 +16,7 @@ internal class ConnectionJournal(private val context: Context) {
     private var lastBeat = saved.getLong("lastHeartbeatWall", 0)
     private var failed = false
     private val history = runCatching { JSONArray(saved.getString("events", "[]")) }.getOrDefault(JSONArray())
-    fun record(event: String) {
+    @Synchronized fun record(event: String) {
         val power = context.getSystemService(PowerManager::class.java)
         val connectivity = context.getSystemService(ConnectivityManager::class.java)
         val capabilities = connectivity.getNetworkCapabilities(connectivity.activeNetwork)
@@ -29,7 +29,7 @@ internal class ConnectionJournal(private val context: Context) {
         while (history.length() > 24) history.remove(0)
         saved.edit().putString("events", history.toString()).apply()
     }
-    fun heartbeat() {
+    @Synchronized fun heartbeat() {
         val wall = System.currentTimeMillis()
         val gap = if (lastBeat > 0) wall - lastBeat else 0
         if (gap > 45_000) record("heartbeat_wall_gap_ms=$gap")
@@ -41,8 +41,8 @@ internal class ConnectionJournal(private val context: Context) {
             lastCheckpoint = now
         }
     }
-    fun failure(code: String) { if (!failed) record("heartbeat_failure=$code"); failed = true }
-    fun dump(writer: java.io.PrintWriter) {
+    @Synchronized fun failure(code: String) { if (!failed) record("heartbeat_failure=$code"); failed = true }
+    @Synchronized fun dump(writer: java.io.PrintWriter) {
         writer.println("lastHeartbeatWall=$lastBeat powerHistory=$history")
     }
 }

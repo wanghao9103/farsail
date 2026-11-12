@@ -385,6 +385,140 @@ async fn postgres_identity_device_and_grant_lifecycle() {
     )
     .await;
     assert_eq!(s, StatusCode::CONFLICT);
+    // An opt-in wait must never rotate an unestablished generation.
+    let (s, _) = post(
+        &app,
+        "/v1/devices/heartbeat",
+        json!({"wait_for_next":true}),
+        Some(&alice_device_token),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (s, legacy) = post(
+        &app,
+        "/v1/devices/heartbeat",
+        json!({"generation":second}),
+        Some(&alice_device_token),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(legacy.get("standby_wait_ms").is_none());
+    sqlx::query("UPDATE devices SET last_seen_at='2000-01-01' WHERE id=$1")
+        .bind(alice_device)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let wait = tokio::spawn({
+        let app = app.clone();
+        let proof = alice_device_token.clone();
+        async move {
+            post(
+                &app,
+                "/v1/devices/heartbeat",
+                json!({"generation":second,"wait_for_next":true}),
+                Some(&proof),
+                None,
+            )
+            .await
+        }
+    });
+    let accepted_lease: chrono::DateTime<chrono::Utc> =
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let row: (chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>) =
+                    sqlx::query_as("SELECT last_seen_at,lease_until FROM devices WHERE id=$1")
+                        .bind(alice_device)
+                        .fetch_one(&pool)
+                        .await
+                        .unwrap();
+                if row.0.timestamp() > 1_000_000_000 {
+                    break row.1;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+    assert!(
+        !wait.is_finished(),
+        "wait endpoint replied before its server delay"
+    );
+    let (s, waited) = wait.await.unwrap();
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(waited["standby_wait_ms"], 15000);
+    assert!(waited["expires_in"].as_i64().unwrap() <= 45);
+    let after_lease: chrono::DateTime<chrono::Utc> =
+        sqlx::query_scalar("SELECT lease_until FROM devices WHERE id=$1")
+            .bind(alice_device)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        accepted_lease, after_lease,
+        "delivering a response must not extend device authority"
+    );
+    // A disabled device must not receive a successful acknowledgement from an
+    // old, still-open request. Use a separate device to preserve later cases.
+    let sleeper_key = signing_key();
+    let (sleeper, sleeper_token) = bind(&app, &alice, &sleeper_key, "Idle probe", false).await;
+    let sleeper_generation = online(&app, &sleeper_token).await;
+    sqlx::query("UPDATE devices SET last_seen_at='2000-01-01' WHERE id=$1")
+        .bind(sleeper)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let revoked_wait = tokio::spawn({
+        let app = app.clone();
+        let proof = sleeper_token.clone();
+        async move {
+            post(
+                &app,
+                "/v1/devices/heartbeat",
+                json!({"generation":sleeper_generation,"wait_for_next":true}),
+                Some(&proof),
+                None,
+            )
+            .await
+        }
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let seen: chrono::DateTime<chrono::Utc> =
+                sqlx::query_scalar("SELECT last_seen_at FROM devices WHERE id=$1")
+                    .bind(sleeper)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            if seen.timestamp() > 1_000_000_000 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    sqlx::query("UPDATE devices SET enabled=false WHERE id=$1")
+        .bind(sleeper)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(revoked_wait.await.unwrap().0, StatusCode::UNAUTHORIZED);
+    sqlx::query("DELETE FROM devices WHERE id=$1")
+        .bind(sleeper)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (s, _) = post(
+        &app,
+        "/v1/devices/heartbeat",
+        json!({"generation":second}),
+        Some(&alice_device_token),
+        None,
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
     let bob_generation = online(&app, &bob_device_token).await;
 
     // Two valid challenges for one key race through the PostgreSQL unique constraint.

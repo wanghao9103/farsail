@@ -19,9 +19,13 @@ cp scripts/deploy/{upgrade-coordinator,update-online,install-online-updater}.sh 
 cat > "$release/README.md" <<'EOF'
 # FarSail coordinator update
 
-Removes the account-wide remote-request quota that could return HTTP 429 when
-connecting or reconnecting several devices. Login protection, device ownership,
-source credentials and target authorization remain required.
+Adds opt-in server-delayed heartbeat replies for the Android idle-connection
+client. Real network replies can drive the next authenticated request when a
+phone's CPU timers pause. Ordinary clients still receive immediate replies.
+No database migration is required. Device leases renew only on actual requests;
+waiting or delivering a response does not extend device or remote authority.
+Retains the earlier multi-device request fix, login protection, device ownership,
+source credentials and target authorization.
 
 Existing deployments with the online updater: run `/home/data/farsail/farsail-update`.
 For a verified, extracted offline package:
@@ -30,7 +34,7 @@ For a verified, extracted offline package:
 
 Use your existing deployment directory. The upgrade backs up the database and
 restarts the coordinator. Existing sessions may need to reconnect.
-Android and desktop congestion/recovery fixes require separate client updates.
+Idle availability requires the paired Android 0.1.17-pulse1 client update.
 EOF
 (cd "$release" && sha256sum coordinator-images.tar.gz coordinator-release.json upgrade-coordinator.sh update-online.sh install-online-updater.sh README.md > SHA256SUMS && sha256sum -c SHA256SUMS)
 name="FarSail_coordinator_multiview_${revision:0:7}_linux_amd64.tar.gz"
