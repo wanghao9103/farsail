@@ -13,6 +13,8 @@ class ConnectionService : Service() {
         private const val PERIOD = 15000L
         @Volatile var running = false
             private set
+        @Volatile internal var instance: ConnectionService? = null
+            private set
         @Volatile var lastHeartbeat = 0L
             private set
         @Volatile var detail = "打开 App 后自动保持本机在线。"
@@ -66,6 +68,20 @@ class ConnectionService : Service() {
     @Volatile private var operation = "idle"
     private var lastTick = 0L
     private lateinit var journal: ConnectionJournal
+    private lateinit var wakeup: ConnectionWakeup
+    private var wakeDone: (() -> Unit)? = null
+    private fun activeWakeScope() = !stopped && running && enabled(this) &&
+        getSharedPreferences("connection", Context.MODE_PRIVATE).getString("scope", null) == identity
+    internal fun wakeHeartbeat(done: () -> Unit) {
+        if (!activeWakeScope()) { wakeup.ensure(false); done(); return }
+        if (!wakeup.delivered()) { done(); return }
+        if (!wakeup.eligible()) { wakeup.ensure(true); done(); return }
+        wakeDone?.invoke(); wakeDone = done
+        if (wakeup.deliveries == 1L || wakeup.deliveries % 10L == 0L) journal.record("wake_alarm_delivered")
+        android.util.Log.i("FarSailConnection", "System wake heartbeat delivered")
+        handler.removeCallbacks(tick)
+        tick.run()
+    }
     private val powerChanges = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             val event = when (intent.action) {
@@ -73,19 +89,24 @@ class ConnectionService : Service() {
                 Intent.ACTION_POWER_DISCONNECTED -> "power_disconnected"
                 PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED -> "idle_changed"
                 PowerManager.ACTION_POWER_SAVE_MODE_CHANGED -> "power_save_changed"
+                Intent.ACTION_SCREEN_OFF -> "screen_off"
+                Intent.ACTION_SCREEN_ON -> "screen_on"
                 else -> return
             }
             journal.record(event)
+            wakeup.ensure(activeWakeScope())
         }
     }
 
     override fun onCreate() {
         super.onCreate()
         journal = ConnectionJournal(this)
+        wakeup = ConnectionWakeup(this)
         journal.record("service_created")
         val filter = IntentFilter().apply {
             addAction(Intent.ACTION_POWER_CONNECTED); addAction(Intent.ACTION_POWER_DISCONNECTED)
             addAction(PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED); addAction(PowerManager.ACTION_POWER_SAVE_MODE_CHANGED)
+            addAction(Intent.ACTION_SCREEN_OFF); addAction(Intent.ACTION_SCREEN_ON)
         }
         if (Build.VERSION.SDK_INT >= 33) registerReceiver(powerChanges, filter, Context.RECEIVER_NOT_EXPORTED)
         else @Suppress("DEPRECATION") registerReceiver(powerChanges, filter)
@@ -115,6 +136,7 @@ class ConnectionService : Service() {
             if (Build.VERSION.SDK_INT >= 29) startForeground(42, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
             else startForeground(42, notification())
             running = true; activeScope = identity
+            instance = this
             handler.removeCallbacks(tick); handler.post(tick)
         } catch (e: Exception) {
             android.util.Log.w("FarSailConnection", "Foreground start failed: ${e.javaClass.simpleName}")
@@ -133,6 +155,7 @@ class ConnectionService : Service() {
             // Bounded leases are renewed only while this visible connection task lives.
             // No screen wake lock, screen wake-up or keyguard operation is involved.
             cpu.acquire(PERIOD * 6)
+            wakeup.ensure(activeWakeScope())
             if (!inflight && app.ready) {
                 inflight = true
                 operation = "queued"
@@ -155,6 +178,7 @@ class ConnectionService : Service() {
                         if (stopped || generation != epoch) return@post
                         inflight = false
                         operation = "idle"
+                        wakeDone?.invoke(); wakeDone = null
                         if (!success) journal.failure(failure)
                         if (!current) { stopSelf(); return@post }
                         if (success) {
@@ -194,9 +218,13 @@ class ConnectionService : Service() {
         writer.println("heartbeatAgeMs=${if (lastHeartbeat == 0L) -1 else now - lastHeartbeat} tickAgeMs=${if (lastTick == 0L) -1 else now - lastTick}")
         writer.println("batteryExempt=${BackgroundSetup.exempt(this)} cpuLeaseHeld=${::cpu.isInitialized && cpu.isHeld}")
         if (::journal.isInitialized) journal.dump(writer)
+        if (::wakeup.isInitialized) writer.println(wakeup.diagnostic())
     }
     override fun onDestroy() {
         stopped = true; generation++; running = false; activeScope = null
+        if (instance === this) instance = null
+        wakeDone?.invoke(); wakeDone = null
+        wakeup.close()
         journal.record("service_destroyed")
         unregisterReceiver(powerChanges)
         detail = if (enabled(this)) "后台在线服务已停止，重新打开 App 可重试。" else "后台保持在线已关闭。"
