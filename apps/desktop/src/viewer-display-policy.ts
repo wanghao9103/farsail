@@ -76,8 +76,19 @@ export class ViewerDisplayGate {
     this.target = found.id;
     return true;
   }
-  resolve(list: RemoteDisplay[]): DisplayTicket | null {
+  resolve(list: RemoteDisplay[], platform?: string): DisplayTicket | null {
     if (this.stage !== "waiting_list" || !list.length) return null;
+    // Android exposes one logical screen; rotation/capture resizing changes
+    // its rectangle without changing the user's screen choice. No switch IPC
+    // is needed, but input remains blocked until its frame actually arrives.
+    if (platform === "android" && list.length === 1) {
+      this.epoch++;
+      this.choice = { ...list[0] };
+      this.target = list[0].id;
+      this.stage = "awaiting_frame";
+      this.issue = null;
+      return null;
+    }
     if (this.choice) {
       const match = matchRetainedDisplay(this.choice, list);
       if (match.kind !== "matched") {

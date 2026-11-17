@@ -700,6 +700,27 @@ pub fn viewer_window_active(
     }))
 }
 
+fn validate_viewer_session(row: &Value, state: &Value) -> Result<(), String> {
+    let source = row["source_device_id"].as_str().filter(|id| !id.is_empty());
+    let local = state["deviceId"].as_str().filter(|id| !id.is_empty());
+    if local.is_none() {
+        return Err("本机设备身份已失效，请重新登录并添加这台电脑后再连接。".into());
+    }
+    if source.is_none() || source != local {
+        return Err("此会话由其他设备发起，请在本机重新发起连接。".into());
+    }
+    match row["state"].as_str() {
+        Some("approved") => Ok(()),
+        Some("pending") => Err("连接请求仍在等待批准，请等待对方批准后再连接。".into()),
+        Some("expired") => {
+            Err("连接授权已过期，请重新连接；若反复出现，请检查网络和对方屏幕共享状态。".into())
+        }
+        Some("revoked") => Err("连接授权已撤销，请确认对方仍在共享屏幕后重新连接。".into()),
+        Some("denied") => Err("对方已拒绝连接，请与对方确认后重新申请。".into()),
+        _ => Err("会话状态无效，请刷新设备列表后重新连接。".into()),
+    }
+}
+
 #[tauri::command]
 pub async fn viewer_open(
     window: tauri::WebviewWindow,
@@ -731,9 +752,7 @@ pub async fn viewer_open(
         .await
         .map_err(|e| e.to_string())?;
     let state = client.public_state().await;
-    if row["source_device_id"] != state["deviceId"] || row["state"] != "approved" {
-        return Err("只能打开本机发起的有效会话".into());
-    }
+    validate_viewer_session(&row, &state)?;
     let permission = match row["permission"].as_str() {
         Some("control") => RemotePermission::Control,
         Some("view") => RemotePermission::View,
@@ -1209,6 +1228,46 @@ pub async fn viewer_reconnect(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn viewer_session_validation_distinguishes_identity_and_authorization() {
+        let local = json!({"deviceId":"local"});
+        assert!(
+            validate_viewer_session(
+                &json!({"source_device_id":"local","state":"approved"}),
+                &local
+            )
+            .is_ok()
+        );
+        for (status, message) in [
+            ("pending", "等待批准"),
+            ("expired", "已过期"),
+            ("revoked", "已撤销"),
+            ("denied", "已拒绝"),
+            ("unknown", "状态无效"),
+        ] {
+            let row = json!({"source_device_id":"local","state":status});
+            assert!(
+                validate_viewer_session(&row, &local)
+                    .unwrap_err()
+                    .contains(message)
+            );
+        }
+        assert!(
+            validate_viewer_session(
+                &json!({"source_device_id":"other","state":"approved"}),
+                &local
+            )
+            .unwrap_err()
+            .contains("其他设备")
+        );
+        assert!(validate_viewer_session(&json!({"state":"approved"}), &local).is_err());
+        assert!(
+            validate_viewer_session(&json!({"state":"approved"}), &json!({}))
+                .unwrap_err()
+                .contains("身份已失效")
+        );
+    }
+
     #[test]
     fn cascade_keeps_titlebars_distinct_and_inside_scaled_work_areas() {
         for (origin, area, size) in [

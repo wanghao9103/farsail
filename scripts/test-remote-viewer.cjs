@@ -81,6 +81,7 @@ const fs = require("node:fs");
       release: null,
     });
     f.noFrames = !!options.noFrames;
+    if (options.android) f.platform = "android";
     if (options.noFrames) f.platform = "android";
     if (options.viewportStartup) {
       f.platform = "android";
@@ -351,11 +352,16 @@ const fs = require("node:fs");
           return f.video.generation;
         }
         if (cmd === "media_viewport") {
-          f.video.profile = 2;
-          f.video.viewport_edge = args.edge;
-          f.video.generation++;
-          f.frame(args.edge, Math.floor((args.edge * 9) / 16));
-          return f.video.generation;
+          const generation = f.video.generation + 1;
+          const apply = () => {
+            f.video.profile = 2;
+            f.video.viewport_edge = args.edge;
+            f.video.generation = generation;
+            f.frame(args.edge, Math.floor((args.edge * 9) / 16));
+          };
+          if (f.viewportAckDelay) setTimeout(apply, f.viewportAckDelay);
+          else apply();
+          return generation;
         }
         if (cmd === "viewer_window_action") {
           if (args.action === "fullscreen") f.fullscreen = !f.fullscreen;
@@ -3715,6 +3721,45 @@ const fs = require("node:fs");
   );
   assert.deepEqual(errors, []);
   async function testAdaptiveViewports() {
+    // Stacked sessions share window geometry, but only the selected tab may
+    // negotiate capture size. Simulate delayed/stale status on hidden tabs.
+    const stacked = await browser.newPage({
+      viewport: { width: 800, height: 600 },
+    });
+    await stacked.addInitScript(installFixture, { viewportStartup: true });
+    await stacked.goto(
+      process.env.UI_URL || "http://127.0.0.1:1420/?viewer=test",
+    );
+    await stacked.getByAltText("远端桌面").waitFor();
+    await stacked.evaluate(() => {
+      window.fixture.tabs = [
+        { instance: "stack-a", id: "stack-a", name: "手机 A", selected: true },
+        { instance: "stack-b", id: "stack-b", name: "手机 B", selected: false },
+      ];
+    });
+    await stacked.getByRole("tab", { name: "手机 A", exact: true }).waitFor();
+    await stacked.getByRole("tabpanel").getByAltText("远端桌面").waitFor();
+    await stacked.getByRole("tab", { name: "手机 B", exact: true }).click();
+    await stacked.getByRole("tabpanel").getByAltText("远端桌面").waitFor();
+    await stacked.waitForTimeout(1200);
+    await stacked.evaluate(() => {
+      window.fixture.calls = [];
+      window.fixture.video.viewport_edge = 0;
+    });
+    await stacked.setViewportSize({ width: 1100, height: 700 });
+    await stacked.waitForTimeout(2400);
+    const negotiations = await stacked.evaluate(() =>
+      window.fixture.calls.filter(
+        (c) => c.cmd === "media_viewport" || c.cmd === "media_profile",
+      ),
+    );
+    assert(negotiations.some((c) => c.args.id === "stack-b"));
+    assert(
+      !negotiations.some((c) => c.args.id === "stack-a"),
+      "hidden stacked tab must not renegotiate using stale geometry/status",
+    );
+    await stacked.close();
+
     // Four independent Android windows negotiate only their own pixel budgets.
     // A congested native-size first frame must not be required to negotiate a
     // smaller stream. Metadata is already authenticated and carries geometry.
@@ -3752,6 +3797,49 @@ const fs = require("node:fs");
       0,
     );
     await startup.close();
+    // In a tall phone window the height drives automatic quality. A delayed
+    // acknowledgement keeps the notice visible beyond the resize debounce.
+    const portrait = await browser.newPage({
+      viewport: { width: 440, height: 900 },
+    });
+    await portrait.addInitScript(installFixture, { android: true });
+    await portrait.goto(
+      process.env.UI_URL || "http://127.0.0.1:1420/?viewer=test",
+    );
+    await portrait.getByAltText("远端桌面").waitFor();
+    await portrait.waitForFunction(() => window.fixture.video.generation > 0);
+    await portrait
+      .getByText("正在切换画面分辨率…", { exact: true })
+      .waitFor({ state: "hidden" });
+    await portrait.waitForTimeout(500);
+    const before = await portrait.locator(".remote-screen").boundingBox();
+    await portrait.evaluate(() => {
+      window.fixture.platform = "android";
+      window.fixture.video.max_profile = 2;
+      window.fixture.viewportAckDelay = 900;
+      window.fixture.video.viewport_supported = true;
+    });
+    await portrait.getByText("正在切换画面分辨率…", { exact: true }).waitFor();
+    await portrait.waitForTimeout(350);
+    const during = await portrait.locator(".remote-screen").boundingBox();
+    assert.deepEqual(
+      during,
+      before,
+      "resolution notice must not resize the adaptive canvas",
+    );
+    await portrait
+      .getByText("正在切换画面分辨率…", { exact: true })
+      .waitFor({ state: "hidden" });
+    await portrait.waitForTimeout(2200);
+    assert.equal(
+      await portrait.evaluate(
+        () =>
+          window.fixture.calls.filter((c) => c.cmd === "media_viewport").length,
+      ),
+      1,
+      "a stationary portrait window must settle after one viewport request",
+    );
+    await portrait.close();
     const windows = [];
     for (const width of [640, 720, 800, 960]) {
       const p = await browser.newPage({ viewport: { width, height: 440 } });

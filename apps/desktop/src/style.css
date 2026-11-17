@@ -1915,6 +1915,16 @@ main > .alert {
   border-radius: 0;
   padding: 8px 12px;
 }
+/* Automatic quality measures the canvas. Its progress notice must not change
+   that measurement and negotiate another size when it appears/disappears. */
+.viewer-window .viewer-resolution-notice {
+  position: absolute;
+  top: var(--viewer-title-height);
+  left: 0;
+  right: 0;
+  z-index: 25;
+  pointer-events: none;
+}
 .viewer-window .notice-strip p {
   margin: 0 0 8px;
 }

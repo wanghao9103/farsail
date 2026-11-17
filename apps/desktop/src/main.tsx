@@ -3469,6 +3469,8 @@ function Viewer({
   const receivedDisplay = useRef<number | null>(null);
   const currentDisplays = useRef<RemoteDisplay[]>([]);
   const displayBusy = displaySnapshot.stage !== "ready";
+  const singlePhoneScreen =
+    status?.platform === "android" && status.displays.length === 1;
   const [retryingInput, setRetryingInput] = useState(false);
   const [dismissedInput, setDismissedInput] = useState<number | null>(null);
   const [dismissedMouse, setDismissedMouse] = useState<number | null>(null);
@@ -3626,14 +3628,16 @@ function Viewer({
   const screen = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const node = screen.current;
-    if (!node) return;
+    if (!node || !active) return;
     let timer: number;
     const measure = () => {
       const rect = node.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
       setViewportSize({ width: rect.width, height: rect.height });
       window.clearTimeout(timer);
       timer = window.setTimeout(() => {
         const rect = node.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) return;
         setViewportEdge(
           Math.max(rect.width, rect.height) * window.devicePixelRatio,
         );
@@ -3648,7 +3652,7 @@ function Viewer({
       window.removeEventListener("resize", measure);
       window.clearTimeout(timer);
     };
-  }, []);
+  }, [active]);
   const selectedDisplay = status?.displays.find(
     (d) => d.id === (displaySnapshot.target ?? picture?.display ?? 1),
   );
@@ -3657,6 +3661,7 @@ function Viewer({
     : 0;
   useEffect(() => {
     if (
+      !active ||
       !autoQuality ||
       ended ||
       !status?.video?.supported ||
@@ -3688,6 +3693,7 @@ function Viewer({
     );
     if (status.video.profile !== target) requestProfile(target);
   }, [
+    active,
     autoQuality,
     ended,
     displayBusy,
@@ -4017,7 +4023,7 @@ function Viewer({
     const gate = displayGate.current;
     const list = status?.displays ?? [];
     currentDisplays.current = list;
-    const ticket = gate.resolve(list);
+    const ticket = gate.resolve(list, status?.platform);
     if (ticket) requestDisplay(gate, ticket);
     else {
       if (
@@ -4029,7 +4035,7 @@ function Viewer({
       }
       setDisplaySnapshot(gate.snapshot());
     }
-  }, [status?.displays, id]);
+  }, [status?.displays, status?.platform, id]);
   useEffect(() => {
     if (
       !active ||
@@ -4210,7 +4216,11 @@ function Viewer({
             const intent = gate.intent();
             if (intent) onDisplayIntent(intent);
           }
-          if (pending) setDisplaySnapshot(gate.snapshot());
+          if (pending) {
+            setDisplaySnapshot(gate.snapshot());
+            const intent = gate.intent();
+            if (intent) onDisplayIntent(intent);
+          }
           const next = URL.createObjectURL(
             new Blob([data.subarray(49)], { type: "image/jpeg" }),
           );
@@ -4513,39 +4523,41 @@ function Viewer({
               {fps > 0 ? `${fps} 帧/秒` : picture ? "画面暂未更新" : "等待画面"}
             </span>
           </div>
-          <button
-            className="viewer-display-switch"
-            aria-label="切换屏幕"
-            disabled={
-              ended ||
-              !status?.displays.length ||
-              (status.displays.length < 2 &&
-                displaySnapshot.stage !== "unavailable") ||
-              displaySnapshot.stage === "selecting" ||
+          {!singlePhoneScreen && (
+            <button
+              className="viewer-display-switch"
+              aria-label="切换屏幕"
+              disabled={
+                ended ||
+                !status?.displays.length ||
+                (status.displays.length < 2 &&
+                  displaySnapshot.stage !== "unavailable") ||
+                displaySnapshot.stage === "selecting" ||
+                displaySnapshot.stage === "awaiting_frame"
+              }
+              title={
+                selectedDisplay
+                  ? `当前屏幕：${selectedDisplay.name} · ${selectedDisplay.width}×${selectedDisplay.height}`
+                  : "切换到下一块屏幕"
+              }
+              onClick={() => {
+                const displays = status?.displays ?? [];
+                const current = displaySnapshot.target ?? picture?.display;
+                const index = displays.findIndex((d) => d.id === current);
+                const display = displays[(index + 1) % displays.length];
+                if (!display) return;
+                const gate = displayGate.current;
+                const ticket = gate.choose(display);
+                if (ticket) requestDisplay(gate, ticket);
+              }}
+            >
+              <Desktop20Regular aria-hidden="true" />
+              {displaySnapshot.stage === "selecting" ||
               displaySnapshot.stage === "awaiting_frame"
-            }
-            title={
-              selectedDisplay
-                ? `当前屏幕：${selectedDisplay.name} · ${selectedDisplay.width}×${selectedDisplay.height}`
-                : "切换到下一块屏幕"
-            }
-            onClick={() => {
-              const displays = status?.displays ?? [];
-              const current = displaySnapshot.target ?? picture?.display;
-              const index = displays.findIndex((d) => d.id === current);
-              const display = displays[(index + 1) % displays.length];
-              if (!display) return;
-              const gate = displayGate.current;
-              const ticket = gate.choose(display);
-              if (ticket) requestDisplay(gate, ticket);
-            }}
-          >
-            <Desktop20Regular aria-hidden="true" />
-            {displaySnapshot.stage === "selecting" ||
-            displaySnapshot.stage === "awaiting_frame"
-              ? "切换中…"
-              : "切换屏幕"}
-          </button>
+                ? "切换中…"
+                : "切换屏幕"}
+            </button>
+          )}
           <details className="viewer-settings">
             <summary aria-label="桌面设置">
               <Settings20Regular aria-hidden="true" />
@@ -4829,7 +4841,7 @@ function Viewer({
           </div>
         </header>
         {profilePending != null && (
-          <div className="notice-strip" role="status">
+          <div className="notice-strip viewer-resolution-notice" role="status">
             正在切换画面分辨率…
           </div>
         )}
@@ -4845,11 +4857,15 @@ function Viewer({
             {reconnecting
               ? recoveryStageText(recoveryStatus)
               : displayBusy
-                ? displaySnapshot.stage === "unavailable"
-                  ? displaySnapshot.issue === "timeout"
-                    ? "暂未收到所选屏幕的画面，请点击切换屏幕重试。"
-                    : "原选中屏幕暂不可用或布局已变化，请点击切换屏幕。"
-                  : "连接已建立，正在恢复所选屏幕…"
+                ? singlePhoneScreen
+                  ? displaySnapshot.stage === "unavailable"
+                    ? "暂未收到手机画面，请检查手机屏幕共享或重新连接。"
+                    : "连接已建立，正在接收手机画面…"
+                  : displaySnapshot.stage === "unavailable"
+                    ? displaySnapshot.issue === "timeout"
+                      ? "暂未收到所选屏幕的画面，请点击切换屏幕重试。"
+                      : "原选中屏幕暂不可用或布局已变化，请点击切换屏幕。"
+                    : "连接已建立，正在恢复所选屏幕…"
                 : fileBusy || fileNote
                   ? activeFile
                     ? `正在传输 ${activeFile.name} · ${activeFile.size ? Math.round((activeFile.transferred / activeFile.size) * 100) : 0}%`
@@ -5039,37 +5055,43 @@ function Viewer({
                   ? recoveryStageText(recoveryStatus)
                   : ended
                     ? "连接已结束"
-                    : displaySnapshot.stage === "unavailable"
-                      ? "请点击切换屏幕选择可用画面。"
-                      : restoringConnection
-                        ? "正在恢复原选中的屏幕…"
-                        : displayBusy
-                          ? "正在切换屏幕…"
-                          : firstFrameSlow
-                            ? "连接已建立，但尚未收到画面。"
-                            : "正在接收远端首帧…"}
+                    : singlePhoneScreen && displayBusy
+                      ? displaySnapshot.stage === "unavailable"
+                        ? "暂未收到手机画面，请检查手机屏幕共享或重新连接。"
+                        : "正在接收手机画面…"
+                      : displaySnapshot.stage === "unavailable"
+                        ? "请点击切换屏幕选择可用画面。"
+                        : restoringConnection
+                          ? "正在恢复原选中的屏幕…"
+                          : displayBusy
+                            ? "正在切换屏幕…"
+                            : firstFrameSlow
+                              ? "连接已建立，但尚未收到画面。"
+                              : "正在接收远端首帧…"}
               </p>
               {displaySnapshot.stage === "unavailable" &&
                 !ended &&
                 !reconnecting && (
                   <div className="row-actions">
-                    <button
-                      onClick={() => {
-                        const display = currentDisplays.current.find(
-                          (d) => d.id === displaySnapshot.target,
-                        );
-                        const gate = displayGate.current;
-                        const ticket = display && gate.choose(display);
-                        if (ticket) requestDisplay(gate, ticket);
-                      }}
-                      disabled={
-                        !status?.displays.some(
-                          (d) => d.id === displaySnapshot.target,
-                        )
-                      }
-                    >
-                      重试当前屏幕
-                    </button>
+                    {!singlePhoneScreen && (
+                      <button
+                        onClick={() => {
+                          const display = currentDisplays.current.find(
+                            (d) => d.id === displaySnapshot.target,
+                          );
+                          const gate = displayGate.current;
+                          const ticket = display && gate.choose(display);
+                          if (ticket) requestDisplay(gate, ticket);
+                        }}
+                        disabled={
+                          !status?.displays.some(
+                            (d) => d.id === displaySnapshot.target,
+                          )
+                        }
+                      >
+                        重试当前屏幕
+                      </button>
+                    )}
                     <button onClick={() => beginReconnect(true)}>
                       重新连接
                     </button>

@@ -222,3 +222,29 @@ test("late target cannot override a newer explicit choice or request failure", (
   gate.fail(next, "request");
   assert(!gate.acceptFrame(1));
 });
+
+test("single Android screen restores after rotation without a selection request", () => {
+  const phone = { ...primary, name: "Android 屏幕", width: 1080, height: 2400 };
+  const rotated = { ...phone, width: 2400, height: 1080 };
+  const gate = new ViewerDisplayGate(phone, true);
+  assert.equal(gate.resolve([rotated], "android"), null);
+  assert.equal(gate.snapshot().stage, "awaiting_frame");
+  assert(!gate.canControl());
+  assert(!gate.acceptFrame(2));
+  assert(gate.acceptFrame(1));
+  assert(gate.canControl());
+  assert.deepEqual(gate.intent(), rotated);
+});
+test("single desktop screen retains strict matching and Android multi-screen does too", () => {
+  const changed = { ...primary, width: 1000 };
+  for (const [list, platform] of [
+    [[changed], "desktop"],
+    [[changed], undefined],
+    [[changed, secondary], "android"],
+  ]) {
+    const gate = new ViewerDisplayGate(primary, true);
+    assert.equal(gate.resolve(list, platform), null);
+    assert.equal(gate.snapshot().stage, "unavailable");
+    assert(!gate.acceptFrame(1));
+  }
+});
