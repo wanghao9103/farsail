@@ -1,7 +1,11 @@
 //! Real QUIC transport acceptance under an externally shaped loopback link.
 //! Synthetic pixels only. Encoding is measured separately, not counted as FPS.
 use super::*;
+use std::collections::BTreeMap;
 use std::sync::atomic::AtomicU64;
+
+const VIEWPORT_EDGE: u16 = 704;
+const RECOVERY_EDGE: u16 = 640;
 
 #[derive(serde::Serialize)]
 struct ResultSet {
@@ -12,6 +16,7 @@ struct ResultSet {
     requested_ack_delay_ms: u64,
     output_size: (u32, u32),
     jpeg_bytes_by_quality: Vec<(u8, usize)>,
+    received_recovery_frames: Vec<u64>,
     rtt_p50: Vec<u64>,
     ack_p50: Vec<u64>,
     ack_p95: Vec<u64>,
@@ -73,15 +78,22 @@ struct HostSamples {
 }
 async fn phase(config: Phase, rgba: &[u8], source: (u32, u32)) -> ResultSet {
     let adaptive = config.mode.adaptive();
-    let mut images = Vec::new();
-    for quality in 80..=90 {
-        let settings = capture::Settings {
-            profile: Host::native_profile(),
-            edge: adaptive.then_some(704),
-            quality,
-        };
-        images.push(
-            capture::encode_rgba_profile(
+    let requested_edge = adaptive.then_some(VIEWPORT_EDGE);
+    let edges: &[Option<u16>] = if adaptive {
+        &[Some(VIEWPORT_EDGE), Some(RECOVERY_EDGE)]
+    } else {
+        &[None]
+    };
+    let min_quality = if adaptive { 80 } else { 90 };
+    let mut images = BTreeMap::new();
+    for &edge in edges {
+        for quality in min_quality..=90 {
+            let settings = capture::Settings {
+                profile: Host::native_profile(),
+                edge,
+                quality,
+            };
+            let image = capture::encode_rgba_profile(
                 rgba,
                 source.0,
                 source.1,
@@ -89,28 +101,15 @@ async fn phase(config: Phase, rgba: &[u8], source: (u32, u32)) -> ResultSet {
                 1,
                 settings,
             )
-            .unwrap(),
-        );
-        if !adaptive {
-            break;
+            .unwrap();
+            images.insert((edge, quality), image);
         }
     }
-    // Native mode always uses its original Q90; the adaptive phase can follow
-    // the same delivery feedback that JNI capture reads on a real phone.
-    if !adaptive {
-        images[0] =
-            capture::encode_rgba(rgba, source.0, source.1, source.0 as usize * 4, 1).unwrap();
-    }
-    let output_size = (images[0].meta.width, images[0].meta.height);
-    let jpeg_bytes_by_quality: Vec<_> = images
-        .iter()
-        .enumerate()
-        .map(|(index, image)| {
-            (
-                if adaptive { 80 + index as u8 } else { 90 },
-                image.jpeg.len(),
-            )
-        })
+    let requested = &images[&(requested_edge, 90)].meta;
+    let output_size = (requested.width, requested.height);
+    let jpeg_bytes_by_quality = images
+        .range((requested_edge, min_quality)..=(requested_edge, 90))
+        .map(|((_, quality), image)| (*quality, image.jpeg.len()))
         .collect();
     let desktop = Transport::bind([140; 32], Config::default()).await.unwrap();
     let mut hosts = Vec::new();
@@ -119,6 +118,7 @@ async fn phase(config: Phase, rgba: &[u8], source: (u32, u32)) -> ResultSet {
     let mut servers = Vec::new();
     let mut tasks = Vec::new();
     let mut counts = Vec::new();
+    let mut recovery_counts = Vec::new();
     let mut ages = Vec::new();
     let mut rtts = Vec::new();
     let mut bytes_received = Vec::new();
@@ -150,7 +150,7 @@ async fn phase(config: Phase, rgba: &[u8], source: (u32, u32)) -> ResultSet {
                     channel: Channel::Media,
                     bytes: ViewportRequest {
                         generation: 10,
-                        edge: 704,
+                        edge: VIEWPORT_EDGE,
                     }
                     .packet(b"FSZ1"),
                 })
@@ -177,9 +177,11 @@ async fn phase(config: Phase, rgba: &[u8], source: (u32, u32)) -> ResultSet {
         let received_bytes = Arc::new(AtomicU64::new(0));
         bytes_received.push(received_bytes.clone());
         let count = Arc::new(AtomicU64::new(0));
+        let recovery_count = Arc::new(AtomicU64::new(0));
         let age = Arc::new(Mutex::new(Vec::new()));
         let rtt = Arc::new(Mutex::new(Vec::new()));
         counts.push(count.clone());
+        recovery_counts.push(recovery_count.clone());
         ages.push(age.clone());
         rtts.push(rtt.clone());
         tasks.push(tokio::spawn({
@@ -203,6 +205,12 @@ async fn phase(config: Phase, rgba: &[u8], source: (u32, u32)) -> ResultSet {
                             .as_millis() as u64;
                         if measuring.load(Ordering::SeqCst) {
                             count.fetch_add(1, Ordering::SeqCst);
+                            if adaptive
+                                && image.meta.width.max(image.meta.height)
+                                    == u32::from(RECOVERY_EDGE)
+                            {
+                                recovery_count.fetch_add(1, Ordering::SeqCst);
+                            }
                             received_bytes.fetch_add(frame.bytes.len() as u64, Ordering::SeqCst);
                             age.lock()
                                 .unwrap()
@@ -245,15 +253,10 @@ async fn phase(config: Phase, rgba: &[u8], source: (u32, u32)) -> ResultSet {
                 tick.tick().await;
                 for h in &hosts {
                     let settings = Host::settings(&h.local.lock().unwrap());
-                    let index = if adaptive {
-                        (settings.quality - 80) as usize
-                    } else {
-                        0
-                    };
-                    // A concurrent quality update may invalidate one encode. The next
-                    // tick publishes the freshest settings instead of queueing a retry.
+                    // As on the phone, an intervening settings change invalidates one
+                    // encode. The next tick picks the new geometry and quality.
                     let _ = h.publish_accessibility_encoded(
-                        images[index].clone(),
+                        images[&(settings.edge, settings.quality)].clone(),
                         source.0,
                         source.1,
                         0,
@@ -307,6 +310,10 @@ async fn phase(config: Phase, rgba: &[u8], source: (u32, u32)) -> ResultSet {
         requested_ack_delay_ms: config.ack_delay.as_millis() as u64,
         output_size,
         jpeg_bytes_by_quality,
+        received_recovery_frames: recovery_counts
+            .iter()
+            .map(|count| count.load(Ordering::SeqCst))
+            .collect(),
         rtt_p50: rtts
             .iter()
             .map(|v| quantile(v.lock().unwrap().clone(), 50))
@@ -419,7 +426,7 @@ async fn four_streams_share_35mbit_without_reconnects_and_with_bounded_frame_lat
     .await;
     eprintln!(
         "{}",
-        json!({"synthetic_transport_only":true,"native_fps":native.fps,"adaptive_fps":adaptive.fps,"adaptive_frame_age_p95_ms":adaptive.age_p95,"adaptive_rtt_p95_ms":adaptive.rtt_p95,"adaptive_reconnections":adaptive.closed})
+        json!({"synthetic_transport_only":true,"native_fps":native.fps,"adaptive_fps":adaptive.fps,"adaptive_frame_age_p95_ms":adaptive.age_p95,"adaptive_rtt_p95_ms":adaptive.rtt_p95,"adaptive_reconnections":adaptive.closed,"adaptive_received_640_frames":adaptive.received_recovery_frames})
     );
     assert_eq!(
         adaptive.closed, 0,

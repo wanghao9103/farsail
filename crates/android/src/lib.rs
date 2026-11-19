@@ -511,9 +511,8 @@ impl Host {
                         local.viewport_edge = Some(request.edge);
                         local.delivery_quality =
                             capture::DeliveryQuality::with_rtt(session.path().1);
-                        if local.media.sent != 0 {
-                            self.frames.send_replace(None);
-                        }
+                        // A static projection may never supply new pixels after a resize.
+                        // send_frames checks geometry and the size of subsequent live frames.
                     }
                     Self::profile_packet(&local)
                 };
@@ -544,9 +543,6 @@ impl Host {
                         local.video_profile = request;
                         local.viewport_edge = None;
                         local.delivery_quality = capture::DeliveryQuality::default();
-                        if local.media.sent != 0 {
-                            self.frames.send_replace(None);
-                        }
                     }
                     Self::profile_packet(&local)
                 };
@@ -677,7 +673,6 @@ impl Host {
         let mut layout = 0;
         let mut progress = Instant::now();
         let mut last_attempt = Instant::now();
-        let mut outstanding_image: Option<Arc<Vec<u8>>> = None;
         let mut send_failures = 0u8;
         loop {
             if !self.client.hosting_enabled() || !session.is_open_now() {
@@ -720,9 +715,6 @@ impl Host {
                 }
                 _ => (),
             }
-            if window.is_empty() {
-                outstanding_image = None;
-            }
             let video_active = demand.borrow().active;
             if !video_active {
                 progress = Instant::now();
@@ -743,7 +735,6 @@ impl Host {
             if !window.is_empty() && current_layout != layout {
                 // The old display geometry is no longer valid, including for a retry.
                 window.discard_pending();
-                outstanding_image = None;
                 let mut local = self.local.lock().unwrap();
                 if local
                     .session
@@ -756,11 +747,7 @@ impl Host {
             let retry = !window.is_empty() && last_attempt.elapsed() >= Duration::from_secs(4);
             let can_send_new = window.blocked_on().is_none() && (!auto_mode || window.is_empty());
             if video_active && (retry || can_send_new) {
-                let mut next = frames.borrow_and_update().clone();
-                if retry && next.is_none() {
-                    // Negotiation can clear the capture cache on a static screen.
-                    next = outstanding_image.clone();
-                }
+                let next = frames.borrow_and_update().clone();
                 if let Some(wire) = next {
                     let Ok(image) = JpegFrame::from_wire(&wire) else {
                         break;
@@ -896,7 +883,6 @@ impl Host {
                             progress = sent_at;
                         }
                         last_attempt = sent_at;
-                        outstanding_image = Some(wire);
                         if new_frame {
                             let mut local = self.local.lock().unwrap();
                             if local

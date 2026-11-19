@@ -1177,6 +1177,83 @@ async fn static_projection_cached_before_connection_delivers_first_frame_without
 }
 
 #[tokio::test]
+async fn reconnect_after_profile_negotiation_delivers_last_acknowledged_static_capture() {
+    let (host, server) = host(225).await;
+    let desktop = Transport::bind([226; 32], Config::default()).await.unwrap();
+    let target = Transport::bind([227; 32], Config::default()).await.unwrap();
+    let (width, height) = (640, 360);
+    let layout = host.geometry(width, height);
+    let pixels = textured_rgba(width, height);
+    assert!(host.publish_rgba(&pixels, width, height, width as usize * 4, layout));
+
+    let (viewer, peer) = connect(&desktop, &target, "before-resize", RemotePermission::View).await;
+    assert!(host.accept_session(&peer));
+    let first_session = tokio::spawn(host.clone().run(peer));
+    let first = acknowledged_image(&viewer, (width, height)).await;
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while host.local.lock().unwrap().media.acknowledged != first.meta.sequence {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+
+    let viewport = ViewportRequest {
+        generation: 1,
+        edge: 320,
+    };
+    viewer
+        .send(Frame {
+            channel: Channel::Media,
+            bytes: viewport.packet(b"FSZ1"),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        ViewportRequest::parse(&packet(&viewer, b"FSZ2").await, b"FSZ2"),
+        Some(viewport)
+    );
+    let preset = VideoProfile {
+        generation: 2,
+        profile: 1,
+    };
+    viewer
+        .send(Frame {
+            channel: Channel::Media,
+            bytes: preset.packet(b"FSQ1"),
+        })
+        .await
+        .unwrap();
+    loop {
+        if VideoProfile::parse(&packet(&viewer, b"FSP1").await, b"FSP1") == Some(preset) {
+            break;
+        }
+    }
+    viewer.close();
+    tokio::time::timeout(Duration::from_secs(3), first_session)
+        .await
+        .unwrap()
+        .unwrap();
+
+    // A static projection has not published since before the first connection.
+    let (reconnected, peer) =
+        connect(&desktop, &target, "after-resize", RemotePermission::View).await;
+    assert!(host.accept_session(&peer));
+    let second_session = tokio::spawn(host.clone().run(peer));
+    let restored = acknowledged_image(&reconnected, (width, height)).await;
+    assert_eq!(restored.meta, first.meta);
+    assert_eq!(restored.jpeg, first.jpeg);
+    host.stop_local();
+    tokio::time::timeout(Duration::from_secs(3), second_session)
+        .await
+        .unwrap()
+        .unwrap();
+    server.abort();
+    desktop.close().await;
+    target.close().await;
+}
+
+#[tokio::test]
 async fn reconnect_preserves_static_bootstrap_even_when_previous_viewport_was_smaller() {
     let (h, server) = host(214).await;
     let desktop = Transport::bind([215; 32], Config::default()).await.unwrap();

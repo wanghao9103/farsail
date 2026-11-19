@@ -1,5 +1,7 @@
 name: Four-view bandwidth acceptance
 on:
+  push:
+    branches: ['codex/android-update-media-recovery-20261119']
   pull_request:
     paths: ['crates/android/**', 'crates/media/**', 'crates/transport/**', '.github/workflows/multiview-bandwidth.yml']
 permissions:
