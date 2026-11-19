@@ -20,6 +20,9 @@ class FarSailApp : Application() {
     var busy = false
     var observer: (() -> Unit)? = null
     val updates by lazy { Updates(this) }
+    private val mediaLogStore by lazy { getSharedPreferences("media_diagnostics", MODE_PRIVATE) }
+    private val mediaLog by lazy { MediaEventLog(mediaLogStore.getString("events", "").orEmpty()) }
+    fun mediaReport() = mediaLogStore.getString("events", "").orEmpty()
     @Volatile var ready = false
     @Volatile private var nativeReady = false
     private val controlObserver = object : ContentObserver(main) {
@@ -77,6 +80,14 @@ class FarSailApp : Application() {
             next = invoke("state") as JSONObject
         }
         val snapshot = next
+        if (CaptureService.running || next.optBoolean("signedIn")) {
+            // All refreshes use the existing I/O worker. Logging must not interrupt state updates.
+            runCatching {
+                val media = invoke("diagnostics") as JSONObject
+                if (mediaLog.sample(media, System.currentTimeMillis(), android.os.SystemClock.elapsedRealtime()))
+                    mediaLogStore.edit().putString("events", mediaLog.text).apply()
+            }
+        }
         val requests = if (next.optBoolean("sharing")) invoke("pending") as? JSONArray ?: JSONArray() else JSONArray()
         main.post { state = snapshot; pending = requests; observer?.invoke() }
     }

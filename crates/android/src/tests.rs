@@ -603,6 +603,95 @@ async fn two_android_hosts_receive_isolated_frames_and_input_and_stop_independen
 }
 
 #[tokio::test]
+async fn static_capture_without_ack_retries_small_then_resumes_on_the_same_connection() {
+    let (host, server) = host(220).await;
+    let desktop = Transport::bind([221; 32], Config::default()).await.unwrap();
+    let target = Transport::bind([222; 32], Config::default()).await.unwrap();
+    let (viewer, peer) = connect(&desktop, &target, "static-retry", RemotePermission::View).await;
+    let (width, height) = (1280, 720);
+    let layout = host.geometry(width, height);
+    host.local.lock().unwrap().session = Some(peer.clone());
+    let run = tokio::spawn(host.clone().run(peer));
+
+    packet(&viewer, b"FSZ0").await;
+    let viewport = ViewportRequest {
+        generation: 1,
+        edge: 1088,
+    };
+    viewer
+        .send(Frame {
+            channel: Channel::Media,
+            bytes: viewport.packet(b"FSZ1"),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        ViewportRequest::parse(&packet(&viewer, b"FSZ2").await, b"FSZ2"),
+        Some(viewport)
+    );
+
+    let rgba = textured_rgba(width, height);
+    let stride = width as usize * 4;
+    let first_queued = Instant::now();
+    assert!(host.publish_rgba(&rgba, width, height, stride, layout));
+    let first = JpegFrame::from_wire(&packet(&viewer, b"FSM1").await).unwrap();
+    assert_eq!(first.meta.width, u32::from(viewport.edge));
+    // Simulate a receiver whose first complete JPEG or its ACK was lost.
+    // A static projection supplies no new image to the sender in this interval.
+    let retry = tokio::time::timeout(Duration::from_secs(9), async {
+        loop {
+            let frame = viewer.receive().await.unwrap();
+            if let Ok(image) = JpegFrame::from_wire(&frame.bytes) {
+                break image;
+            }
+        }
+    })
+    .await
+    .expect("a smaller probe must arrive before the 15-second media deadline");
+    assert!(
+        first_queued.elapsed() >= Duration::from_secs(3),
+        "probes must be paced"
+    );
+    assert_eq!(retry.meta.sequence, first.meta.sequence);
+    assert_eq!(retry.meta.captured_ms, first.meta.captured_ms);
+    assert_eq!(retry.meta.layout, first.meta.layout);
+    assert!(retry.meta.width < first.meta.width && retry.meta.height < first.meta.height);
+    assert!(retry.jpeg.len() < first.jpeg.len());
+
+    let mut ack = b"FSA1".to_vec();
+    ack.extend_from_slice(&retry.meta.sequence.to_be_bytes());
+    viewer
+        .send(Frame {
+            channel: Channel::Media,
+            bytes: ack,
+        })
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while host.local.lock().unwrap().media.acknowledged != first.meta.sequence {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(host.publish_rgba(&rgba, width, height, stride, layout));
+    let next = JpegFrame::from_wire(&packet(&viewer, b"FSM1").await).unwrap();
+    assert!(next.meta.sequence > first.meta.sequence);
+    // Even a viewer accepting probe streams must expire if it never ACKs again.
+    tokio::time::timeout(Duration::from_secs(18), viewer.wait_closed())
+        .await
+        .unwrap();
+    assert_eq!(viewer.end_reason(), "media_timeout");
+
+    host.stop_local();
+    run.abort();
+    server.abort();
+    host.client.stop_transport().await;
+    desktop.close().await;
+    target.close().await;
+}
+
+#[tokio::test]
 async fn delayed_ack_keeps_capture_alive_but_a_stalled_peer_still_expires() {
     let (h, server) = host(93).await;
     let source = Transport::bind([94; 32], Config::default()).await.unwrap();

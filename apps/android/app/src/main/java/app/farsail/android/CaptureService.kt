@@ -206,11 +206,14 @@ class CaptureService : Service() {
         reader = next
         projectionRead?.let { capture.removeCallbacks(it) }
         var scheduled = false
+        var nextReadAt = 0L
         val readLatest = object : Runnable {
             override fun run() {
                 scheduled = false
                 if (stopped || next !== reader) return
                 val image = try { next.acquireLatestImage() } catch (_: Exception) { null } ?: return
+                // Encoding runs on this handler and counts toward the 100 ms frame interval.
+                nextReadAt = SystemClock.uptimeMillis() + 100L
                 try {
                     val plane = image.planes[0]
                     check(plane.pixelStride == 4) { "不支持的录屏像素格式" }
@@ -225,8 +228,7 @@ class CaptureService : Service() {
             // Defer acquisition rather than discarding a throttled image. A
             // static screen may never emit another callback after that image.
             scheduled = true
-            val delay = if (lastFrame == 0L) 0L else (100 - (SystemClock.elapsedRealtime() - lastFrame)).coerceAtLeast(0L)
-            capture.postDelayed(readLatest, delay)
+            capture.postDelayed(readLatest, (nextReadAt - SystemClock.uptimeMillis()).coerceAtLeast(0L))
         }, capture)
         if (display == null) {
             display = projection!!.createVirtualDisplay("FarSail", width, height, resources.displayMetrics.densityDpi,

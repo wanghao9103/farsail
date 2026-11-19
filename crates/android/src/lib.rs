@@ -27,6 +27,8 @@ struct MediaDiagnostics {
     bytes: usize,
     sent: u64,
     acknowledged: u64,
+    sent_frames: u64,
+    ack_updates: u64,
     send_ms: u64,
     publish_to_send_ms: u64,
     ack_ms: u64,
@@ -48,10 +50,21 @@ struct Local {
     session: Option<Session>,
     inputs: VecDeque<(Instant, Value)>,
     media: MediaDiagnostics,
+    closed_session: Option<Value>,
     video_demand: StreamDemand,
     video_profile: VideoProfile,
     viewport_edge: Option<u16>,
     delivery_quality: capture::DeliveryQuality,
+}
+
+impl Local {
+    fn finish_session(&mut self) {
+        if let Some(s) = self.session.take() {
+            s.close();
+            self.closed_session = Some(json!({"sessionId": s.id(), "reason": s.end_reason(),
+                "sentFrames": self.media.sent_frames, "ackedFrames": self.media.ack_updates}));
+        }
+    }
 }
 
 pub struct Host {
@@ -66,7 +79,9 @@ impl Host {
     fn settings(local: &Local) -> capture::Settings {
         capture::Settings {
             profile: local.video_profile,
-            edge: local.viewport_edge,
+            edge: local
+                .viewport_edge
+                .map(|edge| local.delivery_quality.edge(edge)),
             quality: if local.viewport_edge.is_some() {
                 local.delivery_quality.value
             } else {
@@ -111,6 +126,7 @@ impl Host {
                 session: None,
                 inputs: VecDeque::new(),
                 media: MediaDiagnostics::default(),
+                closed_session: None,
                 video_demand: StreamDemand::default(),
                 video_profile: Self::native_profile(),
                 viewport_edge: None,
@@ -136,9 +152,7 @@ impl Host {
         l.capture = false;
         l.epoch += 1;
         l.inputs.clear();
-        if let Some(s) = l.session.take() {
-            s.close();
-        }
+        l.finish_session();
         self.client.disable_host_local();
         self.frames.send_replace(None);
         drop(l);
@@ -156,7 +170,7 @@ impl Host {
                 .as_ref()
                 .is_some_and(|s| s.permission() == RemotePermission::Control)
         {
-            l.session.take().unwrap().close();
+            l.finish_session();
         }
     }
     pub fn geometry(&self, width: u32, height: u32) -> u64 {
@@ -366,6 +380,7 @@ impl Host {
             false
         } else {
             l.inputs.clear();
+            l.finish_session();
             l.media = MediaDiagnostics::default();
             l.session = Some(s.clone());
             // Desktop input needs a displayed frame. Wake on an
@@ -592,9 +607,25 @@ impl Host {
             .as_ref()
             .is_some_and(|s| s.stable_id() == session.stable_id())
         {
-            l.session = None;
+            l.finish_session();
             l.inputs.clear();
         }
+    }
+    async fn recovery_payload(wire: Arc<Vec<u8>>) -> Arc<Vec<u8>> {
+        let original = wire.clone();
+        tokio::task::spawn_blocking(move || {
+            let preview = JpegFrame::from_wire(&original)
+                .ok()?
+                .recovery_preview()
+                .ok()?
+                .to_wire()
+                .ok()?;
+            (preview.len() < original.len()).then(|| Arc::new(preview))
+        })
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or(wire)
     }
     async fn send_frames(
         &self,
@@ -646,6 +677,7 @@ impl Host {
         let mut layout = 0;
         let mut progress = Instant::now();
         let mut last_attempt = Instant::now();
+        let mut outstanding_image: Option<Arc<Vec<u8>>> = None;
         let mut send_failures = 0u8;
         loop {
             if !self.client.hosting_enabled() || !session.is_open_now() {
@@ -670,6 +702,7 @@ impl Host {
                             l.media.ack_ms = at.elapsed().as_millis() as u64;
                         }
                         l.media.acknowledged = sequence;
+                        l.media.ack_updates += 1;
                         if l.viewport_edge.is_some() {
                             let (ack_ms, send_ms) = (l.media.ack_ms, l.media.send_ms);
                             l.delivery_quality.observe(
@@ -687,36 +720,47 @@ impl Host {
                 }
                 _ => (),
             }
-            if !window.is_empty() && progress.elapsed() > Duration::from_secs(15) {
+            if window.is_empty() {
+                outstanding_image = None;
+            }
+            let video_active = demand.borrow().active;
+            if !video_active {
+                progress = Instant::now();
+                last_attempt = progress;
+            }
+            if video_active && !window.is_empty() && progress.elapsed() > Duration::from_secs(15) {
                 session.close_with_reason("media_timeout");
                 break;
             }
-            let video_active = demand.borrow().active;
-            // Receiver read timeouts discard a JPEG without producing FSA1.
-            // If both slots were dropped, send one fresh frame on this same
-            // authorized connection. Never restart the 15-second ACK deadline.
-            if video_active
-                && last_attempt.elapsed() >= Duration::from_secs(4)
-                && let Some(sequence) = window.retry_stalled()
-            {
-                last_attempt = Instant::now();
+            let (auto_mode, unnegotiated, current_layout) = {
+                let local = self.local.lock().unwrap();
+                (
+                    local.viewport_edge.is_some(),
+                    local.video_profile.generation == 0,
+                    local.layout,
+                )
+            };
+            if !window.is_empty() && current_layout != layout {
+                // The old display geometry is no longer valid, including for a retry.
+                window.discard_pending();
+                outstanding_image = None;
                 let mut local = self.local.lock().unwrap();
                 if local
                     .session
                     .as_ref()
                     .is_some_and(|s| s.stable_id() == session.stable_id())
                 {
-                    local.media.pending.retain(|(seq, _)| *seq != sequence);
+                    local.media.pending.clear();
                 }
             }
-            let auto_mode = self.local.lock().unwrap().viewport_edge.is_some();
-            // A small-window stream needs low latency, not two JPEGs queued
-            // ahead of the latest capture. A bounded probe after four seconds
-            // still recovers a lost single ACK without restarting the lease.
-            let auto_waiting =
-                auto_mode && !window.is_empty() && last_attempt.elapsed() < Duration::from_secs(4);
-            if video_active && !auto_waiting && window.blocked_on().is_none() {
-                let next = frames.borrow_and_update().clone();
+            let retry = !window.is_empty() && last_attempt.elapsed() >= Duration::from_secs(4);
+            let can_send_new = window.blocked_on().is_none() && (!auto_mode || window.is_empty());
+            if video_active && (retry || can_send_new) {
+                let mut next = frames.borrow_and_update().clone();
+                if retry && next.is_none() {
+                    // Negotiation can clear the capture cache on a static screen.
+                    next = outstanding_image.clone();
+                }
                 if let Some(wire) = next {
                     let Ok(image) = JpegFrame::from_wire(&wire) else {
                         break;
@@ -725,7 +769,8 @@ impl Host {
                         let local = self.local.lock().unwrap();
                         if !local.capture
                             || local.layout != image.meta.layout
-                            || (last != 0
+                            || (!retry
+                                && last != 0
                                 && Self::settings(&local).output_size(local.width, local.height)
                                     != Some((image.meta.width, image.meta.height)))
                             || local
@@ -755,17 +800,53 @@ impl Host {
                         .duration_since(UNIX_EPOCH)
                         .unwrap_or_default()
                         .as_millis() as u64;
-                    if image.meta.sequence > last
+                    if (image.meta.sequence > last || (retry && image.meta.sequence == last))
                         // A static projection may have only one frame from before
                         // connection. It is still the latest image of this active
                         // capture/layout; deliver it once without falsifying its
                         // capture time. Later frames retain the live age limit.
-                        && (last == 0 || now.saturating_sub(image.meta.captured_ms) <= 700)
+                        && (last == 0 || retry || now.saturating_sub(image.meta.captured_ms) <= 700)
                     {
-                        let wait = budget.charge(wire.len());
+                        // For a static screen reuse the original sequence and timestamp.
+                        // A viewer that already displayed it simply sends its ACK again.
+                        // A lost capability response can leave a new viewer at the
+                        // default profile. Keep an explicitly selected preset intact.
+                        let bootstrap = unnegotiated
+                            && (image.meta.sequence == last
+                                || progress.elapsed() >= Duration::from_secs(8));
+                        let payload = if retry && (auto_mode || bootstrap) {
+                            {
+                                let mut local = self.local.lock().unwrap();
+                                if local
+                                    .session
+                                    .as_ref()
+                                    .is_some_and(|s| s.stable_id() == session.stable_id())
+                                {
+                                    local.delivery_quality.stalled(Instant::now());
+                                }
+                            }
+                            Self::recovery_payload(wire.clone()).await
+                        } else {
+                            wire.clone()
+                        };
+                        let wait = budget.charge(payload.len());
                         if !wait.is_zero() {
                             tokio::time::sleep(wait.min(Duration::from_millis(100))).await;
                             continue;
+                        }
+                        if retry {
+                            let local = self.local.lock().unwrap();
+                            if !local.capture
+                                || local.layout != image.meta.layout
+                                || local
+                                    .session
+                                    .as_ref()
+                                    .is_none_or(|s| s.stable_id() != session.stable_id())
+                                || !demand.borrow().active
+                                || *ack.borrow() > sequence
+                            {
+                                continue;
+                            }
                         }
                         if image.meta.layout != layout {
                             let list = json!([{"id":1,"name":"Android 屏幕","x":0,"y":0,"width":source_width,"height":source_height,"dpi":160,"rotation":0}]);
@@ -793,25 +874,48 @@ impl Host {
                             }
                         }
                         let was_empty = window.is_empty();
-                        if window.sent(image.meta.sequence).is_err() {
-                            break;
-                        }
-                        last = image.meta.sequence;
-                        if was_empty {
-                            progress = Instant::now();
+                        let new_frame = image.meta.sequence > last;
+                        if new_frame {
+                            if retry && let Some(obsolete) = window.retry_stalled() {
+                                let mut local = self.local.lock().unwrap();
+                                if local
+                                    .session
+                                    .as_ref()
+                                    .is_some_and(|s| s.stable_id() == session.stable_id())
+                                {
+                                    local.media.pending.retain(|(seq, _)| *seq != obsolete);
+                                }
+                            }
+                            if window.sent(image.meta.sequence).is_err() {
+                                break;
+                            }
+                            last = image.meta.sequence;
                         }
                         let sent_at = Instant::now();
+                        if was_empty {
+                            progress = sent_at;
+                        }
                         last_attempt = sent_at;
+                        outstanding_image = Some(wire);
+                        if new_frame {
+                            let mut local = self.local.lock().unwrap();
+                            if local
+                                .session
+                                .as_ref()
+                                .is_some_and(|s| s.stable_id() == session.stable_id())
+                            {
+                                local.media.pending.push_back((last, sent_at));
+                            }
+                        }
                         let sent = session
                             .send(Frame {
                                 channel: Channel::Media,
-                                bytes: (*wire).clone(),
+                                bytes: (*payload).clone(),
                             })
                             .await;
                         match sent {
                             Ok(()) => send_failures = 0,
                             Err(farsail_transport::Error::Timeout) => {
-                                window.failed(image.meta.sequence);
                                 send_failures += 1;
                                 if send_failures >= 3 {
                                     session.close_with_reason("media_timeout");
@@ -827,9 +931,9 @@ impl Host {
                             .is_some_and(|s| s.stable_id() == session.stable_id())
                         {
                             l.media.sent = image.meta.sequence;
+                            l.media.sent_frames += 1;
                             l.media.send_ms = sent_at.elapsed().as_millis() as u64;
                             l.media.publish_to_send_ms = now.saturating_sub(image.meta.captured_ms);
-                            l.media.pending.push_back((image.meta.sequence, sent_at));
                         }
                     }
                 }
@@ -948,6 +1052,8 @@ impl Host {
                 let session = l.session.as_ref().filter(|s| s.is_open_now());
                 let (path, rtt) = session.map(|s| s.path()).unwrap_or(("none", None));
                 return Ok(json!({"path":path,"rttMs":rtt,"frameBytes":l.media.bytes,
+                    "sessionId":session.map(|s| s.id()), "videoRequested":l.video_demand.active,
+                    "sentFrames":l.media.sent_frames, "ackedFrames":l.media.ack_updates, "closedSession":l.closed_session,
                     "published":l.sequence,"sent":l.media.sent,"acknowledged":l.media.acknowledged,
                     "sendMs":l.media.send_ms,"publishToSendMs":l.media.publish_to_send_ms,
                     "ackMs":l.media.ack_ms,"inputWaitMs":l.media.input_wait_ms,

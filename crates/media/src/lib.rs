@@ -165,6 +165,10 @@ impl MediaWindow {
         self.pending.retain(|pending| *pending != sequence);
     }
 
+    pub fn discard_pending(&mut self) {
+        self.pending.clear();
+    }
+
     /// Reopen one slot after a bounded wait without acknowledging discarded
     /// frames. A receiver can drop both JPEG streams on read timeout; waiting
     /// only for their ACKs would then prevent any fresh frame from reaching it.
@@ -377,6 +381,41 @@ impl JpegFrame {
         self.validate()?;
         let mut decoder = jpeg_decoder::Decoder::new(Cursor::new(&self.jpeg));
         decoder.decode().map_err(|e| Error::Codec(e.to_string()))
+    }
+
+    /// Small retransmission of the same capture. Decode at reduced IDCT
+    /// resolution so recovering a static native frame does not require a
+    /// second full-resolution RGB buffer on the phone.
+    pub fn recovery_preview(&self) -> Result<Self> {
+        self.validate()?;
+        let mut decoder = jpeg_decoder::Decoder::new(Cursor::new(&self.jpeg));
+        // Pick a supported scale (1/2, 1/4 or 1/8) with a short wire payload.
+        let edge = self.meta.width.max(self.meta.height);
+        let divisor = if edge > 1536 {
+            8
+        } else if edge > 768 {
+            4
+        } else if edge > 384 {
+            2
+        } else {
+            1
+        };
+        let (w, h) = decoder
+            .scale(
+                (self.meta.width / divisor).max(1) as u16,
+                (self.meta.height / divisor).max(1) as u16,
+            )
+            .map_err(|e| Error::Codec(e.to_string()))?;
+        let rgb = decoder.decode().map_err(|e| Error::Codec(e.to_string()))?;
+        Self::encode_rgb(
+            FrameMeta {
+                width: w.into(),
+                height: h.into(),
+                ..self.meta.clone()
+            },
+            &rgb,
+            65,
+        )
     }
 }
 

@@ -89,12 +89,12 @@ jobs:
           ANDROID_KEY_ALIAS: androiddebugkey
           REUSE_NATIVE: ${{ steps.native.outputs.reuse }}
         run: |
-          mobile_version="$(node -p "require('./apps/android/version.json').version")"
+          candidate_version="$(node -p "require('./apps/android/version.json').version")-media1"
           if [[ "$REUSE_NATIVE" == 'true' ]]; then
             cd apps/android
-            ./gradlew --no-daemon :app:assembleRelease :app:lintRelease :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin "-PfarsailVersionName=${mobile_version}-pulse1"
+            ./gradlew --no-daemon :app:assembleRelease :app:lintRelease :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin "-PfarsailVersionName=${candidate_version}"
           else
-            scripts/build-android.sh :app:assembleRelease :app:lintRelease :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin "-PfarsailVersionName=${mobile_version}-pulse1"
+            scripts/build-android.sh :app:assembleRelease :app:lintRelease :app:testDebugUnitTest :app:compileDebugAndroidTestKotlin "-PfarsailVersionName=${candidate_version}"
           fi
       - uses: actions/upload-artifact@v4
         with:

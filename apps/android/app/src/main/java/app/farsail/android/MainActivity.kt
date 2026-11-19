@@ -375,11 +375,23 @@ class MainActivity : Activity() {
         }
         ui.link(body, "管理远程控制授权") { go(Page.CONTROL_SETUP) }
         ui.link(body, "锁屏与后台设置") { go(Page.BACKGROUND_SETUP) }
+        ui.link(body, "近期画面诊断") { showMediaReport() }
         ui.gap(body, 16)
         ui.toggle(body, "打开 App 时恢复上次共享", RemotePreferences.autoRestore(this)).apply {
             setOnCheckedChangeListener { _, enabled -> RemotePreferences.autoRestore(this@MainActivity, enabled) }
         }
         ui.text(body, if (RemotePreferences.accessibilityCapture(this, app.state)) "已授权的辅助功能截图可在打开 App 时恢复，无需录屏弹窗。主动停止后保持关闭。" else "开启一次后，打开 App 自动进入系统共享确认，无需再点开启按钮。主动停止或取消授权后保持关闭。", 13f, secondary = true)
+    }
+    private fun showMediaReport() {
+        val report = app.mediaReport()
+        val dialog = AlertDialog.Builder(this).setTitle("近期画面诊断")
+            .setMessage(report.ifBlank { "暂无远程画面记录。" })
+            .setPositiveButton("关闭", null)
+        if (report.isNotBlank()) dialog.setNeutralButton("复制记录") { _, _ ->
+            getSystemService(android.content.ClipboardManager::class.java)
+                .setPrimaryClip(ClipData.newPlainText("FarSail 画面诊断", report))
+        }
+        dialog.show()
     }
     private fun updateSharing() {
         val phase = CaptureService.phase

@@ -9,6 +9,7 @@ pub(crate) struct DeliveryQuality {
     changed: Instant,
     healthy: Option<Instant>,
     base_rtt: Option<u64>,
+    recovery_edge: Option<u16>,
 }
 impl Default for DeliveryQuality {
     fn default() -> Self {
@@ -17,10 +18,20 @@ impl Default for DeliveryQuality {
             changed: Instant::now(),
             healthy: None,
             base_rtt: None,
+            recovery_edge: None,
         }
     }
 }
 impl DeliveryQuality {
+    pub fn edge(&self, requested: u16) -> u16 {
+        self.recovery_edge.unwrap_or(requested).min(requested)
+    }
+    pub fn stalled(&mut self, now: Instant) {
+        self.recovery_edge = Some(640);
+        self.healthy = None;
+        self.value = 80;
+        self.changed = now;
+    }
     pub fn with_rtt(rtt: Option<u64>) -> Self {
         Self {
             base_rtt: rtt,
@@ -31,6 +42,10 @@ impl DeliveryQuality {
         let base = self.base_rtt.map_or(rtt_ms, |base| base.min(rtt_ms));
         self.base_rtt = Some(base);
         let high = base.saturating_mul(2).saturating_add(60).clamp(120, 220);
+        if send_ms >= 400 || (ack_ms >= 500 && rtt_ms >= base.saturating_add(200)) {
+            self.stalled(now);
+            return;
+        }
         if ack_ms > high || send_ms > high / 2 || rtt_ms > base.saturating_add(60) {
             self.healthy = None;
             if now.saturating_duration_since(self.changed) >= Duration::from_secs(1) {
@@ -42,6 +57,11 @@ impl DeliveryQuality {
             if now.saturating_duration_since(since) >= Duration::from_secs(5)
                 && now.saturating_duration_since(self.changed) >= Duration::from_secs(2)
             {
+                self.recovery_edge = match self.recovery_edge {
+                    Some(640) => Some(960),
+                    Some(960) => Some(1440),
+                    _ => None,
+                };
                 self.value = self.value.saturating_add(1).min(90);
                 self.changed = now;
             }
@@ -356,6 +376,22 @@ mod tests {
         );
         quality.observe(35, 5, 20, start + Duration::from_secs(9));
         assert_eq!(quality.value, 81);
+    }
+
+    #[test]
+    fn severe_backlog_limits_only_the_current_auto_viewport_until_delivery_recovers() {
+        let mut quality = DeliveryQuality::with_rtt(Some(20));
+        let start = quality.changed;
+        quality.observe(800, 50, 470, start);
+        assert_eq!(quality.edge(1088), 640);
+        assert_eq!(quality.edge(320), 320);
+        quality.observe(20, 5, 20, start + Duration::from_secs(1));
+        quality.observe(20, 5, 20, start + Duration::from_secs(5));
+        assert_eq!(quality.edge(1088), 640);
+        quality.observe(20, 5, 20, start + Duration::from_secs(6));
+        assert_eq!(quality.edge(1088), 960);
+        quality.observe(20, 5, 20, start + Duration::from_secs(8));
+        assert_eq!(quality.edge(1088), 1088);
     }
 
     #[test]
