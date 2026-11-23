@@ -18,6 +18,7 @@ import { ViewerTabsController } from "./viewer-tabs-policy";
 import { PageActions } from "./page-actions";
 import "./style.css";
 import "./desktop-theme.css";
+import "./workspace-appearance.css";
 import { RefreshFailureGate } from "./feedback-policy";
 import {
   ViewerNoticeLease,
@@ -37,6 +38,10 @@ import { FailureDialog, failureMessage, type FailureAction } from "./feedback";
 import {
   Home20Regular,
   Desktop20Regular,
+  Phone20Regular,
+  Copy16Regular,
+  CheckmarkCircle16Regular,
+  Search16Regular,
   Eye20Regular,
   Folder20Regular,
   ArrowSwap20Regular,
@@ -127,17 +132,17 @@ function RemoteAccessControls({
     <div className="preference-rows">
       <label className="preference-row">
         <span>
-          <strong>允许远程连接</strong>
+          <strong>允许其他设备连接本机</strong>
           <small id={`${descriptionId}-access`}>
             {canShareLocalScreen(state)
-              ? "屏幕控制与文件传输，默认每次连接需批准。"
-              : "文件传输，每次连接需批准。"}
+              ? "允许对方控制本机屏幕、传输文件，默认每次需批准。"
+              : "仅开放本机文件传输，每次连接需批准。"}
           </small>
         </span>
         <input
           type="checkbox"
           role="switch"
-          aria-label="允许远程连接"
+          aria-label="允许其他设备连接本机"
           aria-describedby={`${descriptionId}-access`}
           checked={sharingChoice(state)}
           disabled={busy || !state.deviceId}
@@ -149,7 +154,7 @@ function RemoteAccessControls({
                   sharingChoice(state) ? "share_disable" : "share_enable",
                 );
               },
-              sharingChoice(state) ? "远程连接已关闭" : "远程连接已允许",
+              sharingChoice(state) ? "本机未开放连接" : "本机已开放连接",
             )
           }
         />
@@ -299,6 +304,14 @@ const pathLabel = (value?: string, discovery?: string) => {
 const deviceLabel = (id: string, devices: Device[], localId: string | null) =>
   `${devices.find((d) => d.id === id)?.name ?? `设备 ${short(id)}`}${id === localId ? "（本机）" : ""}`;
 const dateLabel = (value: string) => new Date(value).toLocaleString();
+const platformNames: Record<string, string> = {
+  android: "Android",
+  linux: "Linux",
+  windows: "Windows",
+};
+function DeviceGlyph({ platform }: { platform: string }) {
+  return platform === "android" ? <Phone20Regular /> : <Desktop20Regular />;
+}
 type OperationNotice = { message: string; viewer?: ViewerNoticeLease };
 
 const readViewerWindow = (instance: string) =>
@@ -333,7 +346,30 @@ function useViewerNoticePresent(lease: ViewerNoticeLease | null) {
   return !lease || (closed !== lease && lease.isPresent());
 }
 
+type Appearance = "light" | "midnight";
+
 function App() {
+  const [appearance, setAppearance] = useState<Appearance>(() =>
+    document.documentElement.dataset.appearance === "midnight"
+      ? "midnight"
+      : "light",
+  );
+  useEffect(() => {
+    if (native) {
+      void invoke("workspace_present", {
+        midnight: appearance === "midnight",
+      }).catch(() => {});
+    }
+  }, [appearance]);
+  const changeAppearance = (value: Appearance) => {
+    document.documentElement.dataset.appearance = value;
+    setAppearance(value);
+    try {
+      localStorage.setItem("farsail.appearance", value);
+    } catch {
+      // Apply the choice for this session even if persistence is unavailable.
+    }
+  };
   const updates = useClientUpdates(native);
   const [publicState, setPublicState] = useState<PublicState>({
     server: "http://127.0.0.1:8787",
@@ -489,7 +525,7 @@ function App() {
         } catch {
           if (version !== refreshVersion.current) return;
           setProblem(
-            "未能同步本机的计算机名称，暂时保留原名称。你可以在设备信息与管理中修改名称，或重新打开应用后重试。",
+            "未能同步本机的计算机名称，暂时保留原名称。你可以在“管理设备”中修改名称，或重新打开应用后重试。",
           );
         }
       }
@@ -610,6 +646,7 @@ function App() {
             aria-label="应用菜单"
             popoverTarget="window-menu"
           >
+            <img className="title-mark" src="/icon.png" alt="" />
             FarSail <span className="window-subtitle">遥舟</span>
           </button>
           <div id="window-menu" className="window-menu" popover="auto">
@@ -730,13 +767,13 @@ function App() {
           role="status"
           aria-label={
             remoteAccessEnabled(publicState)
-              ? "远程连接已允许"
-              : "远程连接已关闭"
+              ? "本机已开放连接"
+              : "本机未开放连接"
           }
           title={
             remoteAccessEnabled(publicState)
-              ? "远程连接已允许"
-              : "远程连接已关闭"
+              ? "本机已开放连接"
+              : "本机未开放连接"
           }
         >
           {me && (
@@ -755,12 +792,16 @@ function App() {
             />
             <span>
               {remoteAccessEnabled(publicState)
-                ? "远程连接已允许"
-                : "远程连接已关闭"}
+                ? "本机已开放连接"
+                : "本机未开放连接"}
             </span>
-            {remoteAccessEnabled(publicState) && (
-              <small>{publicState.sharing ? "屏幕与文件" : "文件传输"}</small>
-            )}
+            <small>
+              {remoteAccessEnabled(publicState)
+                ? publicState.sharing
+                  ? "允许屏幕控制与文件传输"
+                  : "仅允许文件传输"
+                : "仍可连接其他设备"}
+            </small>
           </div>
         </div>
       </aside>
@@ -784,6 +825,9 @@ function App() {
                 )[tab]
               }
             </h1>
+            {me && tab === "devices" && (
+              <span className="device-total">共 {devices.length} 台</span>
+            )}
           </div>
           <div className="account-pill">
             {me ? (
@@ -804,8 +848,14 @@ function App() {
             aria-label="页面操作"
           />
         </header>
-        {tab !== "settings" && (
-          <UpdateNotice updates={updates} onOpen={updatePrompt.show} />
+        {tab === "devices" && me ? (
+          <PageActions>
+            <UpdateNotice updates={updates} onOpen={updatePrompt.show} />
+          </PageActions>
+        ) : (
+          tab !== "settings" && (
+            <UpdateNotice updates={updates} onOpen={updatePrompt.show} />
+          )
         )}
         <UpdateDialog
           updates={updates}
@@ -822,7 +872,13 @@ function App() {
           action={failureAction}
         />
         {notice && noticePresent && (
-          <div className="alert success" role="status">
+          <div
+            className={`alert success ${tab === "devices" ? "device-feedback" : ""}`}
+            role="status"
+          >
+            {tab === "devices" && (
+              <CheckmarkCircle16Regular aria-hidden="true" />
+            )}
             <span>{notice.message}</span>
             <button onClick={() => setNotice(null)} aria-label="关闭提示">
               <Dismiss16Regular aria-hidden="true" />
@@ -849,6 +905,37 @@ function App() {
           ) : tab === "settings" ? (
             <section className="settings-grid">
               <div className="settings-column">
+                <div className="card appearance-card">
+                  <h2 id="appearance-heading">外观</h2>
+                  <div
+                    className="appearance-options"
+                    role="group"
+                    aria-labelledby="appearance-heading"
+                  >
+                    {(
+                      [
+                        ["light", "晴蓝"],
+                        ["midnight", "午夜蓝"],
+                      ] as const
+                    ).map(([value, label]) => (
+                      <button
+                        key={value}
+                        className="appearance-option"
+                        aria-pressed={appearance === value}
+                        onClick={() => changeAppearance(value)}
+                      >
+                        <span
+                          className={`appearance-swatch swatch-${value}`}
+                          aria-hidden="true"
+                        />
+                        {label}
+                        {appearance === value && (
+                          <CheckmarkCircle16Regular aria-hidden="true" />
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                </div>
                 <UpdateSettings updates={updates} onOpen={updatePrompt.show} />
                 <div className="card">
                   <h2>服务器连接</h2>
@@ -977,8 +1064,8 @@ function App() {
                   {!publicState.deviceId && (
                     <p className="hint">
                       {me
-                        ? "添加本机后可允许远程连接。"
-                        : "登录并添加本机后可允许远程连接。"}
+                        ? "添加本机后可允许其他设备连接本机。"
+                        : "登录并添加本机后可允许其他设备连接本机。"}
                       <button
                         className="text-button"
                         onClick={() => setTab("overview")}
@@ -1004,6 +1091,7 @@ function App() {
             />
           ) : tab === "devices" ? (
             <Devices
+              appearance={appearance}
               pending={pending}
               onRefresh={refresh}
               requests={requests}
@@ -1576,13 +1664,14 @@ function Overview({
           </div>
           <div className="stack">
             <span className={remoteAccessEnabled(state) ? "tag ready" : "tag"}>
-              {remoteAccessEnabled(state) ? "远程连接已允许" : "远程连接已关闭"}
+              {remoteAccessEnabled(state) ? "本机已开放连接" : "本机未开放连接"}
             </span>
             <button
               className="secondary"
               onClick={() => onNavigate("settings")}
             >
-              管理远程连接
+              <Settings20Regular aria-hidden="true" />
+              连接权限
             </button>
             {!canShareLocalScreen(state) && (
               <small className="muted">暂不支持共享本机屏幕。</small>
@@ -1732,7 +1821,7 @@ function IncomingApprovals({
             </button>
           </div>
           {p.permission === "files" && !state.filesEnabled && (
-            <p className="hint">请先开启“允许远程连接”。</p>
+            <p className="hint">请先开启“允许其他设备连接本机”。</p>
           )}
         </div>
       ))}
@@ -1740,6 +1829,7 @@ function IncomingApprovals({
   );
 }
 function Devices({
+  appearance,
   requests,
   pending,
   prepareTransport,
@@ -1753,6 +1843,7 @@ function Devices({
   busy,
   act,
 }: {
+  appearance: Appearance;
   requests: Remote[];
   pending: Pending[];
   prepareTransport: () => Promise<void>;
@@ -1775,18 +1866,7 @@ function Devices({
   const [waiting, setWaiting] = useState<{ id: string; target: string } | null>(
     null,
   );
-  const [connectionNote, setConnectionNotice] =
-    useState<OperationNotice | null>(null);
-  const setConnectionNote = (message: string, viewer?: ViewerNoticeLease) =>
-    setConnectionNotice(message ? { message, viewer } : null);
-  const openedWindow = connectionNote?.viewer ?? null;
-  const openedWindowPresent = useViewerNoticePresent(openedWindow);
-  useEffect(() => {
-    if (!openedWindowPresent)
-      setConnectionNotice((current) =>
-        current?.viewer === openedWindow ? null : current,
-      );
-  }, [openedWindowPresent, openedWindow]);
+  const [connectionNote, setConnectionNote] = useState("");
   const [connecting, setConnecting] = useState(false);
   const inFlight = useRef(false);
   const [editing, setEditing] = useState(false);
@@ -1843,10 +1923,7 @@ function Devices({
               return;
             }
             const opened = await onView(request.id);
-            setConnectionNote(
-              opened.isPresent() ? "已在独立窗口打开，可继续管理设备。" : "",
-              opened,
-            );
+            setConnectionNote("");
             return opened;
           } catch (e) {
             setConnectionNote("");
@@ -1943,43 +2020,24 @@ function Devices({
     <section
       className={`device-workspace${device ? "" : " device-workspace-empty"}`}
     >
-      <div className="device-list-pane">
-        <div className="section-heading">
-          <h2 className="heading-with-count">
-            设备列表{" "}
-            <span
-              className="count"
-              aria-label={`显示 ${shown.length} 台，共 ${devices.length} 台`}
-            >
-              {filtered
-                ? `${shown.length} / ${devices.length}`
-                : devices.length}
-            </span>
-          </h2>
-          <button
-            className="text-button"
-            disabled={busy}
-            onClick={() => void act(onRefresh, "设备状态已刷新", false)}
-          >
-            刷新
-          </button>
-        </div>
-        <div className="filters">
+      <PageActions>
+        <label className="device-search">
+          <Search16Regular aria-hidden="true" />
           <input
             ref={searchInput}
             aria-label="搜索设备"
-            placeholder="搜索电脑名称或设备 ID"
+            placeholder="搜索设备名称或设备 ID"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
-          <select
-            aria-label="筛选设备"
-            value={filter}
-            onChange={(e) => setFilter(e.target.value)}
-          >
-            <option value="all">全部</option>
-            <option value="online">在线</option>
-          </select>
+        </label>
+      </PageActions>
+      <div className="device-list-pane">
+        <div className="device-table-head" aria-hidden="true">
+          <span>设备名称</span>
+          <span>系统</span>
+          <span>状态</span>
+          <span>设备 ID</span>
         </div>
         <div className="device-list" aria-label="设备列表">
           {shown.map((d) => (
@@ -1991,16 +2049,35 @@ function Devices({
             >
               <span
                 className={`device-indicator ${d.online && d.enabled ? "online" : ""}`}
+                aria-hidden="true"
               >
-                <Desktop20Regular />
+                <DeviceGlyph platform={d.platform} />
               </span>
               <span className="device-list-name">
-                <strong>{d.name}</strong>
+                <strong title={d.name}>{d.name}</strong>
                 <small>
+                  <i
+                    className={`presence-dot ${d.online && d.enabled ? "online" : ""}`}
+                    aria-hidden="true"
+                  />
                   {d.id === state.deviceId ? "本机 · " : ""}
                   {!d.enabled ? "已停用" : d.online ? "在线" : "离线"} ·{" "}
-                  {short(d.id)}
+                  {platformNames[d.platform] ?? d.platform}
                 </small>
+              </span>
+              <span className="device-table-cell">
+                {platformNames[d.platform] ?? d.platform}
+              </span>
+              <span className="device-table-cell table-presence">
+                <i
+                  className={`presence-dot ${d.online && d.enabled ? "online" : ""}`}
+                  aria-hidden="true"
+                />
+                {!d.enabled ? "已停用" : d.online ? "在线" : "离线"}
+                {d.id === state.deviceId ? " · 本机" : ""}
+              </span>
+              <span className="device-table-cell table-id" title={d.id}>
+                {d.id}
               </span>
               <ChevronRight16Regular aria-hidden="true" />
             </button>
@@ -2022,6 +2099,24 @@ function Devices({
             </Empty>
           )}
         </div>
+        <div className="device-list-tools">
+          <select
+            aria-label="筛选设备"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+          >
+            <option value="all">全部设备</option>
+            <option value="online">仅在线</option>
+          </select>
+          {filtered && <span role="status">匹配 {shown.length} 台</span>}
+          <button
+            className="text-button"
+            disabled={busy}
+            onClick={() => void act(onRefresh, "设备状态已刷新", false)}
+          >
+            <ArrowSync20Regular aria-hidden="true" /> 刷新
+          </button>
+        </div>
         {!state.deviceId && (
           <button
             className="primary wide"
@@ -2034,53 +2129,34 @@ function Devices({
       <div className="device-detail-pane" key={device?.id}>
         {device ? (
           <>
-            <div className="section-heading">
-              <div>
-                <div className="tag-row">
-                  <span
-                    className={`tag ${device.online && device.enabled ? "ready" : ""}`}
-                  >
-                    {!device.enabled
-                      ? "已停用"
-                      : device.online
-                        ? "在线"
-                        : "离线"}
-                  </span>
-                  {isLocal && <span className="tag">本机</span>}
-                </div>
-                <h2 className="device-detail-title">{device.name}</h2>
-                <p className="muted">
-                  {device.platform} · {short(device.id)}
-                </p>
-              </div>
-            </div>
-            {isLocal ? (
-              <>
-                <div className="sharing-panel remote-access-panel">
-                  <RemoteAccessControls
-                    state={state}
-                    busy={busy || !device.enabled}
-                    act={act}
-                    prepareTransport={prepareTransport}
+            <div className="device-summary">
+              <div className="device-identity">
+                <picture className="device-illustration">
+                  <img
+                    src={`/device-${device.platform === "android" ? "phone" : "monitor"}${appearance === "midnight" ? "-midnight" : ""}.webp`}
+                    alt=""
                   />
+                </picture>
+                <div>
+                  <h2 className="device-detail-title">{device.name}</h2>
+                  <div className="tag-row">
+                    <span
+                      className={`tag ${device.online && device.enabled ? "ready" : ""}`}
+                    >
+                      {!device.enabled
+                        ? "已停用"
+                        : device.online
+                          ? "在线"
+                          : "离线"}
+                    </span>
+                    {isLocal && <span className="tag">本机</span>}
+                    <span className="device-platform">
+                      {platformNames[device.platform] ?? device.platform}
+                    </span>
+                  </div>
                 </div>
-                <IncomingApprovals
-                  pending={pending}
-                  state={state}
-                  busy={busy}
-                  act={act}
-                  prepareTransport={prepareTransport}
-                  onFiles={onFiles}
-                />
-                <button
-                  className="text-button"
-                  onClick={() => onNavigate("settings")}
-                >
-                  连接设置 →
-                </button>
-              </>
-            ) : (
-              <>
+              </div>
+              {!isLocal && (
                 <div className="remote-action-grid">
                   <button
                     className="primary remote-primary"
@@ -2116,6 +2192,35 @@ function Devices({
                     仅查看屏幕
                   </button>
                 </div>
+              )}
+            </div>
+            {isLocal ? (
+              <>
+                <div className="sharing-panel remote-access-panel">
+                  <RemoteAccessControls
+                    state={state}
+                    busy={busy || !device.enabled}
+                    act={act}
+                    prepareTransport={prepareTransport}
+                  />
+                </div>
+                <IncomingApprovals
+                  pending={pending}
+                  state={state}
+                  busy={busy}
+                  act={act}
+                  prepareTransport={prepareTransport}
+                  onFiles={onFiles}
+                />
+                <button
+                  className="text-button"
+                  onClick={() => onNavigate("settings")}
+                >
+                  连接设置 →
+                </button>
+              </>
+            ) : (
+              <>
                 {!device.can_host && (
                   <>
                     <button
@@ -2140,11 +2245,9 @@ function Devices({
                   </>
                 )}
                 {blocked && <p className="muted">{blocked}</p>}
-                {(waiting ||
-                  connecting ||
-                  (connectionNote && openedWindowPresent)) && (
+                {(waiting || connecting || connectionNote) && (
                   <div className="notice-strip" role="status">
-                    {connectionNote?.message}
+                    {connectionNote}
                     {waiting && (
                       <button
                         className="danger-text"
@@ -2172,27 +2275,46 @@ function Devices({
                 )}
               </>
             )}
+            <section className="device-info">
+              <h3>设备信息</h3>
+              <dl>
+                <div>
+                  <dt>设备 ID</dt>
+                  <dd>
+                    <code>{device.id}</code>
+                    <button
+                      className="text-button"
+                      aria-label="复制设备 ID"
+                      title="复制设备 ID"
+                      disabled={busy}
+                      onClick={() =>
+                        void act(
+                          () => copyText(device.id),
+                          "设备 ID 已复制",
+                          false,
+                        )
+                      }
+                    >
+                      <Copy16Regular aria-hidden="true" />
+                    </button>
+                  </dd>
+                </div>
+                <div>
+                  <dt>最后在线</dt>
+                  <dd>
+                    {device.last_seen_at
+                      ? dateLabel(device.last_seen_at)
+                      : "暂无记录"}
+                  </dd>
+                </div>
+              </dl>
+            </section>
             <details className="advanced-settings device-management">
-              <summary>设备信息与管理</summary>
-              <div className="device-facts">
-                <span>设备 ID</span>
-                <code>{device.id}</code>
-                <button
-                  className="text-button"
-                  disabled={busy}
-                  onClick={() =>
-                    void act(() => copyText(device.id), "设备 ID 已复制", false)
-                  }
-                >
-                  复制设备 ID
-                </button>
-                <span>最后在线</span>
-                <span>
-                  {device.last_seen_at
-                    ? new Date(device.last_seen_at).toLocaleString()
-                    : "暂无记录"}
-                </span>
-              </div>
+              <summary>
+                <Settings20Regular aria-hidden="true" />
+                管理设备
+                <ChevronDown16Regular aria-hidden="true" />
+              </summary>
               {editing ? (
                 <form
                   className="inline-form"
@@ -2710,7 +2832,7 @@ function Requests({
             p.permission === "files" ? !state.filesEnabled : !state.sharing,
           ) && (
             <p className="hint">
-              请先开启“允许远程连接”。
+              请先开启“允许其他设备连接本机”。
               <button
                 className="text-button"
                 onClick={() => onNavigate("settings")}
@@ -3425,6 +3547,10 @@ function Viewer({
   const inputQueue = useRef<Promise<unknown>>(Promise.resolve());
   const inputPending = useRef(0);
   const lastMove = useRef(0);
+  const queuedDrag = useRef<{
+    epoch: number;
+    input: Record<string, unknown>;
+  } | null>(null);
   const [ended, setEnded] = useState(false);
   const [fileBusy, setFileBusy] = useState(false);
   const fileInFlight = useRef(false);
@@ -3723,7 +3849,13 @@ function Viewer({
   controlRef.current = control;
   const send = (input: Record<string, unknown> | null) => {
     if (!controlRef.current || !displayGate.current.canControl()) return;
-    if (input?.kind === "move") {
+    const epoch = generation.current;
+    const dragging = input?.kind === "move" && pointer.current.buttons !== 0;
+    if (dragging && queuedDrag.current?.epoch === epoch) {
+      queuedDrag.current.input = input;
+      return;
+    }
+    if (input?.kind === "move" && !dragging) {
       if (performance.now() - lastMove.current < 30 || inputPending.current > 0)
         return;
       lastMove.current = performance.now();
@@ -3739,19 +3871,32 @@ function Viewer({
       void invoke("transport_close", { id }).catch(() => {});
       return;
     }
-    const epoch = generation.current;
+    // Only adjacent held moves share a slot. A button/key/release seals it so
+    // the latest drag position is delivered before the next discrete event.
+    const drag = dragging ? { epoch, input } : null;
+    queuedDrag.current = drag;
     const lease = viewerLease.current;
     const observedInputGeneration = inputGeneration.current;
     inputPending.current++;
     inputQueue.current = inputQueue.current
-      .then(() =>
-        dispatchViewerInput(
-          () =>
-            invoke("remote_input", {
+      .then(async () => {
+        if (drag) {
+          const remaining = 30 - (performance.now() - lastMove.current);
+          if (remaining > 0 && epoch === generation.current)
+            await new Promise((resolve) =>
+              window.setTimeout(resolve, remaining),
+            );
+          if (queuedDrag.current === drag) queuedDrag.current = null;
+        }
+        return dispatchViewerInput(
+          () => {
+            if (drag) lastMove.current = performance.now();
+            return invoke("remote_input", {
               id,
-              input,
+              input: drag ? drag.input : input,
               generation: observedInputGeneration,
-            }),
+            });
+          },
           () =>
             lease.active &&
             epoch === generation.current &&
@@ -3767,8 +3912,8 @@ function Viewer({
             setProblem(errorText(e));
             void invoke("transport_close", { id }).catch(() => {});
           },
-        ),
-      )
+        );
+      })
       .finally(() => {
         inputPending.current--;
       });

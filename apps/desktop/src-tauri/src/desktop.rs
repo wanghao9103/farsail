@@ -19,8 +19,36 @@ pub struct Desktop {
     cleanup_finished: AtomicBool,
 }
 
+// Startup completion and its timeout may race. Neither should reopen a window hidden later.
+static INITIAL_PRESENTATION: AtomicBool = AtomicBool::new(false);
+
+fn show_initial_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main")
+        && !INITIAL_PRESENTATION.swap(true, Ordering::Relaxed)
+        && window.show().is_err()
+    {
+        INITIAL_PRESENTATION.store(false, Ordering::Relaxed);
+    }
+}
+
+#[tauri::command]
+pub fn workspace_present(window: tauri::WebviewWindow, midnight: bool) -> Result<(), String> {
+    viewer::main_only(&window)?;
+    use tauri::window::Color;
+    let background = if midnight {
+        Color(16, 19, 41, 255)
+    } else {
+        Color(237, 243, 252, 255)
+    };
+    // Some platforms only support changing one of the two native surfaces.
+    let _ = window.set_background_color(Some(background));
+    show_initial_window(window.app_handle());
+    Ok(())
+}
+
 pub fn show(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
+        INITIAL_PRESENTATION.store(true, Ordering::Relaxed);
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
@@ -105,6 +133,12 @@ fn create_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 pub fn setup(app: &tauri::App) {
+    // Keep the branded startup screen accessible even when the WebView delays its first render.
+    let startup = app.handle().clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        show_initial_window(&startup);
+    });
     let tray_created = match create_tray(app) {
         Ok(()) => true,
         Err(error) => {

@@ -1,5 +1,19 @@
 **English** | [简体中文](design-qa.zh-CN.md)
 
+# Switchable desktop appearances · 2026-11-23
+
+final result: passed
+
+Compared the selected FarSail concepts 1 and 3 with the production device page at 1522 × 1033, density 1, with five fixture devices and Studio PC selected. The 1120 × 760 desktop view was also compared with proportionally reduced references. The Codex in-app preview exercised Settings → Appearance → Midnight and selection of a remote PC. Evidence is in `.local/blue-desktop/verification/`, including `light-comparison.jpg`, `midnight-comparison.jpg` and captures from both browser engines.
+
+- Typography and layout. Titles, device names and actions have separate weights. The light layout has a labeled sidebar and split list/detail panes. The dark layout uses an icon rail, a wide selected-device panel and four aligned table columns. The narrow layout preserves device selection, status and actions.
+- Color and images. Management pages, inputs, update dialogs and focus states inherit the chosen workspace palette. Computer and phone selections load separate local illustrations for each appearance. Checked the dark hero, selected row, status dots, sidebar icons and light detail panel at full size.
+- Copy and controls. Device names, availability and actions come from application state. The product retains its local-first order, filter, refresh and management controls. Differences from the concept include these controls, the existing sail mark and system font rendering.
+- Fixes after comparison. Enlarged the hero, actions and list rhythm on wider desktops and placed pending connection feedback immediately after the dark hero.
+- Verification. Chromium and WebKit covered switching, reload, search, no results, selection, view requests, cancellation and four viewport sizes. In isolated native WebKitGTK launches, the first captured main-window surface used the selected startup color in both appearances, followed by the login UI. The sample includes one uniform themed frame per launch. Actual cross-version installation and Windows first paint remain outside this visual acceptance.
+
+---
+
 # Remote controls dropdown design QA
 
 final result: passed

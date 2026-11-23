@@ -1,1 +1,50 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><meta name="theme-color" content="#092b34"/><title>FarSail 遥舟</title></head><body><div id="root"></div><script type="module" src="/src/main.tsx"></script></body></html>
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>FarSail 遥舟</title>
+    <style>
+      html {
+        background: #edf3fc;
+        color: #1a263b;
+      }
+      html[data-appearance="midnight"],
+      html[data-viewer] {
+        background: #101329;
+        color: #edf0ff;
+      }
+      #startup {
+        position: fixed;
+        inset: 0;
+        display: grid;
+        place-content: center;
+        justify-items: center;
+        gap: 12px;
+        background: #edf3fc;
+        color: #1a263b;
+        font:
+          15px system-ui,
+          sans-serif;
+      }
+      [data-appearance="midnight"] #startup,
+      [data-viewer] #startup {
+        background: #101329;
+        color: #edf0ff;
+      }
+      #startup img {
+        width: 40px;
+        height: 40px;
+      }
+    </style>
+    <script src="/appearance.js"></script>
+  </head>
+  <body>
+    <div id="root">
+      <div id="startup" role="status">
+        <img src="/icon.png" alt="" />正在打开 FarSail…
+      </div>
+    </div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

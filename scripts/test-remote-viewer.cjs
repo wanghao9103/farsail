@@ -1599,6 +1599,17 @@ const fs = require("node:fs");
   assert.equal(outsideInputs.filter((i) => i === null).length, 1);
   assert(outsideInputs.at(-2)?.kind === "button" && !outsideInputs.at(-2).down);
   assert.equal(outsideInputs.filter((i) => i?.kind === "button").length, 2);
+  const dragMoves = outsideInputs.filter((i) => i?.kind === "move");
+  assert.equal(
+    dragMoves.length,
+    1,
+    "keep the latest drag move behind a slow DOWN",
+  );
+  assert.equal(dragMoves[0].x, 1);
+  assert.deepEqual(
+    outsideInputs.slice(0, 3).map((i) => i?.kind),
+    ["button", "move", "button"],
+  );
   await page.keyboard.up("Shift");
   // Holding a button that began outside cannot start a remote gesture by
   // re-entering. A subsequent fresh click must still be accepted.
@@ -1655,12 +1666,13 @@ const fs = require("node:fs");
       });
     await page.mouse.down();
     await page.waitForFunction(() => !!window.fixture.release);
+    // Leave a held move pending behind DOWN before either cancellation.
+    await page.mouse.move(cx + 10, cy);
     if (loss === "blur")
       await page.evaluate(() => window.dispatchEvent(new Event("blur")));
     else {
       // Capture becomes active at the next pointer event. Cancelling a pending
       // capture immediately after DOWN does not emit lostpointercapture.
-      await page.mouse.move(cx + 10, cy);
       await page.getByAltText("远端桌面").evaluate((img) => {
         const id = window.fixture.pointerId;
         if (!img.hasPointerCapture(id))
@@ -1702,6 +1714,7 @@ const fs = require("node:fs");
       `${loss} must discard queued UP and require a fresh gesture`,
     );
     assert(cancelledInputs[0].down);
+    assert(!cancelledInputs.some((i) => i?.kind === "move"));
     await page.mouse.click(cx, cy);
     await released(start);
   }

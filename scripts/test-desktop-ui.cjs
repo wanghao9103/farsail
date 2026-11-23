@@ -667,7 +667,9 @@ const fs = require("node:fs");
     await page.getByRole("button", { name: "远程控制", exact: true }).count(),
     0,
   );
-  await page.getByRole("switch", { name: "允许远程连接", exact: true }).check();
+  await page
+    .getByRole("switch", { name: "允许其他设备连接本机", exact: true })
+    .check();
   await page.waitForFunction(() => window.fixture.filesEnabled);
   assert.equal(await page.evaluate(() => window.fixture.sharing), true);
   assert.equal(await page.evaluate(() => window.fixture.remoteWatch), false);
@@ -691,17 +693,17 @@ const fs = require("node:fs");
     .waitFor();
   assert(
     await page
-      .getByRole("switch", { name: "允许远程连接", exact: true })
+      .getByRole("switch", { name: "允许其他设备连接本机", exact: true })
       .isChecked(),
   );
   await page
     .locator(".sidebar-status")
-    .getByText("文件传输", { exact: true })
+    .getByText("仅允许文件传输", { exact: true })
     .waitFor();
   assert.equal(
     await page
       .locator(".sidebar-status")
-      .getByText("屏幕与文件", { exact: true })
+      .getByText("允许屏幕控制与文件传输", { exact: true })
       .count(),
     0,
   );
@@ -720,7 +722,7 @@ const fs = require("node:fs");
   );
   await page
     .locator(".sidebar-status")
-    .getByText("屏幕与文件", { exact: true })
+    .getByText("允许屏幕控制与文件传输", { exact: true })
     .waitFor();
   const screenRetry = await page.evaluate(
     (from) => window.fixture.calls.slice(from).map((c) => c.cmd),
@@ -781,13 +783,15 @@ const fs = require("node:fs");
   });
   await page.getByRole("button", { name: "刷新", exact: true }).click();
   await page
-    .getByRole("switch", { name: "允许远程连接", exact: true })
+    .getByRole("switch", { name: "允许其他设备连接本机", exact: true })
     .uncheck();
   assert.equal(
     await page.evaluate(() => window.fixture.sharePreferences.sharing),
     false,
   );
-  await page.getByRole("switch", { name: "允许远程连接", exact: true }).check();
+  await page
+    .getByRole("switch", { name: "允许其他设备连接本机", exact: true })
+    .check();
   await page
     .getByRole("switch", { name: "同账号远程值守", exact: true })
     .check();
@@ -839,6 +843,14 @@ const fs = require("node:fs");
   );
   assert.equal(connections.length, 1);
   assert.equal(connections[0].args.permission, "view");
+  await page.getByRole("status").getByText("已打开独立远程窗口").waitFor();
+  assert.equal(
+    await page.locator(".device-detail-pane .notice-strip").count(),
+    0,
+  );
+  await page
+    .getByRole("button", { name: "复制设备 ID", exact: true })
+    .waitFor();
   const assertShell = async () => {
     const overflow = await page.evaluate(() => {
       const root = document.documentElement;
@@ -1162,7 +1174,7 @@ const fs = require("node:fs");
     await page.setViewportSize(size);
     assert(
       await page
-        .getByRole("status", { name: "远程连接已允许", exact: true })
+        .getByRole("status", { name: "本机已开放连接", exact: true })
         .isVisible(),
       "compact desktop sidebar must retain sharing status",
     );
@@ -1309,7 +1321,9 @@ const fs = require("node:fs");
   await loginAgain();
   await page.getByRole("button", { name: "应用设置", exact: true }).click();
   const beforeSharing = await page.evaluate(() => window.fixture.calls.length);
-  await page.getByRole("switch", { name: "允许远程连接", exact: true }).check();
+  await page
+    .getByRole("switch", { name: "允许其他设备连接本机", exact: true })
+    .check();
   await page.waitForFunction(
     () => window.fixture.sharing && window.fixture.filesEnabled,
   );
@@ -1367,7 +1381,7 @@ const fs = require("node:fs");
     window.fixture.connected["outgoing-files"] = "files";
   });
   await page
-    .getByRole("switch", { name: "允许远程连接", exact: true })
+    .getByRole("switch", { name: "允许其他设备连接本机", exact: true })
     .uncheck();
   await page.waitForFunction(() => !window.fixture.sharing);
   assert.equal(await page.evaluate(() => window.fixture.sharing), false);
@@ -1468,7 +1482,7 @@ const fs = require("node:fs");
   );
 
   await page.getByRole("button", { name: "我的设备", exact: true }).click();
-  await page.getByText("设备信息与管理", { exact: true }).click();
+  await page.getByText("管理设备", { exact: true }).click();
   await page.getByRole("button", { name: "重命名", exact: true }).click();
   await page.getByLabel("新的设备名称", { exact: true }).fill("不应保存的名称");
   await page.getByRole("button", { name: "取消", exact: true }).click();
@@ -1773,7 +1787,7 @@ const fs = require("node:fs");
     await page.evaluate(() => window.fixture.devices[0].name),
     "这台 Windows 电脑",
   );
-  await page.getByText("设备信息与管理", { exact: true }).click();
+  await page.getByText("管理设备", { exact: true }).click();
   await page.getByRole("button", { name: "重命名", exact: true }).click();
   await page.getByLabel("新的设备名称", { exact: true }).fill("自定义工作站");
   await page.getByRole("button", { name: "保存", exact: true }).click();
@@ -1834,7 +1848,7 @@ const fs = require("node:fs");
     .waitFor();
   assert.equal(
     await page
-      .getByRole("switch", { name: "允许远程连接", exact: true })
+      .getByRole("switch", { name: "允许其他设备连接本机", exact: true })
       .count(),
     1,
   );
@@ -1856,7 +1870,7 @@ const fs = require("node:fs");
   );
   await page.getByRole("button", { name: "工作总览", exact: true }).click();
   await page
-    .getByRole("status", { name: "远程连接已关闭", exact: true })
+    .getByRole("status", { name: "本机未开放连接", exact: true })
     .waitFor();
   await page.screenshot({ path: ".local/ui-verification/ubuntu-overview.png" });
   await page.getByRole("button", { name: "我的设备", exact: true }).click();
@@ -1865,7 +1879,7 @@ const fs = require("node:fs");
     .getByRole("button", { name: /^手动名称/ })
     .click();
   const linuxRemote = page.getByRole("switch", {
-    name: "允许远程连接",
+    name: "允许其他设备连接本机",
     exact: true,
   });
   await linuxRemote.check();

@@ -235,19 +235,21 @@ const fs = require("node:fs");
   );
   assert.equal(
     await page
-      .getByRole("switch", { name: "允许远程连接", exact: true })
+      .getByRole("switch", { name: "允许其他设备连接本机", exact: true })
       .isChecked(),
     false,
   );
-  await page.getByRole("switch", { name: "允许远程连接", exact: true }).check();
+  await page
+    .getByRole("switch", { name: "允许其他设备连接本机", exact: true })
+    .check();
   await page.waitForFunction(() => window.filesFixture.filesEnabled);
   await page
     .locator(".sidebar-status")
-    .getByText("远程连接已允许", { exact: true })
+    .getByText("本机已开放连接", { exact: true })
     .waitFor();
   await page
     .locator(".sidebar-status")
-    .getByText("文件传输", { exact: true })
+    .getByText("仅允许文件传输", { exact: true })
     .waitFor();
   const enabling = await page.evaluate(() =>
     window.filesFixture.calls.filter((c) =>
@@ -486,7 +488,7 @@ const fs = require("node:fs");
   await page.setViewportSize({ width: 360, height: 580 });
   const approvalHint = page
     .locator(".connection-list-pane > .hint")
-    .filter({ hasText: "请先开启“允许远程连接”。" });
+    .filter({ hasText: "请先开启“允许其他设备连接本机”。" });
   await approvalHint.waitFor();
   assert(await approvalHint.isVisible());
   assert(
@@ -495,9 +497,7 @@ const fs = require("node:fs");
       .isDisabled(),
   );
   await page.getByRole("button", { name: "连接设置", exact: true }).click();
-  await page
-    .getByRole("heading", { name: "应用设置", exact: true })
-    .waitFor();
+  await page.getByRole("heading", { name: "应用设置", exact: true }).waitFor();
   await page.setViewportSize({ width: 1120, height: 760 });
   await nav("我的设备").click();
   await page
@@ -509,7 +509,9 @@ const fs = require("node:fs");
       .getByRole("button", { name: "允许文件传输", exact: true })
       .isDisabled(),
   );
-  await page.getByRole("switch", { name: "允许远程连接", exact: true }).check();
+  await page
+    .getByRole("switch", { name: "允许其他设备连接本机", exact: true })
+    .check();
   await page.getByRole("button", { name: "允许文件传输", exact: true }).click();
   await page.getByRole("heading", { name: "文件传输", exact: true }).waitFor();
   assert.equal(
@@ -647,12 +649,12 @@ const fs = require("node:fs");
   );
   await nav("应用设置").click();
   await page
-    .getByRole("switch", { name: "允许远程连接", exact: true })
+    .getByRole("switch", { name: "允许其他设备连接本机", exact: true })
     .uncheck();
   await page.waitForFunction(() => !window.filesFixture.filesEnabled);
   await page
     .locator(".sidebar-status")
-    .getByText("远程连接已关闭", { exact: true })
+    .getByText("本机未开放连接", { exact: true })
     .waitFor();
   assert.equal(
     await page.evaluate(

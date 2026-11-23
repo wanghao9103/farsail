@@ -172,7 +172,7 @@ function nativeFixture(initial) {
 const updateDialog = (page) =>
   page.getByRole("dialog", { name: "软件更新", exact: true });
 const notice = (page) =>
-  page.locator("main > .alert").filter({
+  page.getByRole("status").filter({
     has: page.getByRole("button", { name: "查看更新", exact: true }),
   });
 async function polls(page, count = 2) {
@@ -374,7 +374,9 @@ async function alignedActions(actions) {
               `settings-${viewport.width}x${viewport.height}.png`,
             ),
           });
-          await page.getByRole("button", { name: "工作总览", exact: true }).click();
+          await page
+            .getByRole("button", { name: "工作总览", exact: true })
+            .click();
           const alert = notice(page);
           await alert.waitFor();
           const alertButton = alert.getByRole("button", {
@@ -492,6 +494,40 @@ async function alignedActions(actions) {
       );
       await untouchedPreferences(page);
     });
+    await scenario("midnight-reload-and-install-failure", {}, async (page) => {
+      const button = (name) => page.getByRole("button", { name, exact: true });
+      await button("应用设置").click();
+      assert.equal(await button("晴蓝").getAttribute("aria-pressed"), "true");
+      await button("午夜蓝").click();
+      await page.reload();
+      await button("我的设备").click();
+      assert(await page.locator(".device-table-head").isVisible());
+      await button("应用设置").click();
+      assert.equal(await button("午夜蓝").getAttribute("aria-pressed"), "true");
+      await available(page);
+      const dialog = updateDialog(page);
+      await dialog
+        .getByRole("button", { name: "立即更新", exact: true })
+        .click();
+      await page.waitForFunction(() => !!window.updateFixture.pendingDownload);
+      await page.evaluate(() => window.updateFixture.finishDownload());
+      await dialog
+        .getByRole("button", { name: "安装更新", exact: true })
+        .click();
+      await page.evaluate(() =>
+        Object.assign(window.updateFixture.update, {
+          phase: "error",
+          message: "更新安装失败，请重试。",
+        }),
+      );
+      await dialog
+        .getByText("更新安装失败，请重试。", { exact: true })
+        .waitFor();
+      await dialog.getByRole("button", { name: "关闭", exact: true }).click();
+      await button("晴蓝").click();
+      await button("我的设备").click();
+      assert.equal(await page.locator(".device-table-head").isVisible(), false);
+    });
     await scenario("download-progress-and-phase-deferral", {}, async (page) => {
       await available(page);
       const dialog = updateDialog(page);
@@ -569,9 +605,7 @@ async function alignedActions(actions) {
       );
       await polls(page);
       await noDialog(page);
-      await page
-        .getByRole("button", { name: "应用设置", exact: true })
-        .click();
+      await page.getByRole("button", { name: "应用设置", exact: true }).click();
       await page
         .locator(".client-updates")
         .getByRole("button", { name: "查看更新", exact: true })
@@ -616,9 +650,7 @@ async function alignedActions(actions) {
       );
       assert.equal(await dialog.locator(".hint").count(), 0);
       await dialog.getByRole("button", { name: "关闭", exact: true }).click();
-      await page
-        .getByRole("button", { name: "应用设置", exact: true })
-        .click();
+      await page.getByRole("button", { name: "应用设置", exact: true }).click();
       const settings = page.locator(".client-updates");
       await settings
         .getByText("更新未完成，请重试。", { exact: true })

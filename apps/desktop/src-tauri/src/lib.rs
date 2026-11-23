@@ -11,9 +11,9 @@ mod clipboard;
 use clipboard::{remote_paste_files, remote_send_files};
 mod computer;
 mod desktop;
-use desktop::app_exit;
 #[cfg(debug_assertions)]
 use desktop::ipc_desktop_state;
+use desktop::{app_exit, workspace_present};
 mod files;
 use files::{files_accept, files_cancel, files_reject, files_send, files_status};
 mod updater;
@@ -374,6 +374,8 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .on_page_load(|webview, _| {
+            #[cfg(not(debug_assertions))]
+            let _ = webview;
             #[cfg(debug_assertions)]
             if std::env::var_os("FARSAIL_TRAY_SMOKE").is_some() {
                 if webview.label() == "main" && !IPC_SMOKE_STARTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
@@ -399,8 +401,6 @@ pub fn run() {
             }
             #[cfg(debug_assertions)]
             if std::env::var_os("FARSAIL_VIEWER_SMOKE").is_some() { viewer::smoke_probe(webview); return; }
-            #[cfg(not(debug_assertions))]
-            let _ = webview;
             #[cfg(debug_assertions)]
             if std::env::var_os("FARSAIL_IPC_SMOKE_PATH").is_some()
                 && !IPC_SMOKE_STARTED.swap(true, std::sync::atomic::Ordering::SeqCst)
@@ -544,6 +544,7 @@ pub fn run() {
         ipc_smoke_report,
         ipc_media_smoke,
         ipc_desktop_state,
+        workspace_present,
         app_exit
     ]);
     #[cfg(not(debug_assertions))]
@@ -587,6 +588,7 @@ pub fn run() {
         media_viewport,
         remote_input,
         remote_task_manager,
+        workspace_present,
         app_exit
     ]);
     #[allow(unused_mut)]

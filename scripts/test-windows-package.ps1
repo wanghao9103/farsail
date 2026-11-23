@@ -132,7 +132,7 @@ function Wait-Restore {
     do {
         $items=$script:root.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
         foreach ($item in $items) {
-            if ($item.Current.Name -eq '远程连接已允许') { Assert-RemoteCapabilities $true; return 'passed' }
+            if ($item.Current.Name -eq '本机已开放连接') { Assert-RemoteCapabilities $true; return 'passed' }
             if ($item.Current.Name -like '*本次未恢复远程连接*') {
                 $status=Invoke-RestMethod ($fixture.server+'/fixture/status')
                 if ($status.sharing -or $status.files) { throw 'Failed restoration still advertised remote access' }
@@ -256,8 +256,8 @@ try {
     $null=Wait-Restore
     $watchSwitch=Find-UI '同账号远程值守' @('Button', 'CheckBox')
     if ($watchSwitch.GetCurrentPattern([Windows.Automation.TogglePattern]::Pattern).Current.ToggleState -ne [Windows.Automation.ToggleState]::Off) { throw 'Remote watch opt-out did not restore' }
-    Set-UISwitch '允许远程连接' $false
-    $null=Find-UI '远程连接已关闭'
+    Set-UISwitch '允许其他设备连接本机' $false
+    $null=Find-UI '本机未开放连接'
     Assert-RemoteCapabilities $false
     Wait-Preference $false $false
     Close-App
@@ -265,7 +265,7 @@ try {
     if ($preference.sharing -or $preference.watch) { throw 'Native sharing opt-out did not persist' }
     $optOutHash=(Get-FileHash $preferencePath).Hash
     Start-App $false
-    $null=Find-UI '远程连接已关闭'
+    $null=Find-UI '本机未开放连接'
     Assert-RemoteCapabilities $false
     if ((Get-FileHash $preferencePath).Hash -ne $optOutHash) { throw 'Restart changed explicit opt-out' }
     Click-UI '*账号安全'; Click-UI '退出登录'
