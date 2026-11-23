@@ -203,6 +203,8 @@ try {
     $windowPattern.SetWindowVisualState([Windows.Automation.WindowVisualState]::Normal)
     Assert-BackgroundRestore
     Click-UI '*设置'
+    $null = Find-UI '晴蓝'
+    $null = Find-UI '午夜蓝'
     $input = Find-UI '服务地址' 'Edit'
     $value = $input.GetCurrentPattern([Windows.Automation.ValuePattern]::Pattern)
     $value.SetValue('https://example.invalid')

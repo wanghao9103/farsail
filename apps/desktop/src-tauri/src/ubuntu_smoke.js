@@ -45,8 +45,23 @@
         "Ubuntu 暂不支持共享本机屏幕或远程值守。",
       ),
     );
+    for (const [label, appearance] of [
+      ["午夜蓝", "midnight"],
+      ["晴蓝", "light"],
+    ]) {
+      const option = Array.from(
+        document.querySelectorAll("button[aria-pressed]"),
+      ).find((button) => button.textContent.trim() === label);
+      if (!option) throw Error("Workspace appearance option missing: " + label);
+      option.click();
+      await waitFor(
+        () =>
+          option.getAttribute("aria-pressed") === "true" &&
+          document.documentElement.dataset.appearance === appearance,
+      );
+    }
     const remoteAccess = document.querySelector(
-      '[aria-label="允许远程连接"][role="switch"]',
+      '[aria-label="允许其他设备连接本机"][role="switch"]',
     );
     if (!remoteAccess || remoteAccess.checked || !remoteAccess.disabled)
       throw Error(
