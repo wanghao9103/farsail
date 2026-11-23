@@ -74,6 +74,7 @@ const fs = require("node:fs");
       layout: 1,
       deliveredLayout: 0,
       fullscreen: false,
+      maximized: false,
       deferWindowAction: null,
       releaseWindowAction: null,
       calls: [],
@@ -369,7 +370,11 @@ const fs = require("node:fs");
         }
         if (cmd === "viewer_window_action") {
           if (args.action === "fullscreen") f.fullscreen = !f.fullscreen;
-          const snapshot = { fullscreen: f.fullscreen };
+          if (args.action === "maximize") {
+            f.maximized = !f.maximized;
+            window.dispatchEvent(new Event("resize"));
+          }
+          const snapshot = { fullscreen: f.fullscreen, maximized: f.maximized };
           if (args.action === f.deferWindowAction) {
             await new Promise((resolve) => {
               f.releaseWindowAction = resolve;
@@ -982,6 +987,47 @@ const fs = require("node:fs");
     return;
   }
   await load();
+  const resizeEdges = page.locator(".viewer-resize-edge");
+  await resizeEdges.first().waitFor();
+  const startResizeCalls = await page.evaluate(
+    () => window.fixture.calls.length,
+  );
+  const { width: frameWidth, height: frameHeight } = page.viewportSize();
+  for (const y of [7, frameHeight / 2, frameHeight - 8]) {
+    for (const x of [7, frameWidth / 2, frameWidth - 8]) {
+      if (x !== frameWidth / 2 || y !== frameHeight / 2)
+        await page.mouse.click(x, y);
+    }
+  }
+  const edgeCalls = await page.evaluate(
+    (from) => window.fixture.calls.slice(from),
+    startResizeCalls,
+  );
+  assert.deepEqual(
+    edgeCalls
+      .filter(
+        (c) => c.cmd === "viewer_window_action" && c.args.action === "resize",
+      )
+      .map((c) => c.args.direction),
+    [
+      "NorthWest",
+      "North",
+      "NorthEast",
+      "West",
+      "East",
+      "SouthWest",
+      "South",
+      "SouthEast",
+    ],
+  );
+  assert(!edgeCalls.some((c) => c.cmd === "remote_input" && c.args.input));
+  const maximize = page
+    .locator(".viewer-titlebar")
+    .getByRole("button", { name: "最大化或还原", exact: true });
+  await maximize.click();
+  await resizeEdges.first().waitFor({ state: "detached" });
+  await maximize.click();
+  await resizeEdges.first().waitFor();
   // Moving a native window and opening remote tools are separate actions.
   await page.mouse.move(500, 600);
   await page.locator(".viewer-toolbar").waitFor({ state: "hidden" });
@@ -1260,11 +1306,17 @@ const fs = require("node:fs");
   await page.mouse.move(900, 600);
   await page.locator(".remote-screen").focus();
   await page.locator(".viewer-toolbar").waitFor({ state: "hidden" });
-  assert((await page.locator(".remote-screen").boundingBox()).height >= 763);
+  const panelBounds = await page.getByRole("tabpanel").boundingBox();
+  const titleBounds = await page.locator(".viewer-titlebar").boundingBox();
+  assert(
+    (await page.locator(".remote-screen").boundingBox()).height >=
+      panelBounds.height - titleBounds.height - 1,
+  );
   await page.getByRole("button", { name: "显示工具栏", exact: true }).click();
   await page.locator(".viewer-toolbar").waitFor({ state: "visible" });
   await page.getByRole("button", { name: "全屏切换", exact: true }).click();
   assert.equal(await page.locator(".viewer-titlebar").count(), 0);
+  assert.equal(await resizeEdges.count(), 0);
   assert((await page.locator(".remote-screen").boundingBox()).height >= 799);
   await page.getByRole("button", { name: "全屏切换", exact: true }).click();
   assert(await page.locator(".viewer-titlebar").isVisible());
@@ -1357,8 +1409,8 @@ const fs = require("node:fs");
     await page.setViewportSize(size);
     const area = await page.locator(".remote-screen").boundingBox();
     assert(
-      area.height >= size.height - 60 && area.width >= size.width - 2,
-      "desktop should use remaining client area without permanent forms/borders",
+      area.height >= size.height - 60 && area.width >= size.width - 16,
+      "desktop should fill the area between the resize edges",
     );
     assert.equal(
       await page.evaluate(

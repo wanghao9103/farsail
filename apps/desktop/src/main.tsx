@@ -3092,6 +3092,17 @@ function sameFrameGeometry(a: Picture | null, b: Picture | null): boolean {
     a.height === b.height
   );
 }
+const viewerResizeEdges = [
+  ["NorthWest", "1 / 1", "nwse-resize"],
+  ["North", "1 / 2", "ns-resize"],
+  ["NorthEast", "1 / 3", "nesw-resize"],
+  ["West", "2 / 1", "ew-resize"],
+  ["East", "2 / 3", "ew-resize"],
+  ["SouthWest", "3 / 1", "nesw-resize"],
+  ["South", "3 / 2", "ns-resize"],
+  ["SouthEast", "3 / 3", "nwse-resize"],
+] as const;
+
 function ViewerWorkspace({ initialId }: { initialId: string }) {
   const [tabs, setTabs] = useState<ViewerTab[]>([
     { instance: "initial", id: initialId, name: "远程设备", selected: true },
@@ -3099,6 +3110,7 @@ function ViewerWorkspace({ initialId }: { initialId: string }) {
   const [problem, setProblem] = useState("");
   // Fullscreen belongs to the native window, shared by all its sessions.
   const [fullscreen, setFullscreen] = useState(false);
+  const [maximized, setMaximized] = useState(true);
   const windowStateVersion = useRef(0);
   const updateFullscreen = useCallback((next: boolean) => {
     windowStateVersion.current++;
@@ -3115,12 +3127,17 @@ function ViewerWorkspace({ initialId }: { initialId: string }) {
     let live = true;
     const read = () => {
       const version = ++windowStateVersion.current;
-      void invoke<{ fullscreen: boolean }>("viewer_window_action", {
-        action: "state",
-      })
+      void invoke<{ fullscreen: boolean; maximized: boolean }>(
+        "viewer_window_action",
+        {
+          action: "state",
+        },
+      )
         .then((state) => {
-          if (live && version === windowStateVersion.current)
+          if (live && version === windowStateVersion.current) {
             setFullscreen(state.fullscreen);
+            setMaximized(state.maximized);
+          }
         })
         .catch((e) => {
           if (live) setProblem(errorText(e));
@@ -3309,8 +3326,45 @@ function ViewerWorkspace({ initialId }: { initialId: string }) {
       </button>
     </>
   );
+  const resizable = !fullscreen && !maximized;
+  const startResize = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!event.isPrimary || event.button !== 0) return;
+    // A modal backdrop can receive the press even when the pointer is on the frame.
+    const content = event.currentTarget
+      .querySelector(".viewer-tab-panel:not([hidden])")
+      ?.getBoundingClientRect();
+    if (!content) return;
+    const { clientX, clientY } = event;
+    const vertical =
+      clientY < content.top
+        ? "North"
+        : clientY >= content.bottom
+          ? "South"
+          : "";
+    const horizontal =
+      clientX < content.left ? "West" : clientX >= content.right ? "East" : "";
+    if (!vertical && !horizontal) return;
+    event.preventDefault();
+    event.stopPropagation();
+    void invoke("viewer_window_action", {
+      action: "resize",
+      direction: vertical + horizontal,
+    }).catch((e) => setProblem(errorText(e)));
+  };
   return (
-    <>
+    <div
+      className={`viewer-frame${resizable ? " resizable" : ""}`}
+      onPointerDownCapture={resizable ? startResize : undefined}
+    >
+      {resizable &&
+        viewerResizeEdges.map(([direction, gridArea, cursor]) => (
+          <div
+            key={direction}
+            className="viewer-resize-edge"
+            aria-hidden="true"
+            style={{ gridArea, cursor }}
+          />
+        ))}
       {tabs.map((tab) => (
         <div
           key={tab.instance}
@@ -3346,7 +3400,7 @@ function ViewerWorkspace({ initialId }: { initialId: string }) {
       {problem && (
         <FailureDialog error={problem} onDismiss={() => setProblem("")} />
       )}
-    </>
+    </div>
   );
 }
 function ViewerWindow({

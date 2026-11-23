@@ -54,6 +54,7 @@ xvfb-run -a dbus-run-session -- bash -euo pipefail <<'NATIVE'
   kill "$app"
   wait "$app" 2>/dev/null || true
   app=""
+  /usr/bin/python3 scripts/test-viewer-window-resize.py
   bash scripts/test-desktop-tray.sh
 NATIVE
 node --input-type=module <<'JS'

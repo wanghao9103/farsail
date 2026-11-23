@@ -197,6 +197,77 @@ pub struct Windows(
     Mutex<HashSet<String>>,
 );
 
+// WebKit can miss the next button press after an asynchronous window-manager grab.
+// Handle the physical press before the WebView, with its original device and timestamp.
+#[cfg(target_os = "linux")]
+pub fn attach_resize_frame(window: tauri::Window) {
+    use gtk::prelude::*;
+
+    if !window.label().starts_with("viewer-") {
+        return;
+    }
+    let Ok(widget) = window.gtk_window() else {
+        return;
+    };
+    let press = gtk::GestureMultiPress::new(&widget);
+    press.set_button(1);
+    press.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let label = window.label().to_owned();
+    let app = window.app_handle().clone();
+    press.connect_pressed(move |gesture, _, x, y| {
+        let Some(surface) = gesture.widget().and_then(|w| w.window()) else {
+            return;
+        };
+        if surface
+            .state()
+            .intersects(gdk::WindowState::MAXIMIZED | gdk::WindowState::FULLSCREEN)
+        {
+            return;
+        }
+        // Logical GTK units, matching --frame-edge in desktop-theme.css.
+        const EDGE: f64 = 8.0;
+        let left = x < EDGE;
+        let top = y < EDGE;
+        let right = x >= f64::from(surface.width()) - EDGE;
+        let bottom = y >= f64::from(surface.height()) - EDGE;
+        let edge = match (left, right, top, bottom) {
+            (true, _, true, _) => gdk::WindowEdge::NorthWest,
+            (true, _, _, true) => gdk::WindowEdge::SouthWest,
+            (_, true, true, _) => gdk::WindowEdge::NorthEast,
+            (_, true, _, true) => gdk::WindowEdge::SouthEast,
+            (true, _, _, _) => gdk::WindowEdge::West,
+            (_, true, _, _) => gdk::WindowEdge::East,
+            (_, _, true, _) => gdk::WindowEdge::North,
+            (_, _, _, true) => gdk::WindowEdge::South,
+            _ => return,
+        };
+        let sequence = gesture.current_sequence();
+        let Some(event) = gesture.last_event(sequence.as_ref()) else {
+            return;
+        };
+        let (Some(device), Some((rx, ry))) = (event.device(), event.root_coords()) else {
+            return;
+        };
+        gesture.set_state(gtk::EventSequenceState::Claimed);
+        app.state::<Windows>()
+            .1
+            .lock()
+            .unwrap()
+            .insert(label.clone());
+        surface.begin_resize_drag_for_device(
+            edge,
+            &device,
+            if sequence.is_some() { 0 } else { 1 },
+            rx as i32,
+            ry as i32,
+            event.time(),
+        );
+    });
+    widget.connect_destroy(move |_| {
+        let _ = &press;
+    });
+}
+
 // Work-area coordinates are logical, including negative origins on other monitors.
 fn cascade_position(
     origin: (f64, f64),
@@ -276,6 +347,7 @@ pub async fn viewer_window_action(
     action: String,
     landscape: Option<bool>,
     automatic: Option<bool>,
+    direction: Option<tauri_runtime::ResizeDirection>,
 ) -> Result<Value, String> {
     if action == "cascade" && (window.label() == "main" || window.label().starts_with("viewer-")) {
         cascade_viewers(window.app_handle())?;
@@ -349,7 +421,32 @@ pub async fn viewer_window_action(
         }
         "minimize" => window.minimize(),
         "drag" => window.start_dragging(),
-        "state" => Ok(()),
+        "resize" => {
+            let direction = direction.ok_or("缺少窗口缩放方向")?;
+            if !window.is_maximized().map_err(|e| e.to_string())?
+                && !window.is_fullscreen().map_err(|e| e.to_string())?
+            {
+                window
+                    .as_ref()
+                    .window()
+                    .start_resize_dragging(direction)
+                    .map_err(|e| e.to_string())?;
+                // A phone's first frame can arrive after the user has sized its window.
+                window
+                    .state::<Windows>()
+                    .1
+                    .lock()
+                    .unwrap()
+                    .insert(window.label().to_owned());
+            }
+            return Ok(json!({}));
+        }
+        "state" => {
+            return Ok(json!({
+                "fullscreen": window.is_fullscreen().map_err(|e| e.to_string())?,
+                "maximized": window.is_maximized().map_err(|e| e.to_string())?,
+            }));
+        }
         "maximize" => {
             if window.is_maximized().map_err(|e| e.to_string())? {
                 window.unmaximize()

@@ -470,6 +470,12 @@ pub fn run() {
             viewer::smoke_setup(app.handle())?;
             Ok(())
         });
+    #[cfg(target_os = "linux")]
+    let builder = builder.plugin(
+        tauri::plugin::Builder::<tauri::Wry>::new("viewer-frame")
+            .on_window_ready(viewer::attach_resize_frame)
+            .build(),
+    );
     let builder = builder.on_window_event(|window, event| {
         #[cfg(debug_assertions)]
         if matches!(event, tauri::WindowEvent::Destroyed) && window.label() == "viewer-smoke"

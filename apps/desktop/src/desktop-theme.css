@@ -1886,6 +1886,37 @@ td {
 }
 
 /* Compact session workspace: tabs stay visible; controls float over the canvas. */
+.viewer-frame {
+  --frame-edge: 0px;
+  display: grid;
+  --frame-tracks: var(--frame-edge) minmax(0, 1fr) var(--frame-edge);
+  grid-template-rows: var(--frame-tracks);
+  grid-template-columns: var(--frame-tracks);
+  height: 100dvh;
+  background: #343b43;
+}
+.viewer-frame.resizable {
+  --frame-edge: 8px;
+}
+.viewer-frame > .viewer-tab-panel {
+  grid-area: 2 / 2;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+}
+.viewer-frame .viewer-window {
+  height: 100%;
+}
+.viewer-frame .viewer-titlebar {
+  position: absolute;
+}
+.viewer-resize-edge {
+  touch-action: none;
+  user-select: none;
+}
+.viewer-resize-edge:hover {
+  background: #52616e;
+}
 .viewer-window:not(.viewer-fullscreen) {
   --viewer-title-height: 28px;
 }
@@ -2288,8 +2319,8 @@ td {
     display: none;
   }
   .viewer-tab {
-    flex-basis: min(170px, calc(100vw - 236px));
-    min-width: 84px;
+    flex-basis: min(170px, 100%);
+    min-width: min(84px, 100%);
   }
   .viewer-tab-navigation {
     max-width: calc(100% - 200px);
@@ -2309,9 +2340,6 @@ td {
   }
 }
 @media (max-width: 360px) {
-  .viewer-tab {
-    min-width: 84px;
-  }
   .viewer-tab-icon {
     display: none;
   }
