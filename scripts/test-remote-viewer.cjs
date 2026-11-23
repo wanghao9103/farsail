@@ -98,6 +98,10 @@ const fs = require("node:fs");
     HTMLImageElement.prototype.decode = function () {
       if (!f.holdDecode) return decodeImage.call(this);
       return new Promise((resolve, reject) => {
+        f.heldDecode = {
+          displayed: document.querySelector('img[alt="远端桌面"]')?.src,
+          pending: this.src,
+        };
         f.releaseDecode = () => decodeImage.call(this).then(resolve, reject);
       });
     };
@@ -657,12 +661,20 @@ const fs = require("node:fs");
 
   await leaveToolbar();
   // One slow decoder retains its last image and does not stall another viewer.
-  const previousImage = await page.getByAltText("远端桌面").getAttribute("src");
   await page.evaluate(() => {
     window.fixture.holdDecode = true;
     window.fixture.lastFrame = 0;
   });
   await page.waitForFunction(() => !!window.fixture.releaseDecode);
+  // A previous decode can finish before the replacement reaches the gate.
+  const { displayed: previousImage, pending: pendingImage } =
+    await page.evaluate(() => window.fixture.heldDecode);
+  assert(previousImage, "the viewer already has a decoded frame");
+  assert.notEqual(
+    previousImage,
+    pendingImage,
+    "the held frame is not displayed",
+  );
   const heldCalls = await page.evaluate(
     () => window.fixture.calls.filter((c) => c.cmd === "media_next").length,
   );
@@ -681,7 +693,7 @@ const fs = require("node:fs");
     otherImage,
   );
   assert.equal(
-    await page.getByAltText("远端桌面").getAttribute("src"),
+    await page.getByAltText("远端桌面").evaluate((image) => image.src),
     previousImage,
     "retain the displayed image until its replacement is decoded",
   );
@@ -697,9 +709,7 @@ const fs = require("node:fs");
     window.fixture.releaseDecode();
   });
   await page.waitForFunction(
-    (src) =>
-      document.querySelector('img[alt="远端桌面"]')?.getAttribute("src") !==
-      src,
+    (src) => document.querySelector('img[alt="远端桌面"]')?.src !== src,
     previousImage,
   );
   await other.close();
