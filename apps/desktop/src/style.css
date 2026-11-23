@@ -132,14 +132,6 @@ nav button.active span {
 .sidebar-foot small {
   color: #829fa3;
 }
-.status-dot {
-  display: inline-block;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: #80dbad;
-  margin-right: 8px;
-}
 main {
   min-width: 0;
   width: 100%;
@@ -1117,12 +1109,6 @@ select:focus {
 }
 main {
   scrollbar-color: #3c546d #0b1220;
-}
-.status-dot {
-  background: #71859c;
-}
-.status-dot.is-sharing {
-  background: #77d9ae;
 }
 .setup-guide {
   margin: 0 0 18px;

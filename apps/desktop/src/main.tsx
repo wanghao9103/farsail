@@ -394,10 +394,15 @@ function App() {
   const actionVersion = useRef(0);
   const noticePresent = useViewerNoticePresent(notice?.viewer ?? null);
   useEffect(() => {
-    if (!noticePresent)
-      setNotice((current) =>
-        current?.viewer === notice?.viewer ? null : current,
-      );
+    if (!notice) return;
+    const dismiss = () =>
+      setNotice((current) => (current === notice ? null : current));
+    if (!noticePresent) {
+      dismiss();
+      return;
+    }
+    const timer = window.setTimeout(dismiss, 5000);
+    return () => window.clearTimeout(timer);
   }, [noticePresent, notice]);
   const [separateViewers, setSeparateViewers] = useState(
     () => localStorage.getItem("farsail.viewer.separate") === "true",
@@ -762,48 +767,15 @@ function App() {
             </button>
           ))}
         </nav>
-        <div
-          className="sidebar-foot"
-          role="status"
-          aria-label={
-            remoteAccessEnabled(publicState)
-              ? "本机已开放连接"
-              : "本机未开放连接"
-          }
-          title={
-            remoteAccessEnabled(publicState)
-              ? "本机已开放连接"
-              : "本机未开放连接"
-          }
-        >
-          {me && (
-            <div className="sidebar-account">
-              <People20Regular aria-hidden="true" />
-              <span title={me.email}>
-                {me.email}
-                <small>{me.role === "admin" ? "管理员" : "个人账号"}</small>
-              </span>
-            </div>
-          )}
-          <div className="sidebar-status">
-            <span
-              className={`status-dot ${remoteAccessEnabled(publicState) ? "is-sharing" : ""}`}
-              aria-hidden="true"
-            />
-            <span>
-              {remoteAccessEnabled(publicState)
-                ? "本机已开放连接"
-                : "本机未开放连接"}
+        {me && (
+          <div className="sidebar-foot sidebar-account">
+            <People20Regular aria-hidden="true" />
+            <span title={me.email}>
+              {me.email}
+              <small>{me.role === "admin" ? "管理员" : "个人账号"}</small>
             </span>
-            <small>
-              {remoteAccessEnabled(publicState)
-                ? publicState.sharing
-                  ? "允许屏幕控制与文件传输"
-                  : "仅允许文件传输"
-                : "仍可连接其他设备"}
-            </small>
           </div>
-        </div>
+        )}
       </aside>
       <main>
         <header className="topbar">
@@ -872,13 +844,8 @@ function App() {
           action={failureAction}
         />
         {notice && noticePresent && (
-          <div
-            className={`alert success ${tab === "devices" ? "device-feedback" : ""}`}
-            role="status"
-          >
-            {tab === "devices" && (
-              <CheckmarkCircle16Regular aria-hidden="true" />
-            )}
+          <div className="operation-feedback" role="status">
+            <CheckmarkCircle16Regular aria-hidden="true" />
             <span>{notice.message}</span>
             <button onClick={() => setNotice(null)} aria-label="关闭提示">
               <Dismiss16Regular aria-hidden="true" />
@@ -2112,7 +2079,7 @@ function Devices({
           <button
             className="text-button"
             disabled={busy}
-            onClick={() => void act(onRefresh, "设备状态已刷新", false)}
+            onClick={() => void act(onRefresh, "", false)}
           >
             <ArrowSync20Regular aria-hidden="true" /> 刷新
           </button>
@@ -2522,7 +2489,7 @@ function Requests({
         <button
           className="text-button"
           disabled={busy}
-          onClick={() => void act(onRefresh, "连接状态已刷新", false)}
+          onClick={() => void act(onRefresh, "", false)}
         >
           刷新连接状态
         </button>
@@ -5696,7 +5663,7 @@ function Admin({
           onClick={() =>
             void act(
               async () => ((await load()) ? undefined : HANDLED_FAILURE),
-              "管理数据已刷新",
+              "",
               false,
             )
           }

@@ -196,9 +196,6 @@
   color: var(--warning);
   background: var(--surface-raised);
 }
-.app .status-dot.is-sharing {
-  background: var(--online);
-}
 .app .local-device-icon,
 .app .invite-code button {
   color: var(--accent);
@@ -522,13 +519,8 @@
     justify-content: center;
   }
   [data-appearance="midnight"] .brand > div,
-  [data-appearance="midnight"] .sidebar-account,
-  [data-appearance="midnight"] .sidebar-status > :not(.status-dot) {
+  [data-appearance="midnight"] .sidebar-account {
     display: none;
-  }
-  [data-appearance="midnight"] .sidebar-status {
-    display: flex;
-    justify-content: center;
   }
   [data-appearance="midnight"] .app nav button {
     justify-content: center;

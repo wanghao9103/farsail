@@ -128,16 +128,23 @@ function Assert-BackgroundRestore {
     $script:root = [Windows.Automation.AutomationElement]::FromHandle($handle)
 }
 function Wait-Restore {
+    $access = Find-UI '允许其他设备连接本机' @('Button', 'CheckBox')
+    $toggle = $access.GetCurrentPattern([Windows.Automation.TogglePattern]::Pattern)
     $until=[DateTime]::UtcNow.AddSeconds(45)
     do {
         $items=$script:root.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
+        $restoring = $false
         foreach ($item in $items) {
-            if ($item.Current.Name -eq '本机已开放连接') { Assert-RemoteCapabilities $true; return 'passed' }
+            if ($item.Current.Name -like '*正在恢复远程连接*') { $restoring = $true }
             if ($item.Current.Name -like '*本次未恢复远程连接*') {
                 $status=Invoke-RestMethod ($fixture.server+'/fixture/status')
                 if ($status.sharing -or $status.files) { throw 'Failed restoration still advertised remote access' }
                 return 'unavailable_fail_closed'
             }
+        }
+        if (!$restoring -and $toggle.Current.ToggleState -eq [Windows.Automation.ToggleState]::On) {
+            $status=Invoke-RestMethod ($fixture.server+'/fixture/status')
+            if ($status.sharing -and $status.files) { return 'passed' }
         }
         Start-Sleep -Milliseconds 250
     } while ([DateTime]::UtcNow -lt $until)
@@ -259,6 +266,7 @@ try {
     $watchSwitch=Find-UI '同账号远程值守' @('Button', 'CheckBox')
     if ($watchSwitch.GetCurrentPattern([Windows.Automation.TogglePattern]::Pattern).Current.ToggleState -ne [Windows.Automation.ToggleState]::Off) { throw 'Remote watch opt-out did not restore' }
     Set-UISwitch '允许其他设备连接本机' $false
+    Click-UI '*工作总览'
     $null=Find-UI '本机未开放连接'
     Assert-RemoteCapabilities $false
     Wait-Preference $false $false
@@ -267,6 +275,7 @@ try {
     if ($preference.sharing -or $preference.watch) { throw 'Native sharing opt-out did not persist' }
     $optOutHash=(Get-FileHash $preferencePath).Hash
     Start-App $false
+    Click-UI '*工作总览'
     $null=Find-UI '本机未开放连接'
     Assert-RemoteCapabilities $false
     if ((Get-FileHash $preferencePath).Hash -ne $optOutHash) { throw 'Restart changed explicit opt-out' }

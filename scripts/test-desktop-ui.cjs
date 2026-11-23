@@ -696,17 +696,6 @@ const fs = require("node:fs");
       .getByRole("switch", { name: "允许其他设备连接本机", exact: true })
       .isChecked(),
   );
-  await page
-    .locator(".sidebar-status")
-    .getByText("仅允许文件传输", { exact: true })
-    .waitFor();
-  assert.equal(
-    await page
-      .locator(".sidebar-status")
-      .getByText("允许屏幕控制与文件传输", { exact: true })
-      .count(),
-    0,
-  );
   assert.equal(
     await page.evaluate(
       () => window.fixture.filesEnabled && window.fixture.devices[0].can_files,
@@ -721,9 +710,8 @@ const fs = require("node:fs");
     () => window.fixture.sharing && window.fixture.filesEnabled,
   );
   await page
-    .locator(".sidebar-status")
-    .getByText("允许屏幕控制与文件传输", { exact: true })
-    .waitFor();
+    .getByRole("button", { name: "重试远程连接", exact: true })
+    .waitFor({ state: "hidden" });
   const screenRetry = await page.evaluate(
     (from) => window.fixture.calls.slice(from).map((c) => c.cmd),
     beforeScreenRetry,
@@ -897,11 +885,18 @@ const fs = require("node:fs");
       },
     ];
   });
+  const workspace = page.locator(".device-workspace");
+  const beforeRefresh = await workspace.boundingBox();
   await page.getByRole("button", { name: "刷新", exact: true }).click();
   await page
     .getByRole("button")
     .filter({ hasText: "测试电脑 40" })
     .waitFor({ state: "attached" });
+  assert.equal(
+    await page.getByText("设备状态已刷新", { exact: true }).count(),
+    0,
+  );
+  assert.deepEqual(await workspace.boundingBox(), beforeRefresh);
   await assertShell();
   assert(
     await page
@@ -1172,12 +1167,7 @@ const fs = require("node:fs");
     { width: 680, height: 700 },
   ]) {
     await page.setViewportSize(size);
-    assert(
-      await page
-        .getByRole("status", { name: "本机已开放连接", exact: true })
-        .isVisible(),
-      "compact desktop sidebar must retain sharing status",
-    );
+    assert.equal(await page.locator(".sidebar").getByRole("status").count(), 0);
     for (const name of [
       "工作总览",
       "我的设备",
@@ -1505,11 +1495,13 @@ const fs = require("node:fs");
   await page.evaluate(() => {
     window.fixture.failClipboard = false;
   });
+  const beforeCopy = await workspace.boundingBox();
   await page.getByRole("button", { name: "复制设备 ID", exact: true }).click();
   await page
     .getByRole("status")
     .filter({ hasText: "设备 ID 已复制" })
     .waitFor();
+  assert.deepEqual(await workspace.boundingBox(), beforeCopy);
   assert.equal(
     await page.evaluate(() => window.fixture.clipboard),
     "local-0001",
@@ -1870,7 +1862,8 @@ const fs = require("node:fs");
   );
   await page.getByRole("button", { name: "工作总览", exact: true }).click();
   await page
-    .getByRole("status", { name: "本机未开放连接", exact: true })
+    .locator(".local-device")
+    .getByText("本机未开放连接", { exact: true })
     .waitFor();
   await page.screenshot({ path: ".local/ui-verification/ubuntu-overview.png" });
   await page.getByRole("button", { name: "我的设备", exact: true }).click();

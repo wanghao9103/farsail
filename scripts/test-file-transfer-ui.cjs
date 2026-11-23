@@ -243,14 +243,11 @@ const fs = require("node:fs");
     .getByRole("switch", { name: "允许其他设备连接本机", exact: true })
     .check();
   await page.waitForFunction(() => window.filesFixture.filesEnabled);
-  await page
-    .locator(".sidebar-status")
-    .getByText("本机已开放连接", { exact: true })
-    .waitFor();
-  await page
-    .locator(".sidebar-status")
-    .getByText("仅允许文件传输", { exact: true })
-    .waitFor();
+  await devicePanel.getByRole("switch", { checked: true }).waitFor();
+  assert.equal(
+    await page.evaluate(() => window.filesFixture.devices[0].can_host),
+    false,
+  );
   const enabling = await page.evaluate(() =>
     window.filesFixture.calls.filter((c) =>
       ["transport_start", "files_enable", "share_enable"].includes(c.command),
@@ -653,8 +650,10 @@ const fs = require("node:fs");
     .uncheck();
   await page.waitForFunction(() => !window.filesFixture.filesEnabled);
   await page
-    .locator(".sidebar-status")
-    .getByText("本机未开放连接", { exact: true })
+    .getByRole("switch", {
+      name: "允许其他设备连接本机",
+      checked: false,
+    })
     .waitFor();
   assert.equal(
     await page.evaluate(

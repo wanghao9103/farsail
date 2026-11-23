@@ -161,7 +161,7 @@ export function FilesPanel({
                 await onRefresh();
                 await refresh();
               },
-              "文件状态已刷新",
+              "",
               false,
             )
           }

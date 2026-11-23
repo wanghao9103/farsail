@@ -193,7 +193,6 @@ h3 {
   grid-template-columns: 20px minmax(0, 1fr);
   column-gap: 12px;
   align-items: center;
-  margin-bottom: 14px;
 }
 .sidebar-account > svg {
   flex: none;
@@ -210,21 +209,6 @@ h3 {
   display: block;
   margin-top: 3px;
   color: var(--muted);
-}
-.sidebar-status {
-  display: grid;
-  grid-template-columns: 20px minmax(0, 1fr);
-  column-gap: 12px;
-  row-gap: 4px;
-  text-align: left;
-}
-.sidebar-status .status-dot {
-  margin: 0;
-  justify-self: center;
-  align-self: center;
-}
-.sidebar-status small {
-  grid-column: 2;
 }
 .avatar {
   background: #254d61;
@@ -471,7 +455,6 @@ input[type="checkbox"] {
   background: #453b25;
   color: #e7c788;
 }
-.status-dot.is-sharing,
 .device-indicator.online {
   color: var(--accent);
 }
@@ -1114,14 +1097,37 @@ input[type="checkbox"] {
   border-radius: 8px;
   color: var(--text);
 }
-.alert.success.device-feedback {
-  justify-content: flex-start;
+.operation-feedback {
+  position: fixed;
+  inset-inline-end: 16px;
+  inset-block-end: 16px;
+  z-index: 10;
+  display: flex;
+  align-items: center;
   gap: 8px;
-  background: #1c2c2d;
-  border-color: #324448;
+  max-inline-size: min(24rem, calc(100% - 32px));
+  padding: 6px 8px 6px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-raised);
+  color: var(--text);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+  pointer-events: none;
 }
-.device-feedback > button {
-  margin-inline-start: auto;
+.operation-feedback > svg {
+  flex: none;
+  color: var(--online);
+}
+.operation-feedback > button {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  pointer-events: auto;
 }
 .client-updates {
   min-width: 0;
@@ -1707,14 +1713,8 @@ td {
   .sidebar-foot {
     padding: 12px 0 0;
   }
-  .sidebar-account,
-  .sidebar-status > span:not(.status-dot),
-  .sidebar-status small {
+  .sidebar-account {
     display: none;
-  }
-  .sidebar-status {
-    grid-template-columns: 1fr;
-    gap: 0;
   }
   nav button {
     justify-content: center;
