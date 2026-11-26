@@ -79,13 +79,19 @@ async fn answer(State(c): State<Arc<Coordinator>>, request: Request) -> Json<Val
 }
 async fn fixture(
     permission: RemotePermission,
+    config: Config,
 ) -> (
     Arc<Host>,
     Transport,
     Arc<Coordinator>,
     tokio::task::JoinHandle<()>,
 ) {
-    let target = Transport::bind([71; 32], Config::default()).await.unwrap();
+    let target = Transport::bind([71; 32], config.clone()).await.unwrap();
+    if config.force_relay {
+        tokio::time::timeout(Duration::from_secs(8), target.wait_online())
+            .await
+            .unwrap();
+    }
     let source = iroh::SecretKey::from_bytes(&[72; 32]).public();
     let c = Arc::new(Coordinator {
         claims: Claims {
@@ -120,6 +126,10 @@ async fn fixture(
         )
         .unwrap();
     let host = Host::new(Arc::new(NativeClient::new(store).unwrap()));
+    if config.force_relay {
+        host.client.call("heartbeat", json!({})).await.unwrap();
+        host.client.start_transport(config).await.unwrap();
+    }
     host.listen();
     (host, target, c, server)
 }
@@ -198,7 +208,7 @@ async fn connect(
 async fn mobile_controller_connects_android_and_desktop_without_local_sharing_and_keeps_roles_independent()
  {
     for android in [false, true] {
-        let (h, target, c, server) = fixture(RemotePermission::Control).await;
+        let (h, target, c, server) = fixture(RemotePermission::Control, Config::default()).await;
         let (ticket, peer) = connect(&h, &target, c.clone(), RemotePermission::Control).await;
         let display = if android { 1 } else { 7 };
         if android {
@@ -318,7 +328,7 @@ async fn mobile_controller_connects_android_and_desktop_without_local_sharing_an
 }
 #[tokio::test]
 async fn mobile_view_grant_cannot_send_input_but_can_select_screen() {
-    let (h, target, c, server) = fixture(RemotePermission::View).await;
+    let (h, target, c, server) = fixture(RemotePermission::View, Config::default()).await;
     let (ticket, peer) = connect(&h, &target, c, RemotePermission::View).await;
     let mut list = b"FSL1".to_vec();
     list.extend(serde_json::to_vec(&json!([{"id":7,"name":"Synthetic","x":0,"y":0,"width":16,"height":12,"dpi":160,"rotation":0}])).unwrap());
@@ -346,7 +356,7 @@ async fn mobile_view_grant_cannot_send_input_but_can_select_screen() {
 }
 #[tokio::test]
 async fn cancelling_pending_mobile_request_revokes_it_and_rejects_late_approval() {
-    let (h, target, c, server) = fixture(RemotePermission::Control).await;
+    let (h, target, c, server) = fixture(RemotePermission::Control, Config::default()).await;
     c.approved.store(false, Ordering::SeqCst);
     let ticket = h.viewer.begin();
     let owner = h.clone();
@@ -367,4 +377,127 @@ async fn cancelling_pending_mobile_request_revokes_it_and_rejects_late_approval(
     h.client.stop_transport().await;
     target.close().await;
     server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn phone_to_phone_adapts_frames_on_a_rate_limited_tls_relay() {
+    use iroh_relay::server::{
+        CertConfig, ClientRateLimit, RelayConfig, Server, ServerConfig, TlsConfig,
+    };
+    let certified = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+    let cert = certified.cert.der().clone();
+    let key = rustls::pki_types::PrivatePkcs8KeyDer::from(certified.signing_key.serialize_der());
+    let tls = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .unwrap()
+    .with_no_client_auth()
+    .with_single_cert(vec![cert.clone()], key.into())
+    .unwrap();
+    let loopback: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+    let mut settings = RelayConfig::new(loopback);
+    settings.tls = Some(TlsConfig::new(
+        loopback,
+        CertConfig::Manual { server_config: tls },
+    ));
+    settings.limits.client_rx = Some(ClientRateLimit::new(192_000u32.try_into().unwrap()));
+    let mut server_config = ServerConfig::default();
+    server_config.relay = Some(settings);
+    let relay = Server::spawn(server_config).await.unwrap();
+    let config = Config {
+        relay: Some(
+            format!("https://localhost:{}/", relay.https_addr().unwrap().port())
+                .parse()
+                .unwrap(),
+        ),
+        relay_ca_der: vec![cert.to_vec()],
+        force_relay: true,
+        ..Config::default()
+    };
+    let (controller, transport, c, api) = fixture(RemotePermission::Control, config).await;
+    let (ticket, peer) = connect(
+        &controller,
+        &transport,
+        c.clone(),
+        RemotePermission::Control,
+    )
+    .await;
+    assert_eq!(peer.path().0, "relay");
+    let (phone, host_api) = super::tests::host(83).await;
+    assert!(phone.accept_session(&peer));
+    let task = tokio::spawn(phone.clone().run(peer));
+    wait(|| phone.local.lock().unwrap().viewport_edge == Some(960)).await;
+    let (w, h) = (720, 1600);
+    let textured = super::tests::textured_rgba(w, h);
+    let native_bytes = capture::encode_rgba(&textured, w, h, w as usize * 4, 1)
+        .unwrap()
+        .jpeg
+        .len();
+    let flat = vec![100; textured.len()];
+    let layout = phone.geometry(w, h);
+    // Both phases use the same connection and bandwidth. Reducing the amount
+    // of detail in the synthetic image frees capacity for the recovery phase.
+    for (pixels, recover) in [(&textured, false), (&flat, true)] {
+        let mut edges = Vec::new();
+        let result = tokio::time::timeout(Duration::from_secs(24), async {
+            loop {
+                if let Some((image, profile)) =
+                    phone.encode_screenshot(pixels, w, h, w as usize * 4, 0)
+                {
+                    phone.publish_accessibility_encoded(image, w, h, 0, profile);
+                }
+                if let Some(bytes) = controller.viewer.frame(ticket) {
+                    let image = JpegFrame::from_wire(&bytes).unwrap();
+                    assert_eq!(image.meta.layout, layout);
+                    let edge = image.meta.height;
+                    assert_eq!(image.meta.width, w * edge / h);
+                    if edges.last().map(|&(last, _)| last) != Some(edge) {
+                        edges.push((edge, image.jpeg.len()));
+                    }
+                    if (recover && edge >= 960) || (!recover && edge < 960) {
+                        break;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(90)).await;
+            }
+        })
+        .await;
+        eprintln!(
+            "phone relay: recover={recover}, native textured bytes={native_bytes}, received (edge, JPEG bytes)={edges:?}"
+        );
+        if !recover {
+            assert!(
+                edges
+                    .iter()
+                    .any(|&(edge, bytes)| edge < 960 && bytes < native_bytes / 2)
+            );
+        }
+        assert!(result.is_ok(), "no resolution change within the phase");
+        let touch = json!({"kind":"move","display":1,"layout":layout,"x":0.25,"y":0.75});
+        controller
+            .call("viewer_input", json!({"ticket":ticket,"input":touch}))
+            .await
+            .unwrap();
+        wait(|| {
+            phone
+                .drain()
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|event| event["input"] == touch)
+        })
+        .await;
+    }
+    assert_eq!(controller.viewer.status(ticket)["control"], true);
+    assert_eq!(controller.viewer.status(ticket)["path"], "relay");
+    assert_eq!(c.requests.load(Ordering::SeqCst), 1);
+    controller.viewer.close(ticket);
+    task.await.unwrap();
+    controller.client.stop_transport().await;
+    phone.client.stop_transport().await;
+    transport.close().await;
+    relay.shutdown().await.unwrap();
+    api.abort();
+    host_api.abort();
 }

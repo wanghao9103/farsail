@@ -1,7 +1,9 @@
 //! Outgoing mobile viewer. No capture or accessibility permission is needed here.
+mod viewport;
+
 use farsail_client::NativeClient;
 use farsail_core::RemotePermission;
-use farsail_media::JpegFrame;
+use farsail_media::{JpegFrame, ViewportRequest};
 use farsail_transport::{Channel, Frame, Session};
 use farsail_windows::{Display, Input};
 use serde::{Deserialize, Serialize};
@@ -110,8 +112,8 @@ impl Viewer {
         }
     }
     pub fn frame(&self, ticket: u64) -> Option<Vec<u8>> {
-        let _live = self.live.lock().unwrap();
-        if !self.current(ticket) {
+        let live = self.live.lock().unwrap();
+        if !self.current(ticket) || !live.as_ref().is_some_and(|l| l.session.is_open_now()) {
             return None;
         }
         self.state.lock().unwrap().latest.take()
@@ -141,6 +143,7 @@ impl Viewer {
         ticket: u64,
         target: &str,
         permission: RemotePermission,
+        screen_edge: u16,
     ) -> Result<Value, String> {
         if !self.current(ticket) {
             return Err("连接已取消".into());
@@ -209,7 +212,7 @@ impl Viewer {
             let id = id.clone();
             let owner = owner.clone();
             tokio::spawn(async move {
-                viewer.receive(ticket, live).await;
+                viewer.receive(ticket, live, screen_edge).await;
                 viewer.cleanup(&id, &owner).await;
             });
             Ok(self.status(ticket))
@@ -228,7 +231,7 @@ impl Viewer {
             let _ = self.client.call("revoke_remote", json!({"id":id})).await;
         }
     }
-    async fn receive(self: &Arc<Self>, ticket: u64, live: Arc<Live>) {
+    async fn receive(self: &Arc<Self>, ticket: u64, live: Arc<Live>, screen_edge: u16) {
         let viewer = self.clone();
         let heartbeat = tokio::spawn(async move {
             while viewer.current(ticket) {
@@ -242,10 +245,34 @@ impl Viewer {
                 }
             }
         });
+        let mut viewport: Option<viewport::AdaptiveViewport> = None;
+        let mut body_sample = None;
         while self.current(ticket) && live.session.is_open_now() {
-            let frame = match live.session.receive().await {
+            let request = viewport.as_mut().and_then(|policy| {
+                policy.next(live.session.path(), body_sample.take(), Instant::now())
+            });
+            if let Some(request) = request {
+                match live
+                    .session
+                    .send(Frame {
+                        channel: Channel::Media,
+                        bytes: request.packet(b"FSZ1"),
+                    })
+                    .await
+                {
+                    Ok(()) | Err(farsail_transport::Error::Timeout) => (),
+                    Err(_) => break,
+                }
+            }
+            let mut body_time = None;
+            let frame = match live.session.receive_with_media_timing(&mut body_time).await {
                 Ok(f) => f,
-                Err(farsail_transport::Error::Timeout) => continue,
+                Err(farsail_transport::Error::Timeout) => {
+                    // A missing stream can mean an idle screen. Only a slow
+                    // body read supplies congestion evidence on this branch.
+                    body_sample = body_time.filter(|t| *t >= viewport::SLOW_BODY);
+                    continue;
+                }
                 Err(_) => break,
             };
             if frame.channel == Channel::Control {
@@ -263,6 +290,18 @@ impl Viewer {
                 continue;
             }
             if frame.channel != Channel::Media {
+                continue;
+            }
+            if frame.bytes == b"FSZ0" {
+                viewport.get_or_insert_with(|| {
+                    viewport::AdaptiveViewport::new(screen_edge, Instant::now())
+                });
+                continue;
+            }
+            if let Some(reply) = ViewportRequest::parse(&frame.bytes, b"FSZ2") {
+                if let Some(policy) = &mut viewport {
+                    policy.confirm(reply);
+                }
                 continue;
             }
             if frame.bytes == b"FSH1android" {
@@ -304,6 +343,7 @@ impl Viewer {
                         sequence,
                     });
                     s.latest = Some(frame.bytes);
+                    body_sample = body_time;
                 }
             }
             let mut bytes = b"FSA1".to_vec();

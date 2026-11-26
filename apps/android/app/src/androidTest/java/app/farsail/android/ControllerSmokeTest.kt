@@ -103,7 +103,9 @@ class ControllerSmokeTest {
             // The phone peer sends one frame only; control must outlive an idle image.
             Thread.sleep(6200)
             device.findObject(By.desc("显示远程工具"))?.click()
-            assertTrue(device.findObject(By.textStartsWith("已连接")).text.contains("可控制"))
+            val phoneStatus = device.findObject(By.textStartsWith("已连接")).text
+            assertTrue(phoneStatus.contains("可控制"))
+            assertTrue("Show the decoded portrait dimensions", phoneStatus.contains("320×640"))
             text("键盘").click()
             assertFalse(device.hasObject(By.text("Ctrl+V")))
             assertFalse(device.hasObject(By.text("Windows 键")))
@@ -112,6 +114,11 @@ class ControllerSmokeTest {
             for (label in listOf("返回","主屏幕","最近任务")) text(label).click()
             await { inputs(true).filter { it.optString("kind") == "key" && it.optBoolean("down") }.map { it.optInt("vk") }.containsAll(listOf(166,172,93)) }
             text("旋转画面").click()
+            // Configuration and accessibility bounds may settle after the menu click.
+            await {
+                val bounds = device.findObject(By.desc("远程画面"))?.visibleBounds
+                bounds != null && bounds.width() > bounds.height()
+            }
             device.waitForIdle()
             val rotated = point(320,640,1,.25f,.75f); device.click(rotated.first,rotated.second)
             await { inputs(true).any { it.optString("kind") == "button" && !it.optBoolean("down") && kotlin.math.abs(it.optDouble("x")-.75)<.015 && kotlin.math.abs(it.optDouble("y")-.75)<.015 } }

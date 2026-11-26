@@ -913,6 +913,7 @@ impl Host {
                             ticket,
                             args["target"].as_str().ok_or("目标设备无效")?,
                             permission,
+                            args["screenEdge"].as_u64().unwrap_or(2560).clamp(320, 2560) as u16,
                         )
                         .await
                 }

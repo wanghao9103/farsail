@@ -791,6 +791,15 @@ impl Session {
         self.guard(frame.channel).await
     }
     pub async fn receive(&self) -> Result<Frame> {
+        self.receive_with_media_timing(&mut None).await
+    }
+    /// Reports time spent reading a media payload, including a stalled body
+    /// that times out. Waiting for the next stream on a static screen is excluded.
+    pub async fn receive_with_media_timing(
+        &self,
+        body_time: &mut Option<Duration>,
+    ) -> Result<Frame> {
+        *body_time = None;
         if !self.is_open().await {
             self.close();
             return Err(Error::Closed);
@@ -824,7 +833,12 @@ impl Session {
         } else {
             TIMEOUT
         };
-        match tokio::time::timeout(read_timeout, rx.read_exact(&mut bytes)).await {
+        let started = Instant::now();
+        let read = tokio::time::timeout(read_timeout, rx.read_exact(&mut bytes)).await;
+        if channel == Channel::Media {
+            *body_time = Some(started.elapsed());
+        }
+        match read {
             Ok(Ok(_)) => (),
             Ok(Err(e)) if channel == Channel::Media => {
                 let _ = e;
@@ -1381,23 +1395,28 @@ mod tests {
             stream.finish().unwrap();
             slow_host
         });
-        let (slow, ()) = tokio::join!(slow_viewer.receive(), async {
-            for sequence in 0..5u8 {
-                fast_host
-                    .send(Frame {
-                        channel: Channel::Media,
-                        bytes: vec![sequence; 16],
-                    })
-                    .await
-                    .unwrap();
-                assert_eq!(
-                    fast_viewer.receive().await.unwrap().bytes,
-                    vec![sequence; 16]
-                );
-                tokio::time::sleep(Duration::from_millis(100)).await;
+        let mut body_time = None;
+        let (slow, ()) = tokio::join!(
+            slow_viewer.receive_with_media_timing(&mut body_time),
+            async {
+                for sequence in 0..5u8 {
+                    fast_host
+                        .send(Frame {
+                            channel: Channel::Media,
+                            bytes: vec![sequence; 16],
+                        })
+                        .await
+                        .unwrap();
+                    assert_eq!(
+                        fast_viewer.receive().await.unwrap().bytes,
+                        vec![sequence; 16]
+                    );
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
             }
-        });
+        );
         assert_eq!(slow.unwrap().bytes, vec![0x5a; 128 * 1024]);
+        assert!(body_time.unwrap() >= Duration::from_millis(500));
         let slow_host = delayed.await.unwrap();
         for session in [&slow_viewer, &slow_host, &fast_viewer, &fast_host] {
             assert!(session.is_open_now());

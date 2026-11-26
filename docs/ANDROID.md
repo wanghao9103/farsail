@@ -31,6 +31,8 @@ After sign-in and binding, Home shows My devices directly; select a target from 
 
 The remote view fits the source without stretching. Touch to click or drag; enable scrolling mode to scroll, use right click or Keyboard for text, Enter, Backspace, Tab, Escape and common shortcuts. Android peers additionally expose Back, Home and Recents. Rotate view changes only the controller's displayed image and inverse touch coordinates, not the controlled device's orientation. Multiple source displays can be selected when advertised.
 
+When the controlled phone supports resolution negotiation, the mobile viewer adjusts the transmitted image automatically. Relay connections start with a maximum long edge of 960 pixels. Sustained slow frame reads or high round-trip times lower the resolution by one step. After roughly ten seconds of consistently fast delivery the viewer can increase it again, up to the controller screen’s long edge or 2560 pixels, whichever is smaller. The floating controls show the received image dimensions and network RTT.
+
 A phone controller owns one foreground connection. Exit, background, cancellation and sign-out close it and invalidate queued input; a stopped connection requires an explicit reconnect. View-only grants never send input. Frames use a latest-value slot; input is bounded, ordered, checked against the displayed layout, active lease and current input generation. Local screen sharing and an outgoing controller share the authenticated endpoint without sharing capture authorization. Stopping local sharing does not end the outgoing controller.
 
 ## Background operation

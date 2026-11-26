@@ -8,6 +8,7 @@ import android.graphics.drawable.GradientDrawable
 import android.content.pm.ActivityInfo
 import android.content.res.Configuration
 import android.os.Bundle
+import android.os.SystemClock
 import android.text.InputType
 import android.view.View
 import android.view.Gravity
@@ -48,6 +49,10 @@ class ViewerActivity : Activity() {
     private val decoder = Executors.newSingleThreadScheduledExecutor()
     private val commands = ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS, ArrayBlockingQueue<Runnable>(32))
     private val posted = AtomicBoolean(false)
+    // Accessed only by the single decoder thread.
+    private var pollOwner = 0L
+    private var nextStatusAt = 0L
+    private var pollFrames = false
     @Volatile private var ticket = 0L
     @Volatile private var active = false
     private var foreground = false
@@ -141,7 +146,7 @@ class ViewerActivity : Activity() {
             }
             insets
         }
-        decoder.scheduleWithFixedDelay({ poll() }, 0, 150, TimeUnit.MILLISECONDS)
+        decoder.scheduleWithFixedDelay({ poll() }, 0, 33, TimeUnit.MILLISECONDS)
         update(JSONObject().put("phase", "idle"))
     }
     private fun panelBackground() = GradientDrawable().apply { setColor(Color.argb(235, 24, 35, 39)); cornerRadius = ui.dp(18).toFloat() }
@@ -206,11 +211,13 @@ class ViewerActivity : Activity() {
         disconnect(""); canvas.clear(); ticket = NativeBridge.viewerBegin()
         if (ticket <= 0) { status.text = "正在初始化，请稍后重试。"; return }
         active = true; val owner = ticket; end.text = "取消连接"; generation = 0; firstPicture = true
+        val metrics = resources.displayMetrics
+        val screenEdge = maxOf(canvas.width, canvas.height).takeIf { it > 0 } ?: maxOf(metrics.widthPixels, metrics.heightPixels)
         update(JSONObject().put("phase", "requesting")); showTools(true)
         connectWorker.execute {
             try {
                 if (!current(owner)) return@execute
-                val state = app.invoke("viewer_connect", JSONObject().put("ticket", owner).put("target", target).put("permission", permission)) as JSONObject
+                val state = app.invoke("viewer_connect", JSONObject().put("ticket", owner).put("target", target).put("permission", permission).put("screenEdge", screenEdge)) as JSONObject
                 app.main.post { if (current(owner)) update(state) }
             } catch (e: Exception) { app.main.post { if (current(owner)) disconnect(app.friendly(e.message ?: "连接失败")) } }
         }
@@ -228,8 +235,15 @@ class ViewerActivity : Activity() {
         val owner = ticket
         if (!current(owner) || !posted.compareAndSet(false, true)) return
         try {
-            val state = app.invoke("viewer_state", JSONObject().put("ticket", owner)) as JSONObject
-            val bytes = if (state.optString("phase") == "connected") NativeBridge.viewerFrame(owner) else null
+            val now = SystemClock.elapsedRealtime()
+            val state = if (pollOwner != owner || now >= nextStatusAt) {
+                (app.invoke("viewer_state", JSONObject().put("ticket", owner)) as JSONObject).also {
+                    pollOwner = owner
+                    nextStatusAt = now + 150
+                    pollFrames = it.optString("phase") == "connected"
+                }
+            } else null
+            val bytes = if (pollFrames) NativeBridge.viewerFrame(owner) else null
             val image = if (bytes != null && bytes.size > 49) {
                 val header = ByteBuffer.wrap(bytes)
                 val options = BitmapFactory.Options()
@@ -238,14 +252,22 @@ class ViewerActivity : Activity() {
                 val bitmap = BitmapFactory.decodeByteArray(bytes, 49, bytes.size - 49, options) ?: error("远程画面解码失败")
                 RemoteCanvas.Frame(bitmap, header.getInt(5), header.getLong(9), header.getLong(17))
             } else null
+            if (state == null && image == null) {
+                posted.set(false)
+                return
+            }
             app.main.post {
                 try {
                     if (current(owner)) {
                         if (image != null) {
-                            remoteWidth = image.bitmap.width; remoteHeight = image.bitmap.height
-                            canvas.show(image); orient()
+                            canvas.show(image)
+                            if (firstPicture || remoteWidth != image.bitmap.width || remoteHeight != image.bitmap.height) {
+                                remoteWidth = image.bitmap.width; remoteHeight = image.bitmap.height
+                                orient()
+                            }
                             if (firstPicture) { firstPicture = false; handle.postDelayed({ if (current(owner) && remote.optString("phase") == "connected") showTools(false) }, 700) }
-                        }; update(state)
+                        }
+                        if (state != null) update(state)
                     }
                     else image?.bitmap?.recycle()
                 } finally { posted.set(false) }
@@ -269,10 +291,12 @@ class ViewerActivity : Activity() {
             "waiting" -> "等待对方批准${if (permission == "control") "控制" else "查看"}…"
             "connecting" -> "已获批准，正在建立连接…"
             "connected" -> {
-                val path = if (state.optString("path") == "direct") "直连" else "中继"
+                val path = when (state.optString("path")) { "direct" -> "直连"; "relay" -> "中继"; else -> "确认线路中" }
+                val latency = state.optLong("rtt_ms", -1).takeIf { it >= 0 }?.let { " · ${it}ms" } ?: ""
                 val mode = if (permission == "view") "仅查看" else if (blocked) "控制已暂停" else if (enabled) "可控制" else "等待画面"
                 val code = state.optString("verification_code").takeUnless { it.isBlank() || it == "null" }
-                "已连接 · $path · $mode" + (code?.let { "\n核对码：$it" } ?: "")
+                val size = if (firstPicture) "" else " · ${remoteWidth}×${remoteHeight}"
+                "已连接 · $path$latency · $mode$size" + (code?.let { "\n核对码：$it" } ?: "")
             }
             "closed" -> state.optString("error", "连接已结束").takeUnless { it == "null" } ?: "连接已结束"
             else -> "请选择设备连接"

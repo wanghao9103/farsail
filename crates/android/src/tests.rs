@@ -48,7 +48,7 @@ impl Authority for TestAuthority {
         Ok("synthetic-grant".into())
     }
 }
-async fn host(seed: u8) -> (Arc<Host>, tokio::task::JoinHandle<()>) {
+pub(super) async fn host(seed: u8) -> (Arc<Host>, tokio::task::JoinHandle<()>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     let router = axum::Router::new()
@@ -129,7 +129,7 @@ fn image(host: &Host) -> Vec<u8> {
         .jpeg
 }
 
-fn textured_rgba(width: u32, height: u32) -> Vec<u8> {
+pub(super) fn textured_rgba(width: u32, height: u32) -> Vec<u8> {
     let mut state = 17u32;
     let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
     for y in 0..height {
