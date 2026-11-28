@@ -153,6 +153,12 @@ impl MediaWindow {
         self.pending.is_empty()
     }
 
+    /// Retire outstanding frames on an intentional pause. Keep the last
+    /// sequence so a delayed cumulative acknowledgement remains valid.
+    pub fn discard_pending(&mut self) {
+        self.pending.clear();
+    }
+
     pub fn blocked_on(&self) -> Option<u64> {
         (self.pending.len() >= 2).then(|| self.pending[0])
     }
@@ -194,6 +200,20 @@ impl MediaWindow {
         }
         Ok(self.pending.len() < before)
     }
+}
+
+#[cfg(test)]
+#[test]
+fn discarding_paused_frames_preserves_ack_sequence() {
+    let mut window = MediaWindow::default();
+    window.sent(4).unwrap();
+    window.sent(5).unwrap();
+    window.discard_pending();
+    assert!(window.is_empty());
+    assert!(!window.acknowledge(5).unwrap());
+    assert!(window.acknowledge(6).is_err());
+    window.sent(6).unwrap();
+    assert!(window.acknowledge(6).unwrap());
 }
 
 pub struct ByteBudget {

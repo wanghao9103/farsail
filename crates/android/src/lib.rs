@@ -684,11 +684,22 @@ impl Host {
                 }
                 _ => (),
             }
-            if !window.is_empty() && progress.elapsed() > Duration::from_secs(15) {
+            let video_active = demand.borrow().active;
+            if !video_active && !window.is_empty() {
+                window.discard_pending();
+                let mut local = self.local.lock().unwrap();
+                if local
+                    .session
+                    .as_ref()
+                    .is_some_and(|s| s.stable_id() == session.stable_id())
+                {
+                    local.media.pending.clear();
+                }
+            }
+            if video_active && !window.is_empty() && progress.elapsed() > Duration::from_secs(15) {
                 session.close_with_reason("media_timeout");
                 break;
             }
-            let video_active = demand.borrow().active;
             // Receiver read timeouts discard a JPEG without producing FSA1.
             // If both slots were dropped, send one fresh frame on this same
             // authorized connection. Never restart the 15-second ACK deadline.
